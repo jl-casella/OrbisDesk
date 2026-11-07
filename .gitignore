@@ -1,0 +1,43 @@
+/upstream/
+/.deps/
+/build/
+/out/
+# Local evidence, captures, prefixes, archives and build manifests.
+/reports/
+# Accidental Windows redirection target.
+/nul
+# Local editor/environment state.
+/.vscode/
+/.idea/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+# Generated executables, libraries, packages and downloaded archives.
+*.exe
+*.dll
+*.pkg
+*.elf
+*.oelf
+*.prx
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.pdb
+*.log
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+*.deb
+
+# Private research and comparisons; kept locally, excluded from commits.
+/private-notes/

@@ -1,0 +1,296 @@
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -26,6 +26,10 @@
+ #endif
+ 
+ #include "config.h"
++#ifdef __ORBIS__
++/* Use Wine's real server-event fallback; kqueue headers are unavailable. */
++#undef HAVE_KQUEUE
++#endif
+ 
+ #include <assert.h>
+ #include <errno.h>
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -66,7 +66,7 @@
+ #include <CoreFoundation/CoreFoundation.h>
+ #include <mach/mach.h>
+ #endif
+-#ifdef __FreeBSD__
++#if defined(__FreeBSD__) && !defined(__ORBIS__)
+ #include <sys/thr.h>
+ #endif
+ 
+@@ -2134,7 +2134,7 @@
+     len = ntdll_wcstoumbs( name->Buffer, name->Length / sizeof(WCHAR), nameA, sizeof(nameA) - 1, FALSE );
+     nameA[len] = '\0';
+     pthread_setname_np( nameA );
+-#elif defined(__FreeBSD__)
++#elif defined(__FreeBSD__) && !defined(__ORBIS__)
+     unsigned int status;
+     char nameA[64];
+     int unix_pid, unix_tid, len;
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -80,6 +80,19 @@
+ #include "wine/afd.h"
+ 
+ #include "unix_private.h"
++#ifdef __ORBIS__
++/* These optional Windows socket queries have no verified PS4 ioctl adapter. */
++static int pw_wine_socket_query( int fd, int query, int *value )
++{
++    errno = ENOTSUP;
++    return -1;
++}
++#else
++static int pw_wine_socket_query( int fd, int query, int *value )
++{
++    return ioctl( fd, query ? SIOCATMARK : FIONREAD, value );
++}
++#endif
+ 
+ #if !defined(TCP_KEEPIDLE) && defined(TCP_KEEPALIVE)
+ /* TCP_KEEPALIVE is the Mac OS name for TCP_KEEPIDLE */
+@@ -1873,7 +1886,7 @@
+             }
+ #endif
+ 
+-            if (ioctl( fd, FIONREAD, &value ) < 0)
++            if (pw_wine_socket_query( fd, 0, &value ) < 0)
+             {
+                 status = sock_errno_to_status( errno );
+                 break;
+@@ -1911,7 +1924,7 @@
+             }
+             else
+             {
+-                if (ioctl( fd, SIOCATMARK, &value ) < 0)
++                if (pw_wine_socket_query( fd, 1, &value ) < 0)
+                 {
+                     status = sock_errno_to_status( errno );
+                     break;
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -2558,8 +2558,19 @@
+     }
+ }
+ 
+-static void get_performance_info( SYSTEM_PERFORMANCE_INFORMATION *info )
+-{
++extern int pw_wine_memory_info( unsigned long long *total, unsigned long long *available );
++static NTSTATUS get_performance_info( SYSTEM_PERFORMANCE_INFORMATION *info )
++{
++#ifdef __ORBIS__
++    unsigned long long totalram, freeram, totalswap = page_size;
++
++    if (pw_wine_memory_info( &totalram, &freeram )) return STATUS_NOT_SUPPORTED;
++    memset( info, 0, sizeof(*info) );
++    info->AvailablePages      = freeram / page_size;
++    info->TotalCommittedPages = (totalram + totalswap - freeram) / page_size;
++    info->TotalCommitLimit    = (totalram + totalswap) / page_size;
++    return STATUS_SUCCESS;
++#else
+     unsigned long long totalram = 0, freeram = 0, totalswap = 0, freeswap = 0;
+ 
+     memset( info, 0, sizeof(*info) );
+@@ -2725,6 +2736,8 @@
+     info->AvailablePages      = freeram / page_size;
+     info->TotalCommittedPages = (totalram + totalswap - freeram - freeswap) / page_size;
+     info->TotalCommitLimit    = (totalram + totalswap) / page_size;
++    return STATUS_SUCCESS;
++#endif
+ }
+ 
+ #ifdef linux
+@@ -3399,7 +3412,7 @@
+         SYSTEM_PERFORMANCE_INFORMATION spi;
+         static BOOL fixme_written = FALSE;
+ 
+-        get_performance_info( &spi );
++        if ((ret = get_performance_info( &spi ))) break;
+         len = sizeof(spi);
+         if (size >= len)
+         {
+@@ -3439,6 +3452,10 @@
+ 
+     case SystemProcessorPerformanceInformation:  /* 8 */
+     {
++#ifdef __ORBIS__
++        ret = STATUS_NOT_SUPPORTED;
++        break;
++#else
+         SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION *sppi = NULL;
+         unsigned int cpus = 0;
+         int out_cpus = size / sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION);
+@@ -3569,6 +3586,7 @@
+ 
+         free( sppi );
+         break;
++#endif
+     }
+ 
+     case SystemModuleInformation:  /* 11 */
+@@ -4567,6 +4585,11 @@
+     return STATUS_SUCCESS;
+ }
+ 
++#elif defined(__ORBIS__)
++static NTSTATUS fill_battery_state( SYSTEM_BATTERY_STATE *bs )
++{
++    return STATUS_NOT_SUPPORTED;
++}
+ #elif defined(__FreeBSD__)
+ 
+ #include <dev/acpica/acpiio.h>
+@@ -4689,6 +4712,9 @@
+     }
+ 
+     case ProcessorInformation:
++#ifdef __ORBIS__
++        return STATUS_NOT_SUPPORTED;
++#endif
+     {
+         const int cannedMHz = 1000; /* We fake a 1GHz processor if we can't conjure up real values */
+         PROCESSOR_POWER_INFORMATION* cpu_power = output;
+@@ -4740,7 +4766,7 @@
+                 cpu_power[i].CurrentIdleState = 0; /* FIXME */
+             }
+         }
+-#elif defined(__FreeBSD__) || defined (__FreeBSD_kernel__) || defined(__DragonFly__)
++#elif !defined(__ORBIS__) && (defined(__FreeBSD__) || defined (__FreeBSD_kernel__) || defined(__DragonFly__))
+         {
+             int num;
+             size_t valSize = sizeof(num);
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -200,6 +200,40 @@
+ #define ERROR_sig(context)   ((context)->uc_mcontext.gregs[REG_ERR])
+ #define FPU_sig(context)     ((void *)((context)->uc_mcontext.fpregs))
+ #define XState_sig(fpu)      (((unsigned int *)((XMM_SAVE_AREA32 *)fpu)->Reserved4)[12] == FP_XSTATE_MAGIC1 ? (XSAVE_AREA_HEADER *)(((XMM_SAVE_AREA32 *)fpu) + 1) : NULL)
++
++#elif defined(__ORBIS__)
++#include "pw_wine_context.h"
++#define ucontext_t PwOrbisUcontext
++#define amd64_get_gsbase pw_wine_get_gsbase
++#define amd64_set_gsbase pw_wine_set_gsbase
++#define RAX_sig(c) ((c)->uc_mcontext.mc_rax)
++#define RBX_sig(c) ((c)->uc_mcontext.mc_rbx)
++#define RCX_sig(c) ((c)->uc_mcontext.mc_rcx)
++#define RDX_sig(c) ((c)->uc_mcontext.mc_rdx)
++#define RSI_sig(c) ((c)->uc_mcontext.mc_rsi)
++#define RDI_sig(c) ((c)->uc_mcontext.mc_rdi)
++#define RBP_sig(c) ((c)->uc_mcontext.mc_rbp)
++#define R8_sig(c) ((c)->uc_mcontext.mc_r8)
++#define R9_sig(c) ((c)->uc_mcontext.mc_r9)
++#define R10_sig(c) ((c)->uc_mcontext.mc_r10)
++#define R11_sig(c) ((c)->uc_mcontext.mc_r11)
++#define R12_sig(c) ((c)->uc_mcontext.mc_r12)
++#define R13_sig(c) ((c)->uc_mcontext.mc_r13)
++#define R14_sig(c) ((c)->uc_mcontext.mc_r14)
++#define R15_sig(c) ((c)->uc_mcontext.mc_r15)
++#define CS_sig(c) ((c)->uc_mcontext.mc_cs)
++#define DS_sig(c) ((c)->uc_mcontext.mc_ds)
++#define ES_sig(c) ((c)->uc_mcontext.mc_es)
++#define FS_sig(c) ((c)->uc_mcontext.mc_fs)
++#define GS_sig(c) ((c)->uc_mcontext.mc_gs)
++#define SS_sig(c) ((c)->uc_mcontext.mc_ss)
++#define RSP_sig(c) ((c)->uc_mcontext.mc_rsp)
++#define RIP_sig(c) ((c)->uc_mcontext.mc_rip)
++#define EFL_sig(c) ((c)->uc_mcontext.mc_rflags)
++#define TRAP_sig(c) ((c)->uc_mcontext.mc_trapno)
++#define ERROR_sig(c) ((c)->uc_mcontext.mc_err)
++#define FPU_sig(c) ((void *)((c)->uc_mcontext.mc_fpstate))
++#define XState_sig(c) NULL
+ 
+ #elif defined(__FreeBSD__) || defined (__FreeBSD_kernel__)
+ 
+@@ -2260,7 +2294,7 @@
+ #ifdef __linux__
+     arch_prctl( ARCH_SET_GS, data->teb );
+ #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
+-    amd64_set_gsbase( data->teb );
++    if (amd64_set_gsbase( data->teb )) return FALSE;
+ #elif defined(__NetBSD__)
+     sysarch( X86_64_SET_GSBASE, &data->teb );
+ #elif defined(__APPLE__)
+@@ -2672,7 +2706,7 @@
+     if ((ret = modify_ldt( &ldt_info ))) ERR( "modify_ldt failed %d\n", ret );
+ #elif defined(__APPLE__)
+     if (i386_set_ldt(sel >> 3, (union ldt_entry *)&entry, 1) < 0) perror("i386_set_ldt");
+-#elif defined(__FreeBSD__)
++#elif defined(__FreeBSD__) && !defined(__ORBIS__)
+     struct i386_ldt_args p;
+     p.start = sel >> 3;
+     p.descs = (struct user_segment_descriptor *)&entry;
+@@ -2724,6 +2758,7 @@
+     struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&teb->GdiTebBatch;
+     WOW_TEB *wow_teb = get_wow_teb( teb );
+ 
++#ifndef __ORBIS__
+     if (wow_teb)
+     {
+         if (!fs32_sel)
+@@ -2733,6 +2768,10 @@
+         }
+         else thread_data->fs = fs32_sel;
+     }
++#else
++    (void)wow_teb;
++    thread_data->fs = 0; /* i386 belongs to the CPU translator, never the LDT. */
++#endif
+     thread_data->frame_size = frame_size;
+     return STATUS_SUCCESS;
+ }
+@@ -2745,7 +2784,9 @@
+ {
+     struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&teb->GdiTebBatch;
+ 
++#ifndef __ORBIS__
+     if (teb->WowTebOffset && !fs32_sel) ldt_free_entry( thread_data->fs );
++#endif
+ }
+ 
+ 
+@@ -2824,7 +2865,7 @@
+         fs32_sel = alloc_fs_sel( -1, wow_teb );
+ #elif defined(__APPLE__)
+         cs32_sel = ldt_alloc_entry( ldt_make_cs32_entry() );
+-#elif defined(__FreeBSD__)
++#elif defined(__FreeBSD__) && !defined(__ORBIS__)
+         cs32_sel = GSEL(GUCODE32_SEL, SEL_UPL);
+ #endif
+     }
+@@ -2908,8 +2949,17 @@
+                                            libc_addr, libc_size, &thread_data->syscall_dispatch ) < 0)
+         WARN_(seh)( "could not enable syscall user dispatch\n" );
+ #elif defined (__FreeBSD__) || defined (__FreeBSD_kernel__)
++#ifdef __ORBIS__
++    if (pw_wine_set_gsbase( teb ))
++    {
++        fprintf( stderr, "PWBOOT blocked: GS base could not be installed/verified\n" );
++        exit(93);
++    }
++    thread_data->pthread_teb = NULL; /* Keep the PS4 libc FS base unchanged. */
++#else
+     amd64_set_gsbase( teb );
+     amd64_get_fsbase( &thread_data->pthread_teb );
++#endif
+ #elif defined(__NetBSD__)
+     sysarch( X86_64_SET_GSBASE, &teb );
+ #elif defined (__APPLE__)
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -402,6 +402,11 @@
+ static NTSTATUS spawn_process( const RTL_USER_PROCESS_PARAMETERS *params, int socketfd,
+                                int unixdir, char *winedebug, const struct pe_image_info *pe_info )
+ {
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT process_spawn_blocked image=%s machine=%04x\n",
++             debugstr_us( &params->ImagePathName ), pe_info->machine );
++    return STATUS_NOT_SUPPORTED;
++#endif
+     NTSTATUS status = STATUS_SUCCESS;
+     int stdin_fd = -1, stdout_fd = -1;
+     pid_t pid;

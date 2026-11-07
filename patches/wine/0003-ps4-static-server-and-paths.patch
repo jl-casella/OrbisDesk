@@ -1,0 +1,758 @@
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -126,9 +126,11 @@
+ #include "unix_private.h"
+ #ifdef __ORBIS__
+ #include "pw_wine_platform.h"
++#ifndef PW_WINE_POSIX_H
+ #define stat(path,buffer) pw_wine_stat(path,buffer)
+ #define fstat(fd,buffer) pw_wine_fstat(fd,buffer)
+ #define lstat(path,buffer) pw_wine_lstat(path,buffer)
++#endif
+ #endif
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(file);
+--- a/server/unicode.c
++++ b/server/unicode.c
+@@ -281,6 +281,8 @@
+ 
+ #if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__)
+     dir = realpath( "/proc/self/exe", NULL );
++#elif defined(__ORBIS__)
++    dir = NULL; /* In-process callers must provide the actual NLS directory. */
+ #elif defined (__FreeBSD__) || defined(__DragonFly__)
+     static int pathname[] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
+     size_t dir_size = PATH_MAX;
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -117,6 +117,9 @@
+ #include "handle.h"
+ #include "thread.h"
+ #include "request.h"
++#ifdef __ORBIS__
++#undef SO_ATTACH_FILTER /* No Linux BPF on the PS4 socket API. */
++#endif
+ #include "user.h"
+ 
+ #if defined(linux) && !defined(IP_UNICAST_IF)
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -19,6 +19,7 @@
+  */
+ 
+ #include "config.h"
++#include <errno.h>
+ 
+ #include <assert.h>
+ #include <fcntl.h>
+@@ -223,7 +224,11 @@
+ 
+ void init_memory(void)
+ {
++#ifdef __ORBIS__
++    host_page_mask = 0x3fff;
++#else
+     host_page_mask = sysconf( _SC_PAGESIZE ) - 1;
++#endif
+     free_map_addr( 0x60000000, 0x1c000000 );
+     free_map_addr( 0x600000000000, 0x100000000000 );
+ }
+@@ -1095,6 +1100,10 @@
+             mapping->fd = dup_fd_object( data->fd, mapping_access, sharing, FILE_SYNCHRONOUS_IO_NONALERT );
+             if (mapping->fd) set_fd_user( mapping->fd, &mapping_fd_ops, NULL );
+         }
++#ifdef __ORBIS__
++        if (!mapping->fd)
++            fprintf( stderr, "PWBOOT mapping_fd_failed status=%08x errno=%d\n", get_error(), errno );
++#endif
+         if (!mapping->fd) return false;
+ 
+         if ((unix_fd = get_unix_fd( mapping->fd )) == -1) goto error;
+--- a/server/request.c
++++ b/server/request.c
+@@ -686,8 +686,10 @@
+         fatal_error( "open %s: %s\n", config_dir, strerror( errno ));
+     if (fstat( config_dir_fd, &st ) == -1)
+         fatal_error( "stat %s: %s\n", config_dir, strerror( errno ));
++#ifndef __ORBIS__ /* The title prefix has no meaningful Unix owner identity. */
+     if (st.st_uid != getuid())
+         fatal_error( "%s is not owned by you\n", config_dir );
++#endif
+ 
+     /* create the base directory if needed */
+ 
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -392,8 +392,14 @@
+ {
+     Dl_info info;
+ 
++#ifdef __ORBIS__
++    const char *directory = getenv( "WINE_PS4_NTDLL_DIR" );
++    if (!directory || directory[0] != '/') fatal_error( "WINE_PS4_NTDLL_DIR must locate the staged Unix runtime\n" );
++    ntdll_dir = strdup( directory );
++#else
+     if (!dladdr( init_paths, &info ) || !(ntdll_dir = realpath_dirname( info.dli_fname )))
+         fatal_error( "cannot get path to ntdll.so\n" );
++#endif
+ 
+     if ((build_dir = remove_tail( ntdll_dir, "/dlls/ntdll" )))
+     {
+@@ -404,7 +410,13 @@
+     {
+         if (!(dll_dir = remove_tail( ntdll_dir, get_so_dir(current_machine) ))) dll_dir = ntdll_dir;
+         bin_dir = build_relative_path( dll_dir, LIBDIR "/wine", BINDIR );
++#ifdef __ORBIS__
++        const char *data = getenv( "WINE_PS4_DATA_DIR" );
++        if (!data || data[0] != '/') fatal_error( "WINE_PS4_DATA_DIR must locate staged Wine data\n" );
++        data_dir = strdup( data );
++#else
+         data_dir = build_relative_path( dll_dir, LIBDIR "/wine", DATADIR "/wine" );
++#endif
+         wineloader = build_path( ntdll_dir, "wine" );
+     }
+ 
+@@ -485,6 +497,10 @@
+  */
+ NTSTATUS exec_wineloader( char **argv, int socketfd, const struct pe_image_info *pe_info )
+ {
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT process_reexec_blocked machine=%04x\n", pe_info->machine );
++    return STATUS_NOT_SUPPORTED;
++#endif
+     WORD machine = pe_info->machine;
+     ULONGLONG res_start = pe_info->base;
+     ULONGLONG res_end = pe_info->base + pe_info->map_size;
+@@ -1721,7 +1737,13 @@
+     else asprintf( &name, "%s%s/ntdll.dll", dll_dir, pe_dir );
+ 
+     if (is_arm64ec()) machine = main_image_info.Machine;
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT main_step ntdll_open %s\n", name );
++#endif
+     status = open_builtin_pe_file( name, &attr, &module, &size, &info, 0, 0, machine, FALSE, 0 );
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT main_step ntdll_mapped status=%08x module=%p size=%zx\n", status, module, (size_t)size );
++#endif
+     if (status == STATUS_DLL_NOT_FOUND)
+     {
+         free( name );
+@@ -1870,20 +1892,36 @@
+ static void start_main_thread(void)
+ {
+     TEB *teb = virtual_alloc_first_teb();
++    fprintf(stderr,"PWBOOT first_teb_ready\n");
+ 
+     dbg_init();
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT debug_ready\n" );
++#endif
+     startup_info_size = server_init_process();
++    fprintf(stderr,"PWBOOT server_ready\n");
+     virtual_map_user_shared_data();
+     init_cpu_info();
+     init_files();
+     init_startup_info();
+     *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
+     set_load_order_app_name( main_wargv[0] );
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT main_step load_order_ready\n" );
++#endif
+     init_thread_stack( teb, 0, 0, 0 );
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT main_step thread_stack base=%p limit=%p\n", teb->Tib.StackBase, teb->Tib.StackLimit );
++#endif
+     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT main_step keyed_event_ready\n" );
++#endif
+     load_ntdll();
++    fprintf(stderr,"PWBOOT ntdll_pe64_ready\n");
+     load_wow64_ntdll( main_image_info.Machine );
+     load_apiset_dll();
++    fprintf(stderr,"PWBOOT entering_windows_initialization\n");
+     server_init_process_done();
+ }
+ 
+@@ -2121,9 +2159,11 @@
+     main_argv = argv;
+ 
+     init_paths();
++    fprintf(stderr,"PWBOOT paths_ready\n");
+     if (!getenv( "WINELOADERNOEXEC" ) || argc <= 1) check_command_line( argc, argv );
+     unsetenv( "WINELOADERNOEXEC" );
+ 
++#ifndef __ORBIS__ /* A console title cannot raise its sandbox resource limits. */
+ #ifdef RLIMIT_NOFILE
+     set_max_limit( RLIMIT_NOFILE );
+ #endif
+@@ -2133,9 +2173,12 @@
+ #ifdef RLIMIT_NICE
+     set_max_limit( RLIMIT_NICE );
+ #endif
++#endif /* !__ORBIS__ */
+ 
+     virtual_init();
++    fprintf(stderr,"PWBOOT virtual_ready\n");
+     init_environment();
++    fprintf(stderr,"PWBOOT environment_ready\n");
+ 
+ #ifdef __APPLE__
+     apple_main_thread();
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1416,6 +1416,16 @@
+  */
+ static int connect_inprocess_server(void)
+ {
++#ifdef __ORBIS__
++    extern int pw_wineserver_connect( const char *nls_dir );
++    const char *nls = getenv( "WINE_PS4_NLS_DIR" );
++    if (!nls || nls[0] != '/') fatal_error( "WINE_PS4_NLS_DIR must locate the staged NLS data\n" );
++    int socket = pw_wineserver_connect( nls );
++    if (socket == -1) fatal_error( "PS4 in-process server connection failed: %s\n", strerror( errno ) );
++    fprintf( stderr, "PWBOOT inprocess_channel_ready\n" );
++    return socket;
++#else
++
+     Dl_info info;
+     char *dir = NULL, *module_path, *nls_dir, *p;
+     void *module;
+@@ -1455,6 +1465,7 @@
+     free( module_path );
+     free( nls_dir );
+     return fd;
++#endif
+ }
+ 
+ 
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2860,9 +2860,29 @@
+          * to a host page). Store the pointer through that view. */
+         const size_t host_page = sysconf( _SC_PAGESIZE );
+ 
++#ifdef __ORBIS__
++        if (pw_wine_memory_protect( user_shared_data, host_page, PROT_READ | PROT_WRITE ))
++        {
++            fprintf( stderr, "PWBOOT dispatcher_slot_blocked writable errno=%d\n", errno );
++            exit(96);
++        }
++        *(void **)ptr = __wine_syscall_dispatcher;
++        if (pw_wine_memory_protect( user_shared_data, host_page, PROT_READ ))
++        {
++            fprintf( stderr, "PWBOOT dispatcher_slot_blocked restore errno=%d\n", errno );
++            exit(96);
++        }
++        if (*(void **)ptr != (void *)__wine_syscall_dispatcher)
++        {
++            fprintf( stderr, "PWBOOT dispatcher_slot_blocked readback mismatch\n" );
++            exit(96);
++        }
++        fprintf( stderr, "PWBOOT dispatcher_slot_ready address=%p host_page=%zu\n", ptr, host_page );
++#else
+         mprotect( user_shared_data, host_page, PROT_READ | PROT_WRITE );
+         *(void **)ptr = __wine_syscall_dispatcher;
+         mprotect( user_shared_data, host_page, PROT_READ );
++#endif
+     }
+     else
+     {
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1932,7 +1932,20 @@
+     set_env_var( &env, &env_pos, &env_size, bootstrapW, ARRAY_SIZE(bootstrapW), valueW );
+     is_prefix_bootstrap = TRUE;
+     env[env_pos] = 0;
+-    run_wineboot( env, env_pos );
++#ifdef __ORBIS__
++    const char *external_prefix = getenv( "WINE_PS4_EXTERNAL_PREFIX" );
++    if (external_prefix && !strcmp( external_prefix, "1" ))
++    {
++        /* The in-process server creates a fresh USD each run; run_wineboot is what
++         * fills its Unix part (SystemCall among it), so do that part here. */
++        virtual_init_user_shared_data();
++        fprintf( stderr, "PWBOOT user_shared_data_ready system_call=%u\n",
++                 (unsigned int)((const unsigned char *)user_shared_data)[0x308] );
++        fprintf( stderr, "PWBOOT external_prefix_ready\n" );
++    }
++    else
++#endif
++        run_wineboot( env, env_pos );
+ 
+     /* reload environment now that wineboot has run */
+     set_env_var( &env, &env_pos, &env_size, pathW, 4, path );  /* reset PATH */
+@@ -1945,6 +1958,10 @@
+ 
+     get_full_path( main_argv[1], curdir, &nt_name );
+     status = load_main_exe( &nt_name, 0, module );
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT main_image_load status=%08x machine=%04x base=%p\n",
++             (unsigned int)status, main_image_info.Machine, *module );
++#endif
+ #ifdef __ORBIS__
+     /* The title's own image may hold the program's preferred base, so the
+      * program is mapped elsewhere; the PE loader relocates it, as Windows
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -269,6 +269,11 @@
+ /* mmap() anonymous memory at a fixed address */
+ void *anon_mmap_fixed( void *start, size_t size, int prot, int flags )
+ {
++#ifdef __ORBIS__
++    if (((UINT_PTR)start & host_page_mask) || (size & host_page_mask))
++        fprintf( stderr, "PWBOOT anon_alignment_blocked address=%p size=%zu host_page=%zu prot=%x flags=%x\n",
++                 start, size, host_page_size, prot, flags );
++#endif
+     assert( !((UINT_PTR)start & host_page_mask) );
+     assert( !(size & host_page_mask) );
+ 
+@@ -761,7 +766,11 @@
+     /* if we don't have a preloader, try to reserve the space now */
+     reserve_area( (void *)0x000000010000, (void *)0x000068000000 );
+     reserve_area( (void *)0x00007f000000, (void *)0x00007fff0000 );
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT top_area_not_reserved 0x7ffffe000000-0x7fffffff0000\n" );
++#else
+     reserve_area( (void *)0x7ffffe000000, (void *)0x7fffffff0000 );
++#endif
+ 
+ #endif
+ }
+@@ -871,6 +880,16 @@
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+     if ((builtin = get_builtin_module( module )))
+     {
++#ifdef __ORBIS__
++        extern int pw_wine_static_unixlib( const char *path, int wow, const void **funcs, NTSTATUS (**init)(void) );
++        if (builtin->unix_path && !builtin->unix_handle &&
++            pw_wine_static_unixlib( builtin->unix_path, wow, funcs, &entry ))
++        {
++            fprintf( stderr, "PWBOOT static_unixlib %s\n", builtin->unix_path );
++            server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++            return entry ? entry() : STATUS_SUCCESS;
++        }
++#endif
+         if (builtin->unix_path && !builtin->unix_handle)
+         {
+             builtin->unix_handle = dlopen( builtin->unix_path, RTLD_NOW );
+@@ -2393,7 +2412,20 @@
+     if ((!removable || (flags & MAP_SHARED)) && host_addr == map_addr && host_size == map_size)
+     {
+         if (mmap( host_addr, host_size, prot, flags, fd, offset ) != MAP_FAILED)
++        {
++#ifdef __ORBIS__
++            /* mmap rounds the final partial page too. Orbis mprotect requires
++             * that same full kernel-page range, already owned by this view. */
++            size_t protect_size = ROUND_SIZE( 0, host_size, host_page_mask );
++            if ((flags & MAP_PRIVATE) && (prot & PROT_WRITE) && mprotect( host_addr, protect_size, prot ))
++            {
++                fprintf( stderr, "PWBOOT private_file_write_blocked address=%p size=%zx errno=%d\n",
++                         host_addr, protect_size, errno );
++                return STATUS_ACCESS_DENIED;
++            }
++#endif
+             return STATUS_SUCCESS;
++        }
+ 
+         switch (errno)
+         {
+@@ -2425,7 +2457,15 @@
+     }
+ 
+     mprotect( map_addr, map_size, PROT_READ | PROT_WRITE );
++#ifdef __ORBIS__
++    {
++        ssize_t copied = pread( fd, map_addr, size, offset );
++        fprintf( stderr, "PWBOOT image_read_fallback offset=%llx requested=%zu copied=%zd errno=%d\n",
++                 (unsigned long long)offset, size, copied, copied < 0 ? errno : 0 );
++    }
++#else
+     pread( fd, map_addr, size, offset );
++#endif
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -3462,6 +3502,14 @@
+ 
+     status = map_image_view( &view, &pe_mapping->image, size, limit_low, limit_high, alloc_type );
+     if (status) goto done;
++#ifdef __ORBIS__
++    if (pe_mapping->image.map_addr && wine_server_get_ptr( pe_mapping->image.map_addr ) != view->base)
++    {
++        fprintf( stderr, "PWBOOT image_map_addr_unavailable requested=%llx mapped=%p\n",
++                 (unsigned long long)pe_mapping->image.map_addr, view->base );
++        pe_mapping->image.map_addr = wine_server_client_ptr( view->base );
++    }
++#endif
+ 
+     status = map_image_into_view( view, &pe_mapping->nt_name, unix_fd, &pe_mapping->image,
+                                   machine, shared_fd, needs_close );
+@@ -3668,11 +3716,20 @@
+             else end = preload_reserve_start;
+         }
+         if ((char *)end - (char *)base < size) continue;
++#ifdef __ORBIS__
++        fprintf( stderr, "PWBOOT virtual_heap_try area=%p-%p at=%p size=%zx\n", base, end, (char *)end - size, (size_t)size );
++#endif
+         ret = anon_mmap_fixed( (char *)end - size, size, PROT_READ | PROT_WRITE, 0 );
++#ifdef __ORBIS__
++        fprintf( stderr, "PWBOOT virtual_heap_result ret=%p errno=%d\n", ret, ret == MAP_FAILED ? errno : 0 );
++#endif
+         if (ret == MAP_FAILED) continue;
+         mmap_remove_reserved_area( ret, size );
+         return ret;
+     }
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT virtual_heap_fallback_alloc size=%zx\n", (size_t)size );
++#endif
+     return anon_mmap_alloc( size, PROT_READ | PROT_WRITE );
+ }
+ 
+@@ -3701,21 +3758,40 @@
+     host_page_mask = host_page_size - 1;
+     TRACE( "host page size: %uk\n", (UINT)host_page_size / 1024 );
+ #endif
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT virtual_step first_trace_done\n" );
++#endif
+ 
+ #ifdef _WIN64
+     host_addr_space_limit = get_host_addr_space_limit();
+     TRACE( "host addr space limit: %p\n", host_addr_space_limit );
++#ifdef __ORBIS__
++    /* W022: top-down placement (ntdll.dll) from 0x7fffffff0000 ended the app silently,
++     * like the heap at 0x7fffffdb0000 in W019/W020. W023 capped at 0xfc00000000 (end of the
++     * application map area, shadPS4 address_space.h USER_MAX + 1), but images placed just
++     * below it made the fork's GPU tracker fail (vk ErrorOutOfDeviceMemory, W037 matrix).
++     * Wine stays below the end of the kernel-managed range instead (SYSTEM_MANAGED_MAX + 1,
++     * rounded down to 64 KiB), where the kernel already put the heap and stacks. */
++    if (host_addr_space_limit > (void *)0x7ffff0000) host_addr_space_limit = (void *)0x7ffff0000;
++    fprintf( stderr, "PWBOOT virtual_step addr_space_limit=%p\n", host_addr_space_limit );
++#endif
+ #else
+     host_addr_space_limit = address_space_limit;
+ #endif
+ 
+     kernel_writewatch_init();
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT virtual_step writewatch_done\n" );
++#endif
+ 
+     if (preload_info && *preload_info)
+         for (i = 0; (*preload_info)[i].size; i++)
+             mmap_add_reserved_area( (*preload_info)[i].addr, (*preload_info)[i].size );
+ 
+     mmap_init( preload_info ? *preload_info : NULL );
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT virtual_step mmap_init_done\n" );
++#endif
+ 
+     if ((preload = getenv("WINEPRELOADRESERVE")))
+     {
+@@ -3738,7 +3814,13 @@
+ #else
+     size = 2 * view_block_size + (1U << (32 - page_shift));
+ #endif
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT virtual_step heap_request size=%zx limit=%p\n", (size_t)size, host_addr_space_limit );
++#endif
+     view_block_start = alloc_virtual_heap( size );
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT virtual_step virtual_heap=%p size=%zx\n", (void *)view_block_start, (size_t)size );
++#endif
+     assert( view_block_start != MAP_FAILED );
+     view_block_end = view_block_start + view_block_size / sizeof(*view_block_start);
+     free_ranges = (void *)((char *)view_block_start + view_block_size);
+@@ -3784,7 +3866,14 @@
+ #if defined(HAVE_SYSINFO) \
+     && defined(HAVE_STRUCT_SYSINFO_TOTALRAM) && defined(HAVE_STRUCT_SYSINFO_MEM_UNIT)
+     struct sysinfo sinfo;
+-
++#ifdef __ORBIS__
++    extern int pw_wine_memory_info( unsigned long long *total, unsigned long long *available );
++    unsigned long long orbis_total, orbis_available;
++
++    if (!pw_wine_memory_info( &orbis_total, &orbis_available ))
++        info->MmHighestPhysicalPage = max(1, orbis_total / page_size);
++    else
++#endif
+     if (!sysinfo(&sinfo))
+     {
+         ULONG64 total = (ULONG64)sinfo.totalram * sinfo.mem_unit;
+--- a/server/main.c
++++ b/server/main.c
+@@ -260,13 +260,24 @@
+     pthread_attr_t attr;
+     pthread_t thread;
+ 
++    fprintf( stderr, "PWBOOT server_step sock_init\n" );
+     sock_init();
++    fprintf( stderr, "PWBOOT server_step open_master_socket\n" );
+     open_master_socket();
++    fprintf( stderr, "PWBOOT server_step init_memory\n" );
+     set_current_time();
+     init_memory();
+-    init_directories( load_intl_file() );
++    fprintf( stderr, "PWBOOT server_step load_intl_file\n" );
++    {
++        void *intl = load_intl_file();
++        fprintf( stderr, "PWBOOT server_step init_directories\n" );
++        init_directories( intl );
++    }
++    fprintf( stderr, "PWBOOT server_step init_threading\n" );
+     init_threading();
++    fprintf( stderr, "PWBOOT server_step init_registry\n" );
+     init_registry();
++    fprintf( stderr, "PWBOOT server_step thread_create\n" );
+ 
+     pthread_attr_init( &attr );
+     pthread_attr_setstacksize( &attr, 1024 * 1024 );
+@@ -284,6 +295,7 @@
+ 
+     if (!inprocess_nls_dir && nls_dir) inprocess_nls_dir = strdup( nls_dir );
+     pthread_once( &once, start_inprocess_server );
++    fprintf( stderr, "PWBOOT server_step connect_client started=%d\n", inprocess_started );
+     return inprocess_started ? connect_inprocess_client() : -1;
+ }
+ #endif
+--- a/server/directory.c
++++ b/server/directory.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "config.h"
++#include <errno.h>
+ 
+ #include <assert.h>
+ #include <stdarg.h>
+@@ -441,21 +442,28 @@
+     dir_nls        = create_directory( &root_directory->obj, dir_nls_str, OBJ_PERMANENT, HASH_SIZE, NULL );
+ 
+     /* devices */
++    fprintf( stderr, "PWBOOT server_step dir_devices\n" );
+     named_pipe_device = create_named_pipe_device( &dir_device->obj, named_pipe_str, OBJ_PERMANENT, NULL );
+     mailslot_device   = create_mailslot_device( &dir_device->obj, mailslot_str, OBJ_PERMANENT, NULL );
++    fprintf( stderr, "PWBOOT server_step dir_null_device\n" );
+     null_device       = create_unix_device( &dir_device->obj, null_str, OBJ_PERMANENT, NULL, "/dev/null" );
++    fprintf( stderr, "PWBOOT server_step dir_console_device\n" );
+     release_object( create_console_device( &dir_device->obj, condrv_str, OBJ_PERMANENT, NULL ));
++    fprintf( stderr, "PWBOOT server_step dir_socket_device\n" );
+     release_object( create_socket_device( &dir_device->obj, afd_str, OBJ_PERMANENT, NULL ));
+ 
+     /* sessions */
++    fprintf( stderr, "PWBOOT server_step dir_sessions\n" );
+     create_session( 0 );
+     create_session( default_session_id );
+ 
++    fprintf( stderr, "PWBOOT server_step dir_object_types\n" );
+     /* object types */
+ 
+     for (i = 0; i < ARRAY_SIZE(types); i++)
+         release_object( create_object_type( &dir_objtype->obj, i, OBJ_PERMANENT ));
+ 
++    fprintf( stderr, "PWBOOT server_step dir_symlinks\n" );
+     /* symlinks */
+     release_object( create_obj_symlink( &root_directory->obj, link_dosdev_str, OBJ_PERMANENT, &dir_global->obj, NULL ));
+     release_object( create_root_symlink( &dir_global->obj, link_globalroot_str, OBJ_PERMANENT, NULL ));
+@@ -467,6 +475,7 @@
+     release_object( create_symlink( &dir_global->obj, link_conout_str, OBJ_PERMANENT, link_currentout_str, NULL ));
+     release_object( create_symlink( &dir_global->obj, link_con_str, OBJ_PERMANENT, link_console_str, NULL ));
+ 
++    fprintf( stderr, "PWBOOT server_step dir_events\n" );
+     /* events */
+     for (i = 0; i < ARRAY_SIZE( kernel_events ); i++)
+     {
+@@ -476,8 +485,34 @@
+     release_object( create_keyed_event( &dir_kernel->obj, keyed_event_crit_sect_str, OBJ_PERMANENT, NULL ));
+ 
+     /* mappings */
+-    release_object( create_fd_mapping( &dir_nls->obj, intl_str, intl_fd, OBJ_PERMANENT, NULL ));
+-    release_object( create_user_data_mapping( &dir_kernel->obj, user_data_str, OBJ_PERMANENT, NULL ));
++    fprintf( stderr, "PWBOOT server_step dir_intl_mapping\n" );
++#ifdef __ORBIS__
++    {
++        struct mapping *created = create_fd_mapping( &dir_nls->obj, intl_str, intl_fd, OBJ_PERMANENT, NULL );
++        if (!created)
++        {
++            fprintf( stderr, "PWBOOT server_step dir_intl_mapping_failed status=%08x errno=%d\n", get_error(), errno );
++            fatal_error( "intl mapping failed\n" );
++        }
++        release_object( created );
++    }
++#else
++    release_object( create_fd_mapping( &dir_nls->obj, intl_str, intl_fd, OBJ_PERMANENT, NULL ) );
++#endif
++    fprintf( stderr, "PWBOOT server_step dir_user_data_mapping\n" );
++#ifdef __ORBIS__
++    {
++        struct mapping *created = create_user_data_mapping( &dir_kernel->obj, user_data_str, OBJ_PERMANENT, NULL );
++        if (!created)
++        {
++            fprintf( stderr, "PWBOOT server_step dir_user_data_mapping_failed status=%08x errno=%d\n", get_error(), errno );
++            fatal_error( "user_data mapping failed\n" );
++        }
++        release_object( created );
++    }
++#else
++    release_object( create_user_data_mapping( &dir_kernel->obj, user_data_str, OBJ_PERMANENT, NULL ) );
++#endif
+     release_object( intl_fd );
+ 
+     session_mapping = create_session_mapping( &dir_kernel->obj, session_str, OBJ_PERMANENT, NULL );
+--- a/dlls/ntdll/unix/debug.c
++++ b/dlls/ntdll/unix/debug.c
+@@ -200,6 +200,9 @@
+     struct stat st1, st2;
+ 
+     nb_debug_options = 0;
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT debug_options start winedebug=%s\n", wine_debug ? wine_debug : "-" );
++#endif
+ 
+     /* check for stderr pointing to /dev/null */
+     if (!fstat( 2, &st1 ) && S_ISCHR(st1.st_mode) &&
+@@ -209,13 +212,22 @@
+         default_flags = 0;
+         return;
+     }
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT debug_options stderr_checked\n" );
++#endif
+     if (!wine_debug) return;
+     if (!strcmp( wine_debug, "help" )) debug_usage();
+ 
+     app_name = main_argv[1];
+     while ((p = strpbrk( app_name, "/\\" ))) app_name = p + 1;
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT debug_options app_name=%s\n", app_name );
++#endif
+ 
+     parse_options( wine_debug, app_name );
++#ifdef __ORBIS__
++    fprintf( stderr, "PWBOOT debug_options parsed count=%d\n", nb_debug_options );
++#endif
+ }
+ 
+ /***********************************************************************
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -711,6 +711,57 @@
+     data_size_t handles_size, jobs_size;
+     obj_handle_t *handles, *jobs;
+ 
++#ifdef __ORBIS__
++    if (params && params->CommandLine.Buffer)
++    {
++        static const char wineboot[] = "wineboot.exe", shutdown[] = "--shutdown";
++        const WCHAR *text = params->CommandLine.Buffer;
++        size_t length = params->CommandLine.Length / sizeof(WCHAR), n, k;
++        BOOL has_wineboot = FALSE, has_shutdown = FALSE;
++        for (n = 0; n < length; n++)
++        {
++            for (k = 0; wineboot[k] && n + k < length && (text[n + k] | 0x20) == wineboot[k]; k++);
++            if (!wineboot[k]) has_wineboot = TRUE;
++            for (k = 0; shutdown[k] && n + k < length && text[n + k] == shutdown[k]; k++);
++            if (!shutdown[k]) has_shutdown = TRUE;
++        }
++        if (has_wineboot && has_shutdown)
++        {
++            fprintf( stderr, "PWBOOT session_end_terminates_title\n" );
++            NtTerminateProcess( NtCurrentProcess(), 0 );
++        }
++    }
++    if (params && params->ImagePathName.Buffer)
++    {
++        extern int pw_hw_switch_program( const char *image, const char *command_line );
++        static const char *const helpers[] = {"wineboot.exe", "services.exe", "rpcss.exe", "svchost.exe",
++            "plugplay.exe", "winedevice.exe", "conhost.exe", "winemenubuilder.exe"};
++        char image[260], command[1024], *base;
++        const WCHAR *path = params->ImagePathName.Buffer;
++        size_t length = params->ImagePathName.Length / sizeof(WCHAR), n, k;
++        BOOL helper = FALSE;
++
++        if (length >= 4 && path[0] == '\\' && path[1] == '?' && path[2] == '?' && path[3] == '\\') { path += 4; length -= 4; }
++        for (n = 0; n < length && n < sizeof(image) - 1; n++) image[n] = path[n] < 128 ? path[n] : '?';
++        image[n] = 0;
++        length = params->CommandLine.Buffer ? params->CommandLine.Length / sizeof(WCHAR) : 0;
++        for (n = 0; n < length && n < sizeof(command) - 1; n++)
++            command[n] = params->CommandLine.Buffer[n] < 128 ? params->CommandLine.Buffer[n] : '?';
++        command[n] = 0;
++        base = strrchr( image, '\\' );
++        base = base ? base + 1 : image;
++        for (k = 0; k < ARRAY_SIZE(helpers); k++)
++        {
++            const char *a = base, *b = helpers[k];
++            while (*a && (*a | 0x20) == *b) { a++; b++; }
++            if (!*a && !*b) helper = TRUE;
++        }
++        fprintf( stderr, "PWBOOT create_process image=%s helper=%d\n", image, helper );
++        /* returns only when the switch did not happen; creation then fails as before */
++        if (!helper) pw_hw_switch_program( image, command );
++    }
++#endif
++
+     if (thread_flags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER)
+     {
+         WARN( "Invalid thread flags %#x.\n", thread_flags );
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -19,6 +19,8 @@
+  */
+ 
+ #include "config.h"
++#include <errno.h>
++#include <stdio.h>
+ 
+ #include <assert.h>
+ #include <stdarg.h>
+@@ -1341,6 +1343,12 @@
+     struct msg_queue *queue = get_fd_user( fd );
+     assert( queue->obj.ops == &msg_queue_ops );
+ 
++#ifdef __ORBIS__
++    {
++        static unsigned reported;
++        if (reported++ < 16) fprintf( stderr, "PWBOOT queue_fd_event event=%x\n", event );
++    }
++#endif
+     if (event & (POLLERR | POLLHUP)) set_fd_events( fd, -1 );
+     else set_fd_events( queue->fd, 0 );
+     set_queue_bits( queue, QS_DRIVER );
+@@ -3065,6 +3073,9 @@
+ 
+     if ((unix_fd = get_file_unix_fd( file )) != -1)
+     {
++#ifdef __ORBIS__
++        int source = unix_fd;
++#endif
+         if ((unix_fd = dup( unix_fd )) != -1)
+         {
+             queue->fd = create_anonymous_fd( &msg_queue_fd_ops, unix_fd, &queue->obj, 0 );
+@@ -3072,6 +3083,10 @@
+         }
+         else
+             file_set_error();
++#ifdef __ORBIS__
++        fprintf( stderr, "PWBOOT queue_fd source=%d dup=%d errno=%d fd_object=%d\n", source, unix_fd,
++                 unix_fd == -1 ? errno : 0, queue->fd != NULL );
++#endif
+     }
+     release_object( file );
+ }
+--- a/server/ptrace.c
++++ b/server/ptrace.c
+@@ -256,8 +256,13 @@
+ 
+     if (thread->unix_tid != -1)
+     {
++#ifdef __ORBIS__
++        fprintf( stderr, "PWBOOT thread_signal unavailable thread=%04x sig=%d\n", thread->id, sig );
++        errno = ENOSYS;
++#else
+         ret = tkill( thread->unix_pid, thread->unix_tid, sig );
+         if (ret == -1 && errno == ENOSYS) ret = kill( thread->unix_pid, sig );
++#endif
+     }
+     if (ret == -1 && errno == ESRCH) /* thread got killed */
+     {

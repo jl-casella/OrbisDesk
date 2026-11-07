@@ -1,0 +1,398 @@
+diff --git a/src/core/libraries/kernel/threads/exception.cpp b/src/core/libraries/kernel/threads/exception.cpp
+index 834e627..4bf99e6 100644
+--- a/src/core/libraries/kernel/threads/exception.cpp
++++ b/src/core/libraries/kernel/threads/exception.cpp
+@@ -25,6 +25,7 @@
+ #include <sys/syscall.h>
+ #include <unistd.h>
+ #endif
++#include <unordered_map>
+ #include <unordered_set>
+ #include "exception.h"
+ 
+@@ -143,7 +144,8 @@ Ucontext::Ucontext(siginfo_t const* inf, ucontext_t* raw_context) {
+     uc_mcontext.mc_trapno = LinuxTrapToOrbis(regs[REG_TRAPNO]);
+     uc_mcontext.mc_err = regs[REG_ERR];
+     uc_mcontext.mc_rflags = regs[REG_EFL];
+-    uc_mcontext.mc_cs = regs[REG_CSGSFS] & 0xFFFF;
++    const auto host_cs = regs[REG_CSGSFS] & 0xFFFF;
++    uc_mcontext.mc_cs = host_cs == 0x33 ? 0x43 : host_cs == 0x23 ? 0x33 : host_cs;
+     uc_mcontext.mc_ss = (raw_context->uc_flags & LinuxSigcontextSs)
+                             ? (static_cast<u64>(regs[REG_CSGSFS]) >> 48) & 0xFFFF
+                             : ReadSs();
+@@ -286,6 +288,9 @@ void Ucontext::SyncHostFromGuest() {
+     // regs[REG_CSGSFS] &= ~((greg_t{0xFFFF} << 32) | (greg_t{0xFFFF} << 16));
+     // regs[REG_CSGSFS] |= (greg_t{uc_mcontext.mc_fs} << 32);
+     // regs[REG_CSGSFS] |= (greg_t{uc_mcontext.mc_gs} << 16);
++    const auto guest_cs = uc_mcontext.mc_cs;
++    const auto host_cs = guest_cs == 0x43 ? 0x33 : guest_cs == 0x33 ? 0x23 : guest_cs;
++    regs[REG_CSGSFS] = (regs[REG_CSGSFS] & ~greg_t{0xffff}) | host_cs;
+     regs[REG_RIP] = uc_mcontext.mc_rip;
+     regs[REG_EFL] = uc_mcontext.mc_rflags;
+     if (s_current_host_context->uc_mcontext.fpregs && uc_mcontext.mc_fpformat == McFpFormatXmm) {
+@@ -712,7 +717,82 @@ s32 PS4_SYSV_ABI sceKernelDebugRaiseExceptionOnReleaseMode(u32 error, s64 unk) {
+     return ORBIS_OK;
+ }
+ 
++#include "nonlocal_jump.h"
++
++#if defined(__linux__) && defined(ARCH_X86_64)
++s64 PS4_SYSV_ABI posix_write(s32 fd, const void* buffer, u64 size);
++s32 PS4_SYSV_ABI exit(s32 status);
++extern "C" s64 shad_raw_syscall(s64 number, u64 a1, u64 a2, u64 a3, u64, u64, u64) {
++    switch (number) {
++    case 1:
++        return exit(static_cast<s32>(a1));
++    case 4: {
++        const auto result = posix_write(static_cast<s32>(a1), reinterpret_cast<void*>(a2), a3);
++        return result < 0 ? -*__Error() : result;
++    }
++    case 20:
++        return GLOBAL_PID;
++    case 39:
++        return 1;
++    case 416: {
++        const auto result = posix_sigaction(static_cast<s32>(a1), reinterpret_cast<Sigaction*>(a2),
++                                            reinterpret_cast<Sigaction*>(a3));
++        return result < 0 ? -*__Error() : result;
++    }
++    default:
++        LOG_ERROR(Lib_Kernel, "Unsupported raw syscall {}", number);
++        return -POSIX_ENOSYS;
++    }
++}
++extern "C" s64 PS4_SYSV_ABI shad_getppid();
++asm(R"(
++.text
++.globl shad_getppid
++shad_getppid:
++    movq $39, %rax
++    movq %rcx, %r10
++.globl shad_syscall_entry
++shad_syscall_entry:
++    pushq %r9
++    movq %r8, %r9
++    movq %r10, %r8
++    movq %rdx, %rcx
++    movq %rsi, %rdx
++    movq %rdi, %rsi
++    movq %rax, %rdi
++    call shad_raw_syscall
++    addq $8, %rsp
++    testq %rax, %rax
++    js 1f
++    clc
++    ret
++1:
++    negq %rax
++    stc
++    ret
++)");
++#endif
++
+ void RegisterException(Core::Loader::SymbolsResolver* sym) {
++#if defined(__linux__) && defined(ARCH_X86_64)
++    for (const char* lib : {"libkernel", "libScePosix"}) {
++        LinkSymbolImpl(sym, "e6ovBo9ZvJc", lib, 1, "libkernel", reinterpret_cast<u64>(shad_getppid),
++                       Core::Loader::SymbolType::Function);
++        LinkSymbolImpl(sym, "aRo9AhFUXcM", lib, 1, "libkernel",
++                       reinterpret_cast<u64>(shad_sigsetjmp), Core::Loader::SymbolType::Function);
++        LinkSymbolImpl(sym, "pebqbE5ws8s", lib, 1, "libkernel",
++                       reinterpret_cast<u64>(shad_siglongjmp), Core::Loader::SymbolType::Function);
++        LinkSymbolImpl(sym, "gNQ1V2vfXDE", lib, 1, "libkernel", reinterpret_cast<u64>(shad_setjmp),
++                       Core::Loader::SymbolType::Function);
++        LinkSymbolImpl(sym, "lKEN2IebgJ0", lib, 1, "libkernel", reinterpret_cast<u64>(shad_longjmp),
++                       Core::Loader::SymbolType::Function);
++        LinkSymbolImpl(sym, "sjpkrhugvVI", lib, 1, "libkernel",
++                       reinterpret_cast<u64>(shad_fast_setjmp), Core::Loader::SymbolType::Function);
++        LinkSymbolImpl(sym, "+F+9hhi6k9Q", lib, 1, "libkernel",
++                       reinterpret_cast<u64>(shad_fast_longjmp),
++                       Core::Loader::SymbolType::Function);
++    }
++#endif
+     LIB_OBJ("nQVWJEGHObc", "libkernel", 1, "libkernel", &g_sigintr);
+ 
+     LIB_FUNCTION("il03nluKfMk", "libkernel_unity", 1, "libkernel", sceKernelRaiseException);
+diff --git a/src/core/libraries/kernel/threads/nonlocal_jump.h b/src/core/libraries/kernel/threads/nonlocal_jump.h
+new file mode 100644
+index 0000000..259f9d9
+--- /dev/null
++++ b/src/core/libraries/kernel/threads/nonlocal_jump.h
+@@ -0,0 +1,142 @@
++/*-
++ * Copyright (c) 1990 The Regents of the University of California.
++ * All rights reserved.
++ *
++ * This code is derived from software contributed to Berkeley by
++ * William Jolitz.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 4. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ *
++ *	@(#)setjmp.s	5.1 (Berkeley) 4/23/90"
++ */
++
++// FreeBSD amd64 jmp_buf layout; host masks stay outside the guest buffer.
++#if defined(__linux__) && defined(ARCH_X86_64)
++
++struct HostJumpState {
++    sigset_t mask;
++    int stack_flags;
++};
++static thread_local std::unordered_map<void*, HostJumpState> jump_states;
++
++extern "C" void shad_jump_save(void* buffer) {
++    auto* bytes = static_cast<unsigned char*>(buffer);
++    HostJumpState state{};
++    sigprocmask(SIG_SETMASK, nullptr, &state.mask);
++    state.stack_flags = g_curthread->sigaltstack.ss_flags;
++    jump_states[buffer] = state;
++    if (*reinterpret_cast<int*>(bytes + 88)) {
++        g_curthread->GetGuestSigmask(*reinterpret_cast<Sigset*>(bytes + 72));
++    }
++}
++
++extern "C" void shad_jump_restore(void* buffer) {
++    auto* bytes = static_cast<unsigned char*>(buffer);
++    const auto saved = jump_states.find(buffer);
++    if (saved != jump_states.end()) {
++        g_curthread->sigaltstack.ss_flags = saved->second.stack_flags;
++    }
++    if (*reinterpret_cast<int*>(bytes + 88)) {
++        g_curthread->SetGuestSigmask(*reinterpret_cast<Sigset*>(bytes + 72));
++        if (saved != jump_states.end()) {
++            sigprocmask(SIG_SETMASK, &saved->second.mask, nullptr);
++        }
++    }
++    s_current_host_context = nullptr;
++}
++
++extern "C" int PS4_SYSV_ABI shad_sigsetjmp(void*, int);
++extern "C" void PS4_SYSV_ABI shad_siglongjmp(void*, int);
++extern "C" int PS4_SYSV_ABI shad_setjmp(void*);
++extern "C" int PS4_SYSV_ABI shad_fast_setjmp(void*);
++extern "C" void PS4_SYSV_ABI shad_longjmp(void*, int);
++extern "C" void PS4_SYSV_ABI shad_fast_longjmp(void*, int);
++
++asm(R"(
++.text
++.globl shad_setjmp
++shad_setjmp:
++    mov $1, %esi
++    jmp shad_sigsetjmp
++.globl shad_fast_setjmp
++shad_fast_setjmp:
++    xor %esi, %esi
++    jmp shad_sigsetjmp
++.globl shad_sigsetjmp
++shad_sigsetjmp:
++    mov %esi, 88(%rdi)
++    mov (%rsp), %rax
++    mov %rax, 0(%rdi)
++    mov %rbx, 8(%rdi)
++    mov %rsp, 16(%rdi)
++    mov %rbp, 24(%rdi)
++    mov %r12, 32(%rdi)
++    mov %r13, 40(%rdi)
++    mov %r14, 48(%rdi)
++    mov %r15, 56(%rdi)
++    fnstcw 64(%rdi)
++    stmxcsr 68(%rdi)
++    sub $8, %rsp
++    call shad_jump_save
++    add $8, %rsp
++    xor %eax, %eax
++    ret
++.globl shad_longjmp
++shad_longjmp:
++    movl $1, 88(%rdi)
++    jmp shad_siglongjmp
++.globl shad_fast_longjmp
++shad_fast_longjmp:
++    movl $0, 88(%rdi)
++    jmp shad_siglongjmp
++.globl shad_siglongjmp
++shad_siglongjmp:
++    push %rdi
++    push %rsi
++    sub $8, %rsp
++    call shad_jump_restore
++    add $8, %rsp
++    pop %rsi
++    pop %rdi
++    mov %esi, %eax
++    test %eax, %eax
++    jnz 1f
++    inc %eax
++1:
++    mov 0(%rdi), %rdx
++    mov 8(%rdi), %rbx
++    mov 16(%rdi), %rsp
++    mov 24(%rdi), %rbp
++    mov 32(%rdi), %r12
++    mov 40(%rdi), %r13
++    mov 48(%rdi), %r14
++    mov 56(%rdi), %r15
++    fninit
++    fldcw 64(%rdi)
++    ldmxcsr 68(%rdi)
++    mov %rdx, (%rsp)
++    ret
++)");
++#endif
+diff --git a/src/core/linker.cpp b/src/core/linker.cpp
+index 8251e5b..261f582 100644
+--- a/src/core/linker.cpp
++++ b/src/core/linker.cpp
+@@ -285,7 +285,7 @@ s32 Linker::LoadAndStartModule(const std::filesystem::path& path, u64 args, cons
+ 
+ Module* Linker::FindByAddress(VAddr address) {
+     for (auto& module : m_modules) {
+-        const VAddr base = module->GetBaseAddress();
++        const VAddr base = module->image_virtual_addr;
+         if (address >= base && address < base + module->aligned_base_size) {
+             return module.get();
+         }
+diff --git a/src/core/module.cpp b/src/core/module.cpp
+index cd226a1..9192c09 100644
+--- a/src/core/module.cpp
++++ b/src/core/module.cpp
+@@ -113,24 +113,36 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
+     const auto elf_header = elf.GetElfHeader();
+     const auto elf_pheader = elf.GetProgramHeader();
+     const u64 base_size = CalculateBaseSize(elf_header, elf_pheader);
+-    aligned_base_size = Common::AlignUp(base_size, BlockAlign);
++    const bool fixed_executable = elf_header.e_type == ET_SCE_EXEC;
++    u64 first_load_address = base_size;
++    for (const auto& phdr : elf_pheader) {
++        if (phdr.p_type == PT_LOAD && phdr.p_memsz) {
++            first_load_address = std::min(first_load_address, phdr.p_vaddr);
++        }
++    }
++    first_load_address = fixed_executable ? Common::AlignDown(first_load_address, BlockAlign) : 0;
++    aligned_base_size = Common::AlignUp(base_size, BlockAlign) - first_load_address;
+ 
+     // Reserve memory area for module
+     const bool is_executable =
+         elf_header.e_type == ET_SCE_EXEC || elf_header.e_type == ET_SCE_DYNEXEC;
+-    const u64 load_base = is_executable   ? ExecutableLoadBase
+-                          : IsSystemLib() ? SystemModuleLoadBase
+-                                          : GameModuleLoadBase;
+-    void** out_addr = reinterpret_cast<void**>(&base_virtual_addr);
+-    s32 result =
+-        memory->MapMemory(out_addr, load_base, aligned_base_size + TrampolineSize,
+-                          MemoryProt::NoAccess, MemoryMapFlags::NoFlags, VMAType::Reserved, name);
++    const u64 load_base = fixed_executable ? first_load_address
++                          : is_executable  ? ExecutableLoadBase
++                          : IsSystemLib()  ? SystemModuleLoadBase
++                                           : GameModuleLoadBase;
++    void** out_addr = reinterpret_cast<void**>(&image_virtual_addr);
++    s32 result = memory->MapMemory(
++        out_addr, load_base, aligned_base_size + TrampolineSize, MemoryProt::NoAccess,
++        fixed_executable ? MemoryMapFlags::Fixed | MemoryMapFlags::NoOverwrite
++                         : MemoryMapFlags::NoFlags,
++        VMAType::Reserved, name);
+     ASSERT_MSG(result == ORBIS_OK, "Failed to reserve memory for module {}", name);
++    base_virtual_addr = fixed_executable ? 0 : image_virtual_addr;
+     LOG_INFO(Core_Linker, "Loading module {} to {}", name, fmt::ptr(*out_addr));
+ 
+ #ifdef ARCH_X86_64
+     // Initialize trampoline generator.
+-    VAddr trampoline_vaddr = base_virtual_addr + aligned_base_size;
++    VAddr trampoline_vaddr = image_virtual_addr + aligned_base_size;
+     void* trampoline_addr = std::bit_cast<void*>(trampoline_vaddr);
+     result = memory->MapMemory(&trampoline_addr, trampoline_vaddr, TrampolineSize,
+                                MemoryProt::CpuReadWrite | MemoryProt::CpuExec,
+@@ -270,7 +282,7 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
+                 if (eh_frame_hdr_addr > eh_frame_addr) {
+                     eh_frame_size = (eh_frame_hdr_addr - eh_frame_addr);
+                 } else {
+-                    eh_frame_size = (aligned_base_size - eh_frame_hdr_addr);
++                    eh_frame_size = (first_load_address + aligned_base_size - eh_frame_hdr_addr);
+                 }
+             }
+             break;
+@@ -289,8 +301,8 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
+         std::ranges::transform(lower_name, lower_name.begin(),
+                                [](unsigned char c) { return std::tolower(c); });
+         if (lower_name == "eboot.bin" || lower_name.ends_with(".elf")) {
+-            MemoryPatcher::g_eboot_address = base_virtual_addr;
+-            MemoryPatcher::g_eboot_image_size = base_size;
++            MemoryPatcher::g_eboot_address = image_virtual_addr;
++            MemoryPatcher::g_eboot_image_size = base_size - first_load_address;
+             MemoryPatcher::g_eboot_name = name;
+             MemoryPatcher::OnGameLoaded();
+         }
+diff --git a/src/core/module.h b/src/core/module.h
+index 7db0fe5..1e8683a 100644
+--- a/src/core/module.h
++++ b/src/core/module.h
+@@ -158,7 +158,7 @@ public:
+     }
+ 
+     bool IsValid() const noexcept {
+-        return base_virtual_addr != 0;
++        return image_virtual_addr != 0;
+     }
+ 
+     bool IsSharedLib() const noexcept {
+@@ -231,6 +231,7 @@ public:
+     s32 id{};
+     u64 aligned_base_size{};
+     VAddr base_virtual_addr{};
++    VAddr image_virtual_addr{};
+     VAddr proc_param_virtual_addr{};
+     VAddr eh_frame_hdr_addr{};
+     VAddr eh_frame_addr{};
+diff --git a/src/core/tls.cpp b/src/core/tls.cpp
+index 0e04c08..3306fc6 100644
+--- a/src/core/tls.cpp
++++ b/src/core/tls.cpp
+@@ -1,6 +1,8 @@
+ // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <array>
++#include <csignal>
+ #include <mutex>
+ #include "common/arch.h"
+ #include "common/assert.h"
+@@ -229,6 +231,17 @@ Tcb* GetTcbBase() {
+ thread_local std::once_flag init_tls_flag;
+ 
+ void InitializeTLS() {
++#if defined(__linux__) && defined(ARCH_X86_64)
++    static thread_local std::array<char, 65536> host_signal_stack;
++    static thread_local bool signal_stack_ready = false;
++    if (!signal_stack_ready) {
++        stack_t stack{};
++        stack.ss_sp = host_signal_stack.data();
++        stack.ss_size = host_signal_stack.size();
++        ASSERT_MSG(sigaltstack(&stack, nullptr) == 0, "Failed to install host signal stack");
++        signal_stack_ready = true;
++    }
++#endif
+     std::call_once(init_tls_flag, [] { SetTcbBase(Libraries::Kernel::g_curthread->tcb); });
+ }
+ 

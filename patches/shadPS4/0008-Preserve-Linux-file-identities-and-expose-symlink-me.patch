@@ -1,0 +1,308 @@
+From bf96b33d43c3ebbe842486b42944203d7892fb00 Mon Sep 17 00:00:00 2001
+From: OrbisWinPrototype <orbis-win@localhost>
+Date: Fri, 30 Oct 2026 16:40:20 -0300
+Subject: [PATCH] Preserve Linux file identities and expose symlink metadata
+
+---
+ src/core/file_sys/fs.cpp                  |  30 +++++
+ src/core/file_sys/fs.h                    |   7 ++
+ src/core/libraries/kernel/file_system.cpp | 136 ++++++++++++++++++++++
+ src/core/libraries/net/net_kernel.cpp     |   6 +-
+ 4 files changed, 177 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/file_sys/fs.cpp b/src/core/file_sys/fs.cpp
+index dd82bd9..05f1ff3 100644
+--- a/src/core/file_sys/fs.cpp
++++ b/src/core/file_sys/fs.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <map>
+ #include <unordered_set>
+ #include "common/assert.h"
+ #include "common/logging/log.h"
+@@ -15,6 +16,35 @@
+ 
+ namespace Core::FileSys {
+ 
++namespace {
++struct IdentityNamespace {
++    std::map<u64, u32> values;
++    std::map<u32, u64> owners;
++    u32 next = 1;
++
++    u32 Get(u64 native) {
++        if (const auto found = values.find(native); found != values.end()) {
++            return found->second;
++        }
++        u32 value = static_cast<u32>(native);
++        while (!value || owners.contains(value)) {
++            value = next++;
++        }
++        owners[value] = native;
++        values[native] = value;
++        return value;
++    }
++};
++std::mutex identity_mutex;
++IdentityNamespace host_devices;
++std::map<u64, IdentityNamespace> host_inodes;
++} // namespace
++
++HostFileIdentity MapHostFileIdentity(u64 device, u64 inode) {
++    std::scoped_lock lock{identity_mutex};
++    return {host_devices.Get(device), inode ? host_inodes[device].Get(inode) : 0};
++}
++
+ // Iterates a pre-collected entry list produced by merging the backend stack.
+ class MergedDirectory final : public IDirectory {
+ public:
+diff --git a/src/core/file_sys/fs.h b/src/core/file_sys/fs.h
+index 9ae98ca..fcec76d 100644
+--- a/src/core/file_sys/fs.h
++++ b/src/core/file_sys/fs.h
+@@ -18,6 +18,12 @@
+ 
+ namespace Core::FileSys {
+ 
++struct HostFileIdentity {
++    u32 device;
++    u32 inode;
++};
++HostFileIdentity MapHostFileIdentity(u64 device, u64 inode);
++
+ /// Builds the path of an overlay that sits next to a game
+ [[nodiscard]] std::filesystem::path OverlayPath(const std::filesystem::path& base,
+                                                 std::string_view suffix);
+@@ -144,6 +150,7 @@ struct File {
+     std::filesystem::path m_host_name;
+     std::string m_guest_name;
+     std::unique_ptr<IFile> handle;
++    std::unique_ptr<Common::FS::IOFile> directory_metadata;
+     std::mutex m_mutex;
+     std::shared_ptr<Directories::BaseDirectory> directory; // only valid for type == Directory
+     std::shared_ptr<Devices::BaseDevice> device;           // only valid for type == Device
+diff --git a/src/core/libraries/kernel/file_system.cpp b/src/core/libraries/kernel/file_system.cpp
+index 3ebd107..21d2ffb 100644
+--- a/src/core/libraries/kernel/file_system.cpp
++++ b/src/core/libraries/kernel/file_system.cpp
+@@ -13,6 +13,10 @@
+ #include <ranges>
+ #include <thread>
+ #include <vector>
++#ifdef __linux__
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
+ #include <magic_enum/magic_enum.hpp>
+ 
+ #include "common/assert.h"
+@@ -89,6 +93,48 @@ static std::map<std::string, FactoryDevice> available_device = {
+ 
+ namespace Libraries::Kernel {
+ 
++#ifdef __linux__
++static bool HostBackedPath(const char* path) {
++    const auto* mount = Common::Singleton<Core::FileSys::MntPoints>::Instance()->GetMount(path);
++    return mount && !mount->backends.empty() &&
++           std::ranges::all_of(mount->backends, [](const auto& backend) {
++               return backend->RootHostPath().has_value();
++           });
++}
++
++static void ConvertHostStat(OrbisKernelStat& output, const struct stat& input) {
++    output = {};
++    const auto identity = Core::FileSys::MapHostFileIdentity(input.st_dev, input.st_ino);
++    output.st_dev = identity.device;
++    output.st_ino = identity.inode;
++    output.st_mode = input.st_mode;
++    output.st_nlink = static_cast<u16>(std::min<u64>(input.st_nlink, UINT16_MAX));
++    output.st_uid = input.st_uid;
++    output.st_gid = input.st_gid;
++    output.st_rdev = input.st_rdev;
++    output.st_size = input.st_size;
++    output.st_blocks = input.st_blocks;
++    output.st_blksize = input.st_blksize;
++    output.st_atim = {input.st_atim.tv_sec, input.st_atim.tv_nsec};
++    output.st_mtim = {input.st_mtim.tv_sec, input.st_mtim.tv_nsec};
++    output.st_ctim = {input.st_ctim.tv_sec, input.st_ctim.tv_nsec};
++}
++
++static std::optional<s32> HostPathStat(const char* path, OrbisKernelStat* output, bool follow) {
++    if (!HostBackedPath(path)) {
++        return std::nullopt;
++    }
++    const auto host = Common::Singleton<Core::FileSys::MntPoints>::Instance()->GetHostPath(path);
++    struct stat native;
++    if ((follow ? ::stat(host.c_str(), &native) : ::lstat(host.c_str(), &native)) < 0) {
++        SetPosixErrno(errno);
++        return -1;
++    }
++    ConvertHostStat(*output, native);
++    return 0;
++}
++#endif
++
+ s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
+     LOG_INFO(Kernel_Fs, "path = {} flags = {:#x} mode = {:#o}", raw_path, flags, mode);
+ 
+@@ -219,6 +265,15 @@ s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
+         }
+ 
+         file->type = Core::FileSys::FileType::Directory;
++#ifdef __linux__
++        if (HostBackedPath(file->m_guest_name.c_str())) {
++            auto metadata = std::make_unique<Common::FS::IOFile>(file->m_host_name,
++                                                                 Common::FS::FileAccessMode::Read);
++            if (metadata->IsOpen()) {
++                file->directory_metadata = std::move(metadata);
++            }
++        }
++#endif
+         file->is_opened = true;
+         if (file->m_guest_name.starts_with("/app0")) {
+             // TODO: Properly identify type for paths like "/app0/.."
+@@ -883,12 +938,21 @@ s32 PS4_SYSV_ABI posix_chdir(const char* path) {
+ }
+ 
+ s32 PS4_SYSV_ABI posix_stat(const char* path, OrbisKernelStat* sb) {
++    if (!path || !sb) {
++        *__Error() = POSIX_EFAULT;
++        return -1;
++    }
+     LOG_DEBUG(Kernel_Fs, "(PARTIAL) path = {}", path);
+     if (strlen(path) > 255) {
+         *__Error() = POSIX_ENAMETOOLONG;
+         return -1;
+     }
+     auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
++#ifdef __linux__
++    if (const auto result = HostPathStat(path, sb, true)) {
++        return *result;
++    }
++#endif
+     const auto path_name = mnt->GetHostPath(path);
+     std::memset(sb, 0, sizeof(OrbisKernelStat));
+ 
+@@ -959,7 +1023,51 @@ s32 PS4_SYSV_ABI posix_stat(const char* path, OrbisKernelStat* sb) {
+ }
+ 
+ s32 PS4_SYSV_ABI posix_lstat(const char* path, OrbisKernelStat* sb) {
++#ifdef __linux__
++    if (!path || !sb) {
++        *__Error() = POSIX_EFAULT;
++        return -1;
++    }
++    if (strlen(path) > 255) {
++        *__Error() = POSIX_ENAMETOOLONG;
++        return -1;
++    }
++    if (const auto result = HostPathStat(path, sb, false)) {
++        return *result;
++    }
++    *__Error() = POSIX_EOPNOTSUPP;
++    return -1;
++#else
+     return posix_stat(path, sb);
++#endif
++}
++
++s64 PS4_SYSV_ABI posix_readlink(const char* path, char* buffer, u64 bytes) {
++    if (!path || !buffer) {
++        *__Error() = POSIX_EFAULT;
++        return -1;
++    }
++    if (!bytes || bytes > INT64_MAX) {
++        *__Error() = POSIX_EINVAL;
++        return -1;
++    }
++    if (strlen(path) > 255) {
++        *__Error() = POSIX_ENAMETOOLONG;
++        return -1;
++    }
++#ifdef __linux__
++    if (HostBackedPath(path)) {
++        const auto host =
++            Common::Singleton<Core::FileSys::MntPoints>::Instance()->GetHostPath(path);
++        const auto result = ::readlink(host.c_str(), buffer, bytes);
++        if (result < 0) {
++            SetPosixErrno(errno);
++        }
++        return result;
++    }
++#endif
++    *__Error() = POSIX_EOPNOTSUPP;
++    return -1;
+ }
+ 
+ s32 PS4_SYSV_ABI sceKernelStat(const char* path, OrbisKernelStat* sb) {
+@@ -1005,6 +1113,21 @@ s32 PS4_SYSV_ABI fstat(s32 fd, OrbisKernelStat* sb) {
+         *__Error() = POSIX_EBADF;
+         return -1;
+     }
++#ifdef __linux__
++    auto* metadata = file->GetHostFile();
++    if (!metadata && file->directory_metadata) {
++        metadata = file->directory_metadata.get();
++    }
++    if (metadata && metadata->IsOpen()) {
++        struct stat native;
++        if (::fstat(fileno(metadata->file), &native) < 0) {
++            SetPosixErrno(errno);
++            return -1;
++        }
++        ConvertHostStat(*sb, native);
++        return 0;
++    }
++#endif
+     std::memset(sb, 0, sizeof(OrbisKernelStat));
+ 
+     switch (file->type) {
+@@ -1442,6 +1565,16 @@ s32 PS4_SYSV_ABI posix_rename(const char* from, const char* to) {
+     const bool src_is_dir = fs::is_directory(src_path);
+     const bool dst_is_dir = fs::is_directory(dst_path);
+ 
++#ifdef __linux__
++    if (HostBackedPath(from) && HostBackedPath(to)) {
++        if (::rename(src_path.c_str(), dst_path.c_str()) < 0) {
++            SetPosixErrno(errno);
++            return -1;
++        }
++        return 0;
++    }
++#endif
++
+     if (fs::exists(dst_path)) {
+         if (src_is_dir && !dst_is_dir) {
+             *__Error() = POSIX_ENOTDIR;
+@@ -1945,6 +2078,9 @@ s32 PS4_SYSV_ABI posix_pipe(s32* descriptors) {
+ }
+ 
+ void RegisterFileSystem(Core::Loader::SymbolsResolver* sym) {
++    LIB_FUNCTION("pd02UI9TbOA", "libkernel", 1, "libkernel", posix_readlink);
++    LIB_FUNCTION("pd02UI9TbOA", "libkernel_sys", 1, "libkernel_sys", posix_readlink);
++    LIB_FUNCTION("pd02UI9TbOA", "libScePosix", 1, "libkernel", posix_readlink);
+     LIB_FUNCTION("I7ImcLds-uU", "libkernel", 1, "libkernel", posix_readv);
+     LIB_FUNCTION("I7ImcLds-uU", "libScePosix", 1, "libkernel", posix_readv);
+     LIB_FUNCTION("Z2aKdxzS4KE", "libkernel", 1, "libkernel", posix_writev);
+diff --git a/src/core/libraries/net/net_kernel.cpp b/src/core/libraries/net/net_kernel.cpp
+index ce14198..024b0a9 100644
+--- a/src/core/libraries/net/net_kernel.cpp
++++ b/src/core/libraries/net/net_kernel.cpp
+@@ -191,8 +191,10 @@ s32 KernelFstat(s32 fd, Libraries::Kernel::OrbisKernelStat* sb) {
+             return PosixError(ToOrbisErrno(result.error));
+         }
+         sb->st_mode = 0010000u | 0600u;
+-        sb->st_dev = info.identity.device;
+-        sb->st_ino = info.identity.inode;
++        const auto identity =
++            Core::FileSys::MapHostFileIdentity(info.identity.device, info.identity.inode);
++        sb->st_dev = identity.device;
++        sb->st_ino = identity.inode;
+     }
+     sb->st_nlink = 1;
+     sb->st_blksize = 4096;
+-- 
+2.51.0.windows.2
+

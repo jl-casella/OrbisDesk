@@ -1,0 +1,4 @@
+LIBRARY testmath.dll
+EXPORTS
+    Scale @7
+    OrdinalScale @11 NONAME

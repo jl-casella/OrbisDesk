@@ -1,0 +1,314 @@
+From f7d909a85edd6ea9f7e834fca4eca1c8a2be1a77 Mon Sep 17 00:00:00 2001
+From: Orbis Win Prototype <orbis-win@localhost>
+Date: Fri, 30 Oct 2026 12:59:48 +0000
+Subject: [PATCH 4/5] Share open file descriptions and track descriptor flags
+
+---
+ src/core/file_sys/fs.cpp                  | 58 ++++++++++---
+ src/core/file_sys/fs.h                    |  7 +-
+ src/core/libraries/kernel/file_system.cpp | 99 ++++++++++++++++++++++-
+ 3 files changed, 149 insertions(+), 15 deletions(-)
+
+diff --git a/src/core/file_sys/fs.cpp b/src/core/file_sys/fs.cpp
+index 3b4817a..77bdcae 100644
+--- a/src/core/file_sys/fs.cpp
++++ b/src/core/file_sys/fs.cpp
+@@ -606,7 +606,7 @@ std::optional<std::vector<u8>> MntPoints::ReadFile(std::string_view guest_path)
+ int HandleTable::CreateHandle() {
+     std::scoped_lock lock{m_mutex};
+ 
+-    auto* file = new File{};
++    auto file = std::make_shared<File>();
+     file->is_opened = false;
+ 
+     int existingFilesNum = m_files.size();
+@@ -614,18 +614,55 @@ int HandleTable::CreateHandle() {
+     for (int index = 0; index < existingFilesNum; index++) {
+         if (m_files.at(index) == nullptr) {
+             m_files[index] = file;
++            m_descriptor_flags[index] = 0;
+             return index;
+         }
+     }
+ 
+     m_files.push_back(file);
++    m_descriptor_flags.push_back(0);
+     return m_files.size() - 1;
+ }
+ 
+ void HandleTable::DeleteHandle(int d) {
+     std::scoped_lock lock{m_mutex};
+-    delete m_files.at(d);
+-    m_files[d] = nullptr;
++    m_files.at(d).reset();
++    m_descriptor_flags.at(d) = 0;
++}
++
++int HandleTable::DuplicateHandle(int d) {
++    std::scoped_lock lock{m_mutex};
++    if (d < 0 || d >= m_files.size() || !m_files[d]) {
++        return -1;
++    }
++    auto file = m_files[d];
++    for (int index = 0; index < m_files.size(); ++index) {
++        if (!m_files[index]) {
++            m_files[index] = file;
++            m_descriptor_flags[index] = 0;
++            return index;
++        }
++    }
++    m_files.push_back(file);
++    m_descriptor_flags.push_back(0);
++    return m_files.size() - 1;
++}
++
++int HandleTable::GetDescriptorFlags(int d) {
++    std::scoped_lock lock{m_mutex};
++    if (d < 0 || d >= m_files.size() || !m_files[d]) {
++        return -1;
++    }
++    return m_descriptor_flags[d];
++}
++
++int HandleTable::SetDescriptorFlags(int d, u32 flags) {
++    std::scoped_lock lock{m_mutex};
++    if (d < 0 || d >= m_files.size() || !m_files[d]) {
++        return -1;
++    }
++    m_descriptor_flags[d] = flags;
++    return 0;
+ }
+ 
+ File* HandleTable::GetFile(int d) {
+@@ -633,7 +670,7 @@ File* HandleTable::GetFile(int d) {
+     if (d < 0 || d >= m_files.size()) {
+         return nullptr;
+     }
+-    return m_files.at(d);
++    return m_files.at(d).get();
+ }
+ 
+ File* HandleTable::GetSocket(int d) {
+@@ -641,7 +678,7 @@ File* HandleTable::GetSocket(int d) {
+     if (d < 0 || d >= m_files.size()) {
+         return nullptr;
+     }
+-    auto file = m_files.at(d);
++    auto* file = m_files.at(d).get();
+     if (!file) {
+         return nullptr;
+     }
+@@ -655,7 +692,7 @@ std::vector<int> HandleTable::GetSocketHandles() {
+     std::scoped_lock lock{m_mutex};
+     std::vector<int> handles;
+     for (int index = 0; index < m_files.size(); index++) {
+-        const auto* file = m_files.at(index);
++        const auto* file = m_files.at(index).get();
+         if (file && file->type == Core::FileSys::FileType::Socket) {
+             handles.push_back(index);
+         }
+@@ -665,9 +702,9 @@ std::vector<int> HandleTable::GetSocketHandles() {
+ 
+ File* HandleTable::GetFile(const std::filesystem::path& host_name) {
+     std::scoped_lock lock{m_mutex};
+-    for (auto* file : m_files) {
++    for (const auto& file : m_files) {
+         if (file != nullptr && file->m_host_name == host_name) {
+-            return file;
++            return file.get();
+         }
+     }
+     return nullptr;
+@@ -691,7 +728,8 @@ void HandleTable::CreateStdHandles() {
+ 
+ int HandleTable::GetFileDescriptor(File* file) {
+     std::scoped_lock lock{m_mutex};
+-    auto it = std::find(m_files.begin(), m_files.end(), file);
++    auto it =
++        std::ranges::find_if(m_files, [file](const auto& entry) { return entry.get() == file; });
+ 
+     if (it != m_files.end()) {
+         return std::distance(m_files.begin(), it);
+@@ -701,7 +739,7 @@ int HandleTable::GetFileDescriptor(File* file) {
+ 
+ void HandleTable::FlushAll() {
+     std::scoped_lock lock{m_mutex};
+-    for (auto* file : m_files) {
++    for (const auto& file : m_files) {
+         if (file != nullptr && file->is_opened) {
+             std::scoped_lock lk{file->m_mutex};
+             if (file->type == FileType::Device && file->device) {
+diff --git a/src/core/file_sys/fs.h b/src/core/file_sys/fs.h
+index 1d052d5..5208bce 100644
+--- a/src/core/file_sys/fs.h
++++ b/src/core/file_sys/fs.h
+@@ -140,6 +140,7 @@ enum class FileType {
+ struct File {
+     std::atomic_bool is_opened{};
+     std::atomic<FileType> type{FileType::Regular};
++    std::atomic<u32> status_flags{};
+     std::filesystem::path m_host_name;
+     std::string m_guest_name;
+     std::unique_ptr<IFile> handle;
+@@ -190,6 +191,9 @@ public:
+     virtual ~HandleTable() = default;
+ 
+     int CreateHandle();
++    int DuplicateHandle(int d);
++    int GetDescriptorFlags(int d);
++    int SetDescriptorFlags(int d, u32 flags);
+     void DeleteHandle(int d);
+     File* GetFile(int d);
+     File* GetSocket(int d);
+@@ -201,7 +205,8 @@ public:
+     void FlushAll();
+ 
+ private:
+-    std::vector<File*> m_files;
++    std::vector<std::shared_ptr<File>> m_files;
++    std::vector<u32> m_descriptor_flags;
+     std::mutex m_mutex;
+ };
+ 
+diff --git a/src/core/libraries/kernel/file_system.cpp b/src/core/libraries/kernel/file_system.cpp
+index ee4fa65..ec66628 100644
+--- a/src/core/libraries/kernel/file_system.cpp
++++ b/src/core/libraries/kernel/file_system.cpp
+@@ -37,7 +37,9 @@
+ #include "core/libraries/kernel/posix_error.h"
+ #include "core/libraries/libs.h"
+ #include "core/libraries/net/net_kernel.h"
++#include "core/libraries/net/net_translate.h"
+ #include "core/memory.h"
++#include "core/net/guest_net.h"
+ #include "kernel.h"
+ 
+ #ifdef _WIN32
+@@ -134,6 +136,8 @@ s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
+     const std::string& path = *sanitized_path;
+     u32 handle = h->CreateHandle();
+     auto* file = h->GetFile(handle);
++    file->status_flags = flags;
++    h->SetDescriptorFlags(handle, (flags & 0x00100000) ? 1 : 0);
+ 
+     if (path.starts_with("/dev/")) {
+         for (const auto& [prefix, factory] : available_device) {
+@@ -298,10 +302,6 @@ s32 PS4_SYSV_ABI close(s32 fd) {
+     if (file->type == Core::FileSys::FileType::Socket) {
+         return Libraries::Net::KernelClose(fd);
+     }
+-    if (file->type == Core::FileSys::FileType::Regular) {
+-        file->handle.reset();
+-    }
+-    file->is_opened = false;
+     LOG_INFO(Kernel_Fs, "Closing {}", file->m_guest_name);
+     // FIXME: Lock file mutex before deleting it?
+     h->DeleteHandle(fd);
+@@ -312,6 +312,91 @@ s32 PS4_SYSV_ABI posix_close(s32 fd) {
+     return close(fd);
+ }
+ 
++s32 PS4_SYSV_ABI posix_dup(s32 fd) {
++    auto* table = Common::Singleton<Core::FileSys::HandleTable>::Instance();
++    const auto* file = table->GetFile(fd);
++    if (!file) {
++        *__Error() = POSIX_EBADF;
++        return -1;
++    }
++    if (file->type == Core::FileSys::FileType::Socket ||
++        file->type == Core::FileSys::FileType::Equeue) {
++        *__Error() = POSIX_EOPNOTSUPP;
++        return -1;
++    }
++    return table->DuplicateHandle(fd);
++}
++
++s32 PS4_SYSV_ABI posix_fcntl(s32 fd, s32 command, u64 argument) {
++    auto* table = Common::Singleton<Core::FileSys::HandleTable>::Instance();
++    auto* file = table->GetFile(fd);
++    if (!file) {
++        *__Error() = POSIX_EBADF;
++        return -1;
++    }
++    switch (command) {
++    case 0:
++        if (!argument) {
++            return posix_dup(fd);
++        }
++        break;
++    case 1:
++        return table->GetDescriptorFlags(fd);
++    case 2:
++        if (argument & ~u64{1}) {
++            *__Error() = POSIX_EINVAL;
++            return -1;
++        }
++        return table->SetDescriptorFlags(fd, argument);
++    case 3:
++        if (file->type == Core::FileSys::FileType::Socket) {
++            Core::Net::SocketInfo info{};
++            const auto result = Core::Net::SocketGetInfo(fd, &info);
++            if (result.error != Core::Net::Host::Error::Ok) {
++                *__Error() = Libraries::Net::ToOrbisErrno(result.error);
++                return -1;
++            }
++            return ORBIS_KERNEL_O_RDWR | (info.nonblocking ? ORBIS_KERNEL_O_NONBLOCK : 0);
++        }
++        return file->status_flags & (3 | ORBIS_KERNEL_O_NONBLOCK | ORBIS_KERNEL_O_APPEND);
++    case 4: {
++        if (argument & ~u64{3 | ORBIS_KERNEL_O_NONBLOCK | ORBIS_KERNEL_O_APPEND}) {
++            break;
++        }
++        if (file->type == Core::FileSys::FileType::Socket) {
++            if (argument & ORBIS_KERNEL_O_APPEND) {
++                break;
++            }
++            const auto result =
++                Core::Net::SocketSetNonBlocking(fd, argument & ORBIS_KERNEL_O_NONBLOCK);
++            if (result.error != Core::Net::Host::Error::Ok) {
++                *__Error() = Libraries::Net::ToOrbisErrno(result.error);
++                return -1;
++            }
++        } else if (file->type != Core::FileSys::FileType::Regular ||
++                   ((argument ^ file->status_flags) & ORBIS_KERNEL_O_APPEND)) {
++            break;
++        }
++        file->status_flags =
++            (file->status_flags & ~ORBIS_KERNEL_O_NONBLOCK) | (argument & ORBIS_KERNEL_O_NONBLOCK);
++        return 0;
++    }
++    }
++    *__Error() = POSIX_EOPNOTSUPP;
++    return -1;
++}
++
++s32 PS4_SYSV_ABI posix_fstatfs(s32 fd, void* output) {
++    if (!Common::Singleton<Core::FileSys::HandleTable>::Instance()->GetFile(fd)) {
++        *__Error() = POSIX_EBADF;
++    } else if (!output) {
++        *__Error() = POSIX_EFAULT;
++    } else {
++        *__Error() = POSIX_EOPNOTSUPP;
++    }
++    return -1;
++}
++
+ s32 PS4_SYSV_ABI sceKernelClose(s32 fd) {
+     s32 result = close(fd);
+     if (result < 0) {
+@@ -1765,6 +1850,12 @@ s32 PS4_SYSV_ABI posix_select(s32 nfds, GuestFdSet* readfds, GuestFdSet* writefd
+ }
+ 
+ void RegisterFileSystem(Core::Loader::SymbolsResolver* sym) {
++    LIB_FUNCTION("iiQjzvfWDq0", "libkernel", 1, "libkernel", posix_dup);
++    LIB_FUNCTION("iiQjzvfWDq0", "libScePosix", 1, "libkernel", posix_dup);
++    LIB_FUNCTION("8nY19bKoiZk", "libkernel", 1, "libkernel", posix_fcntl);
++    LIB_FUNCTION("8nY19bKoiZk", "libScePosix", 1, "libkernel", posix_fcntl);
++    LIB_FUNCTION("17Mfe1B3X6U", "libkernel", 1, "libkernel", posix_fstatfs);
++    LIB_FUNCTION("+rWFNYiNaEM", "libkernel", 1, "libkernel", posix_fstatfs);
+     LIB_FUNCTION("6c3rCVE-fTU", "libkernel", 1, "libkernel", open);
+     LIB_FUNCTION("wuCroIGjt2g", "libScePosix", 1, "libkernel", posix_open);
+     LIB_FUNCTION("wuCroIGjt2g", "libkernel", 1, "libkernel", posix_open);
+-- 
+2.51.0.windows.2
+

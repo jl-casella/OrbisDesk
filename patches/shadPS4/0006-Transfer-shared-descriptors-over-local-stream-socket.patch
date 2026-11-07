@@ -1,0 +1,665 @@
+From 7e41e4ec8c610c1ed0955db96410b8eb25650b5d Mon Sep 17 00:00:00 2001
+From: Orbis Win Prototype <orbis-win@localhost>
+Date: Fri, 30 Oct 2026 13:38:18 -0300
+Subject: [PATCH] Transfer shared descriptors over local stream socket pairs
+
+---
+ src/core/file_sys/fs.cpp                  |  13 +-
+ src/core/file_sys/fs.h                    |   2 +
+ src/core/libraries/kernel/file_system.cpp |  18 ++
+ src/core/libraries/net/net.cpp            | 145 +++++++++++++++-
+ src/core/net/guest_net.cpp                | 199 +++++++++++++++++++---
+ src/core/net/guest_net.h                  |  19 ++-
+ 6 files changed, 365 insertions(+), 31 deletions(-)
+
+diff --git a/src/core/file_sys/fs.cpp b/src/core/file_sys/fs.cpp
+index 77bdcae..dd82bd9 100644
+--- a/src/core/file_sys/fs.cpp
++++ b/src/core/file_sys/fs.cpp
+@@ -631,11 +631,22 @@ void HandleTable::DeleteHandle(int d) {
+ }
+ 
+ int HandleTable::DuplicateHandle(int d) {
++    return InsertHandle(GetFileReference(d));
++}
++
++std::shared_ptr<File> HandleTable::GetFileReference(int d) {
+     std::scoped_lock lock{m_mutex};
+     if (d < 0 || d >= m_files.size() || !m_files[d]) {
++        return nullptr;
++    }
++    return m_files[d];
++}
++
++int HandleTable::InsertHandle(std::shared_ptr<File> file) {
++    if (!file) {
+         return -1;
+     }
+-    auto file = m_files[d];
++    std::scoped_lock lock{m_mutex};
+     for (int index = 0; index < m_files.size(); ++index) {
+         if (!m_files[index]) {
+             m_files[index] = file;
+diff --git a/src/core/file_sys/fs.h b/src/core/file_sys/fs.h
+index 5208bce..9ae98ca 100644
+--- a/src/core/file_sys/fs.h
++++ b/src/core/file_sys/fs.h
+@@ -192,6 +192,8 @@ public:
+ 
+     int CreateHandle();
+     int DuplicateHandle(int d);
++    std::shared_ptr<File> GetFileReference(int d);
++    int InsertHandle(std::shared_ptr<File> file);
+     int GetDescriptorFlags(int d);
+     int SetDescriptorFlags(int d, u32 flags);
+     void DeleteHandle(int d);
+diff --git a/src/core/libraries/kernel/file_system.cpp b/src/core/libraries/kernel/file_system.cpp
+index ec66628..542a980 100644
+--- a/src/core/libraries/kernel/file_system.cpp
++++ b/src/core/libraries/kernel/file_system.cpp
+@@ -319,6 +319,17 @@ s32 PS4_SYSV_ABI posix_dup(s32 fd) {
+         *__Error() = POSIX_EBADF;
+         return -1;
+     }
++    if (file->type == Core::FileSys::FileType::Socket) {
++        auto reference = Core::Net::SocketExport(fd);
++        if (reference) {
++            const auto result = Core::Net::SocketImport(std::move(reference));
++            if (result.error == Core::Net::Host::Error::Ok) {
++                return static_cast<s32>(result.value);
++            }
++            *__Error() = Libraries::Net::ToOrbisErrno(result.error);
++            return -1;
++        }
++    }
+     if (file->type == Core::FileSys::FileType::Socket ||
+         file->type == Core::FileSys::FileType::Equeue) {
+         *__Error() = POSIX_EOPNOTSUPP;
+@@ -1849,7 +1860,14 @@ s32 PS4_SYSV_ABI posix_select(s32 nfds, GuestFdSet* readfds, GuestFdSet* writefd
+     return ready;
+ }
+ 
++s32 PS4_SYSV_ABI posix_pipe(s32* descriptors) {
++    *__Error() = descriptors ? POSIX_EOPNOTSUPP : POSIX_EFAULT;
++    return -1;
++}
++
+ void RegisterFileSystem(Core::Loader::SymbolsResolver* sym) {
++    LIB_FUNCTION("-Jp7F+pXxNg", "libkernel", 1, "libkernel", posix_pipe);
++    LIB_FUNCTION("-Jp7F+pXxNg", "libScePosix", 1, "libkernel", posix_pipe);
+     LIB_FUNCTION("iiQjzvfWDq0", "libkernel", 1, "libkernel", posix_dup);
+     LIB_FUNCTION("iiQjzvfWDq0", "libScePosix", 1, "libkernel", posix_dup);
+     LIB_FUNCTION("8nY19bKoiZk", "libkernel", 1, "libkernel", posix_fcntl);
+diff --git a/src/core/libraries/net/net.cpp b/src/core/libraries/net/net.cpp
+index fe35f10..e23f48d 100644
+--- a/src/core/libraries/net/net.cpp
++++ b/src/core/libraries/net/net.cpp
+@@ -23,6 +23,8 @@
+ #include <fmt/format.h>
+ 
+ #include "common/logging/log.h"
++#include "common/singleton.h"
++#include "core/file_sys/fs.h"
+ #include "core/libraries/error_codes.h"
+ #include "core/libraries/kernel/orbis_error.h"
+ #include "core/libraries/kernel/threads.h"
+@@ -2019,6 +2021,117 @@ s32 PS4_SYSV_ABI sceNetRecvfrom(OrbisNetId s, void* buf, u64 len, s32 flags, Orb
+     return r;
+ }
+ 
++namespace {
++
++struct ControlHeader {
++    u32 length;
++    s32 level;
++    s32 type;
++    u32 padding;
++};
++
++constexpr s32 ControlTruncated = 0x20;
++constexpr size_t MaxPassedDescriptors = 253;
++
++int ReadRights(const OrbisNetMsghdr& msg, std::vector<Core::Net::PassedDescriptor>& rights) {
++    if (!msg.msg_controllen) {
++        return 0;
++    }
++    if (!msg.msg_control) {
++        return ORBIS_NET_EFAULT;
++    }
++    if (msg.msg_controllen > 1024 * 1024) {
++        return ORBIS_NET_EMSGSIZE;
++    }
++    auto* table = Common::Singleton<Core::FileSys::HandleTable>::Instance();
++    size_t offset = 0;
++    while (offset < msg.msg_controllen) {
++        if (msg.msg_controllen - offset < sizeof(ControlHeader)) {
++            return ORBIS_NET_EINVAL;
++        }
++        ControlHeader header;
++        const auto* bytes = static_cast<const u8*>(msg.msg_control) + offset;
++        std::memcpy(&header, bytes, sizeof(header));
++        if (header.length < sizeof(header) || header.length > msg.msg_controllen - offset ||
++            (header.length - sizeof(header)) % sizeof(s32)) {
++            return ORBIS_NET_EINVAL;
++        }
++        if (header.level != ORBIS_NET_SOL_SOCKET || header.type != 1) {
++            return ORBIS_NET_EOPNOTSUPP;
++        }
++        for (size_t position = sizeof(header); position < header.length; position += sizeof(s32)) {
++            if (rights.size() == MaxPassedDescriptors) {
++                return ORBIS_NET_EMSGSIZE;
++            }
++            s32 id;
++            std::memcpy(&id, bytes + position, sizeof(id));
++            Core::Net::PassedDescriptor reference;
++            reference.socket = Core::Net::SocketExport(id);
++            if (!reference.socket) {
++                reference.file = table->GetFileReference(id);
++                if (!reference.file) {
++                    return ORBIS_NET_EBADF;
++                }
++                if (reference.file->type == Core::FileSys::FileType::Socket ||
++                    reference.file->type == Core::FileSys::FileType::Equeue) {
++                    return ORBIS_NET_EOPNOTSUPP;
++                }
++            }
++            rights.push_back(std::move(reference));
++        }
++        const size_t aligned = (static_cast<size_t>(header.length) + 7) & ~size_t{7};
++        if (aligned >= msg.msg_controllen - offset) {
++            break;
++        }
++        offset += aligned;
++    }
++    return 0;
++}
++
++void WriteRights(OrbisNetMsghdr& msg, const std::vector<Core::Net::PassedDescriptor>& rights) {
++    const size_t capacity = msg.msg_control ? msg.msg_controllen : 0;
++    msg.msg_controllen = 0;
++    msg.msg_flags = 0;
++    if (rights.empty()) {
++        return;
++    }
++    const size_t count =
++        capacity >= sizeof(ControlHeader)
++            ? std::min(rights.size(), (capacity - sizeof(ControlHeader)) / sizeof(s32))
++            : 0;
++    std::vector<s32> installed;
++    auto* table = Common::Singleton<Core::FileSys::HandleTable>::Instance();
++    for (size_t index = 0; index < count; ++index) {
++        const auto& reference = rights[index];
++        const auto result = reference.socket
++                                ? Core::Net::SocketImport(reference.socket)
++                                : Core::Net::NetResult::Ok(table->InsertHandle(reference.file));
++        if (result.error != Error::Ok || result.value < 0) {
++            break;
++        }
++        installed.push_back(static_cast<s32>(result.value));
++    }
++    if (installed.size() < rights.size()) {
++        msg.msg_flags |= ControlTruncated;
++    }
++    if (!installed.empty()) {
++        ControlHeader header{
++            static_cast<u32>(sizeof(ControlHeader) + installed.size() * sizeof(s32)),
++            ORBIS_NET_SOL_SOCKET, 1, 0};
++        std::memcpy(msg.msg_control, &header, sizeof(header));
++        std::memcpy(static_cast<u8*>(msg.msg_control) + sizeof(header), installed.data(),
++                    installed.size() * sizeof(s32));
++        const size_t aligned = (header.length + 7) & ~size_t{7};
++        msg.msg_controllen = static_cast<u32>(std::min(capacity, aligned));
++        if (msg.msg_controllen > header.length) {
++            std::memset(static_cast<u8*>(msg.msg_control) + header.length, 0,
++                        msg.msg_controllen - header.length);
++        }
++    }
++}
++
++} // namespace
++
+ static s32 sceNetRecvmsgImpl(OrbisNetId s, OrbisNetMsghdr* msg, s32 flags) {
+     if (msg == nullptr) {
+         return SetErrno(ORBIS_NET_EFAULT);
+@@ -2031,9 +2144,19 @@ static s32 sceNetRecvmsgImpl(OrbisNetId s, OrbisNetMsghdr* msg, s32 flags) {
+         return SetErrno(e);
+     }
+     u32 namelen = msg->msg_name != nullptr ? msg->msg_namelen : 0;
+-    const s32 r = sceNetRecvfrom(s, buffer.data(), buffer.size(), flags,
+-                                 static_cast<OrbisNetSockaddr*>(msg->msg_name),
+-                                 msg->msg_name != nullptr ? &namelen : nullptr);
++    std::vector<Core::Net::PassedDescriptor> rights;
++    Core::Net::SocketInfo info{};
++    if (const auto result = Core::Net::SocketGetInfo(s, &info); result.error != Error::Ok) {
++        return Return(result);
++    }
++    const auto translated = ToHostMsgFlags(flags);
++    const bool direct = !info.p2p && !msg->msg_name;
++    const s32 r =
++        direct ? Return(Core::Net::SocketRecvFrom(s, buffer.data(), buffer.size(), translated.host,
++                                                  translated.dontwait, nullptr, nullptr, &rights))
++               : sceNetRecvfrom(s, buffer.data(), buffer.size(), flags,
++                                static_cast<OrbisNetSockaddr*>(msg->msg_name),
++                                msg->msg_name != nullptr ? &namelen : nullptr);
+     if (r < 0) {
+         return r;
+     }
+@@ -2045,8 +2168,7 @@ static s32 sceNetRecvmsgImpl(OrbisNetId s, OrbisNetMsghdr* msg, s32 flags) {
+         offset += chunk;
+     }
+     msg->msg_namelen = namelen;
+-    msg->msg_controllen = 0;
+-    msg->msg_flags = 0;
++    WriteRights(*msg, rights);
+     return r;
+ }
+ 
+@@ -2214,8 +2336,9 @@ static s32 sceNetSendmsgImpl(OrbisNetId s, const OrbisNetMsghdr* msg, s32 flags)
+     if (msg == nullptr) {
+         return SetErrno(ORBIS_NET_EFAULT);
+     }
+-    if (msg->msg_control != nullptr && msg->msg_controllen != 0) {
+-        return SetErrno(ORBIS_NET_EOPNOTSUPP);
++    std::vector<Core::Net::PassedDescriptor> rights;
++    if (const int error = ReadRights(*msg, rights); error != 0) {
++        return SetErrno(error);
+     }
+     // Gather into one buffer so a datagram goes out whole.
+     std::vector<u8> buffer;
+@@ -2227,6 +2350,14 @@ static s32 sceNetSendmsgImpl(OrbisNetId s, const OrbisNetMsghdr* msg, s32 flags)
+         std::memcpy(buffer.data() + offset, msg->msg_iov[i].iov_base, msg->msg_iov[i].iov_len);
+         offset += msg->msg_iov[i].iov_len;
+     }
++    if (!rights.empty()) {
++        const auto translated = ToHostMsgFlags(flags);
++        if (translated.unsupported || translated.crypto || translated.signature || msg->msg_name) {
++            return SetErrno(ORBIS_NET_EOPNOTSUPP);
++        }
++        return Return(Core::Net::SocketSendTo(s, buffer.data(), buffer.size(), translated.host,
++                                              translated.dontwait, nullptr, 0, rights));
++    }
+     return sceNetSendto(s, buffer.data(), buffer.size(), flags,
+                         static_cast<const OrbisNetSockaddr*>(msg->msg_name), msg->msg_namelen);
+ }
+diff --git a/src/core/net/guest_net.cpp b/src/core/net/guest_net.cpp
+index bed28aa..b87e9f8 100644
+--- a/src/core/net/guest_net.cpp
++++ b/src/core/net/guest_net.cpp
+@@ -5,9 +5,11 @@
+ #include <array>
+ #include <atomic>
+ #include <bit>
++#include <deque>
+ #include <memory>
+ #include <mutex>
+ #include <unordered_map>
++#include <unordered_set>
+ #include <utility>
+ #include <variant>
+ #include <vector>
+@@ -28,6 +30,23 @@ constexpr size_t MaxStreamSendChunk = 64 * 1024;
+ 
+ struct GuestEpoll;
+ 
++struct LocalControl {
++    u64 offset;
++    std::vector<PassedDescriptor> rights;
++};
++
++struct LocalChannel {
++    u64 sent = 0;
++    u64 received = 0;
++    std::deque<LocalControl> controls;
++};
++
++struct LocalPair {
++    std::array<LocalChannel, 2> channels;
++};
++
++std::recursive_mutex g_local_mutex;
++
+ enum class Side { Recv = 0, Send = 1 };
+ 
+ // A blocking call in progress, on the caller's stack.
+@@ -84,6 +103,9 @@ struct GuestSocket {
+     const std::shared_ptr<P2P::DatagramSocket> p2p_dgram;
+     const std::shared_ptr<P2P::StreamSocket> p2p_stream;
+ 
++    std::shared_ptr<LocalPair> local;
++    size_t local_side = 0;
++
+     std::atomic<bool> nonblocking{false};
+     std::atomic<bool> reuse_addr{false};
+     std::atomic<bool> reuse_port{false};
+@@ -110,6 +132,16 @@ struct GuestSocket {
+     std::vector<std::weak_ptr<GuestEpoll>> epolls;
+ };
+ 
++} // namespace
++
++struct SocketReference {
++    explicit SocketReference(std::shared_ptr<GuestSocket> value) : socket(std::move(value)) {}
++    ~SocketReference();
++    std::shared_ptr<GuestSocket> socket;
++};
++
++namespace {
++
+ struct GuestEpoll {
+     struct Registration {
+         u32 generation;
+@@ -150,9 +182,13 @@ struct ExternalObject {
+ 
+ class ObjectTable {
+ public:
+-    using Object = std::variant<std::shared_ptr<GuestSocket>, std::shared_ptr<GuestEpoll>,
++    using Object = std::variant<std::shared_ptr<SocketReference>, std::shared_ptr<GuestEpoll>,
+                                 std::shared_ptr<ExternalObject>>;
+ 
++    NetResult Insert(std::shared_ptr<GuestSocket> socket) {
++        return Insert(Object{std::make_shared<SocketReference>(std::move(socket))});
++    }
++
+     NetResult Insert(Object object) {
+         // Epolls don't count towards the limit.
+         const bool counted = !std::holds_alternative<std::shared_ptr<GuestEpoll>>(object);
+@@ -180,20 +216,26 @@ public:
+         if (it == objects_.end()) {
+             return nullptr;
+         }
+-        const auto* object = std::get_if<std::shared_ptr<T>>(&it->second.object);
+-        return object ? *object : nullptr;
++        if constexpr (std::is_same_v<T, GuestSocket>) {
++            const auto* object = std::get_if<std::shared_ptr<SocketReference>>(&it->second.object);
++            return object ? (*object)->socket : nullptr;
++        } else {
++            const auto* object = std::get_if<std::shared_ptr<T>>(&it->second.object);
++            return object ? *object : nullptr;
++        }
+     }
+ 
+     template <typename T>
+     std::shared_ptr<T> Remove(s32 id) {
+-        std::shared_ptr<T> removed;
++        using Stored = std::conditional_t<std::is_same_v<T, GuestSocket>, SocketReference, T>;
++        std::shared_ptr<Stored> removed;
+         {
+             std::scoped_lock lock{mutex_};
+             const auto it = objects_.find(id);
+             if (it == objects_.end()) {
+                 return nullptr;
+             }
+-            auto* object = std::get_if<std::shared_ptr<T>>(&it->second.object);
++            auto* object = std::get_if<std::shared_ptr<Stored>>(&it->second.object);
+             if (object == nullptr) {
+                 return nullptr;
+             }
+@@ -202,7 +244,11 @@ public:
+             objects_.erase(it);
+         }
+         Release(id);
+-        return removed;
++        if constexpr (std::is_same_v<T, GuestSocket>) {
++            return removed->socket;
++        } else {
++            return removed;
++        }
+     }
+ 
+     std::optional<NetObjectKind> Kind(s32 id) const {
+@@ -226,7 +272,8 @@ public:
+         std::vector<s32> ids;
+         std::scoped_lock lock{mutex_};
+         for (const auto& [id, entry] : objects_) {
+-            if (std::holds_alternative<std::shared_ptr<T>>(entry.object)) {
++            using Stored = std::conditional_t<std::is_same_v<T, GuestSocket>, SocketReference, T>;
++            if (std::holds_alternative<std::shared_ptr<Stored>>(entry.object)) {
+                 ids.push_back(id);
+             }
+         }
+@@ -516,6 +563,29 @@ std::shared_ptr<P2P::Transport> P2PTransportFor(int family) {
+ 
+ } // namespace
+ 
++SocketReference::~SocketReference() {
++    if (socket->local) {
++        std::scoped_lock lock{g_local_mutex};
++        socket->local->channels[socket->local_side].controls.clear();
++    }
++    {
++        std::scoped_lock lock{socket->wait_mutex};
++        socket->closing = true;
++        InterruptWaiters(*socket);
++    }
++    std::scoped_lock lock{socket->reg_mutex};
++    socket->closed = true;
++}
++
++std::shared_ptr<SocketReference> SocketExport(s32 id) {
++    return g_objects.Get<SocketReference>(id);
++}
++
++NetResult SocketImport(std::shared_ptr<SocketReference> reference) {
++    return reference ? g_objects.Insert(ObjectTable::Object{std::move(reference)})
++                     : NetResult::Fail(Error::BadF);
++}
++
+ void SetIdAllocator(IdAllocator allocator) {
+     g_objects.SetAllocator(std::move(allocator));
+ }
+@@ -637,6 +707,10 @@ NetResult SocketCreatePair(int family, int type, int protocol, s32 ids[2]) {
+     }
+     auto first = std::make_shared<GuestSocket>(natives[0], type, g_next_generation.fetch_add(1));
+     auto second = std::make_shared<GuestSocket>(natives[1], type, g_next_generation.fetch_add(1));
++    if (family == AF_UNIX && type == SOCK_STREAM) {
++        first->local = second->local = std::make_shared<LocalPair>();
++        second->local_side = 1;
++    }
+     const NetResult a = g_objects.Insert(std::move(first));
+     if (a.error != Error::Ok) {
+         return a;
+@@ -780,8 +854,34 @@ NetResult SocketAccept(s32 id, sockaddr* addr, socklen_t* len) {
+     return g_objects.Insert(std::move(c));
+ }
+ 
++namespace {
++
++bool ReachesLocalPair(const std::shared_ptr<LocalPair>& pair, const LocalPair* target,
++                      std::unordered_set<const LocalPair*>& visited) {
++    if (!pair || !visited.insert(pair.get()).second) {
++        return false;
++    }
++    if (pair.get() == target) {
++        return true;
++    }
++    for (const auto& channel : pair->channels) {
++        for (const auto& control : channel.controls) {
++            for (const auto& right : control.rights) {
++                if (right.socket &&
++                    ReachesLocalPair(right.socket->socket->local, target, visited)) {
++                    return true;
++                }
++            }
++        }
++    }
++    return false;
++}
++
++} // namespace
++
+ NetResult SocketSendTo(s32 id, const void* buf, size_t len, int host_flags, bool dontwait,
+-                       const sockaddr* addr, socklen_t addr_len) {
++                       const sockaddr* addr, socklen_t addr_len,
++                       std::span<const PassedDescriptor> rights) {
+     const auto s = g_objects.Get<GuestSocket>(id);
+     if (!s) {
+         return NetResult::Fail(Error::BadF);
+@@ -789,6 +889,12 @@ NetResult SocketSendTo(s32 id, const void* buf, size_t len, int host_flags, bool
+     if (s->IsP2P()) {
+         return NetResult::Fail(Error::Inval); // use P2PSocketSendTo
+     }
++    if (!rights.empty() && (!s->local || !len || host_flags || addr)) {
++        return NetResult::Fail(Error::OpNotSupp);
++    }
++    if (s->local && (host_flags & MSG_OOB)) {
++        return NetResult::Fail(Error::OpNotSupp);
++    }
+     if (s->type != SOCK_STREAM) {
+         // UDP/RAW sends never block on PS4. A full buffer silently drops the datagram.
+         if (ConsumePendingAbort(*s, Side::Send)) {
+@@ -811,13 +917,34 @@ NetResult SocketSendTo(s32 id, const void* buf, size_t len, int host_flags, bool
+     const auto* bytes = static_cast<const u8*>(buf);
+     return SendAll(*s, len, !dontwait && !s->nonblocking, s->type == SOCK_STREAM, [&](size_t sent) {
+         const size_t chunk = std::min(len - sent, MaxStreamSendChunk);
++        std::unique_lock lock{g_local_mutex, std::defer_lock};
++        if (s->local) {
++            lock.lock();
++            if (!sent) {
++                for (const auto& right : rights) {
++                    std::unordered_set<const LocalPair*> visited;
++                    if (right.socket &&
++                        ReachesLocalPair(right.socket->socket->local, s->local.get(), visited)) {
++                        return NetResult::Fail(Error::OpNotSupp);
++                    }
++                }
++            }
++        }
+         const auto io = Host::SendTo(s->native, bytes + sent, chunk, host_flags, addr, addr_len);
++        if (s->local && io.error == Error::Ok && io.value > 0) {
++            auto& channel = s->local->channels[1 - s->local_side];
++            if (!sent && !rights.empty()) {
++                channel.controls.push_back({channel.sent, {rights.begin(), rights.end()}});
++            }
++            channel.sent += io.value;
++        }
+         return NetResult{io.value, io.error};
+     });
+ }
+ 
+ NetResult SocketRecvFrom(s32 id, void* buf, size_t len, int host_flags, bool dontwait,
+-                         sockaddr* addr, socklen_t* addr_len) {
++                         sockaddr* addr, socklen_t* addr_len,
++                         std::vector<PassedDescriptor>* rights) {
+     const auto s = g_objects.Get<GuestSocket>(id);
+     if (!s) {
+         return NetResult::Fail(Error::BadF);
+@@ -828,14 +955,53 @@ NetResult SocketRecvFrom(s32 id, void* buf, size_t len, int host_flags, bool don
+     const bool blocking = !dontwait && !s->nonblocking;
+     // Host socket is non-blocking, so MSG_WAITALL is handled here.
+     const bool waitall = (host_flags & MSG_WAITALL) != 0;
++    if (s->local && (host_flags & MSG_OOB)) {
++        return NetResult::Fail(Error::OpNotSupp);
++    }
++    if (s->local && waitall && (host_flags & MSG_PEEK)) {
++        return NetResult::Fail(Error::OpNotSupp);
++    }
+     host_flags &= ~MSG_WAITALL;
+     const auto deadline = SocketDeadline(s->rcv_timeout_us);
+     auto* bytes = static_cast<u8*>(buf);
+     return ReceiveAll(len, blocking && waitall && s->type == SOCK_STREAM, [&](size_t got) {
++        if (got && rights && !rights->empty()) {
++            return NetResult::Ok();
++        }
+         return RunBlocking(*s, Side::Recv, Host::Readable, deadline, blocking, [&] {
++            std::unique_lock lock{g_local_mutex, std::defer_lock};
++            size_t count = len - got;
++            if (s->local) {
++                lock.lock();
++                auto& channel = s->local->channels[s->local_side];
++                for (const auto& control : channel.controls) {
++                    if (control.offset > channel.received) {
++                        count = std::min<u64>(count, control.offset - channel.received);
++                        break;
++                    }
++                }
++            }
+             const auto io =
+-                Host::RecvFrom(s->native, bytes + got, len - got, host_flags,
+-                               got == 0 ? addr : nullptr, got == 0 ? addr_len : nullptr);
++                Host::RecvFrom(s->native, bytes + got, count, host_flags, got == 0 ? addr : nullptr,
++                               got == 0 ? addr_len : nullptr);
++            if (s->local && io.error == Error::Ok && io.value > 0) {
++                auto& channel = s->local->channels[s->local_side];
++                const u64 end = channel.received + io.value;
++                for (const auto& control : channel.controls) {
++                    if (control.offset >= end) {
++                        break;
++                    }
++                    if (rights) {
++                        rights->insert(rights->end(), control.rights.begin(), control.rights.end());
++                    }
++                }
++                if (!(host_flags & MSG_PEEK)) {
++                    channel.received = end;
++                    while (!channel.controls.empty() && channel.controls.front().offset < end) {
++                        channel.controls.pop_front();
++                    }
++                }
++            }
+             return NetResult{io.value, io.error};
+         });
+     });
+@@ -1083,19 +1249,10 @@ NetResult SocketClose(s32 id) {
+     if (!s) {
+         return NetResult::Fail(Error::BadF);
+     }
+-    // Wake blocked threads. The host socket is closed when the last reference drops.
+-    // BSD would leave a recv blocked across close, we wake it on purpose.
+-    {
+-        std::scoped_lock lock{s->wait_mutex};
+-        s->closing = true;
+-        InterruptWaiters(*s);
+-    }
+-
+     std::vector<std::weak_ptr<GuestEpoll>> epolls;
+     {
+         std::scoped_lock lock{s->reg_mutex};
+-        s->closed = true; // blocks later EpollControl(Add)
+-        epolls.swap(s->epolls);
++        epolls = s->epolls;
+     }
+     for (const auto& weak : epolls) {
+         const auto ep = weak.lock();
+diff --git a/src/core/net/guest_net.h b/src/core/net/guest_net.h
+index 9e20807..72ff9e1 100644
+--- a/src/core/net/guest_net.h
++++ b/src/core/net/guest_net.h
+@@ -14,8 +14,21 @@
+ 
+ #include "core/net/host_net.h"
+ 
++namespace Core::FileSys {
++struct File;
++}
++
+ namespace Core::Net {
+ 
++struct SocketReference;
++struct NetResult;
++struct PassedDescriptor {
++    std::shared_ptr<SocketReference> socket;
++    std::shared_ptr<FileSys::File> file;
++};
++std::shared_ptr<SocketReference> SocketExport(s32 id);
++NetResult SocketImport(std::shared_ptr<SocketReference> reference);
++
+ namespace P2P {
+ class Transport;
+ struct Endpoint;
+@@ -58,9 +71,11 @@ NetResult SocketListen(s32 id, int backlog);
+ NetResult SocketConnect(s32 id, const sockaddr* addr, socklen_t len);
+ NetResult SocketAccept(s32 id, sockaddr* addr, socklen_t* len);
+ NetResult SocketSendTo(s32 id, const void* buf, size_t len, int host_flags, bool dontwait,
+-                       const sockaddr* addr, socklen_t addr_len);
++                       const sockaddr* addr, socklen_t addr_len,
++                       std::span<const PassedDescriptor> rights = {});
+ NetResult SocketRecvFrom(s32 id, void* buf, size_t len, int host_flags, bool dontwait,
+-                         sockaddr* addr, socklen_t* addr_len);
++                         sockaddr* addr, socklen_t* addr_len,
++                         std::vector<PassedDescriptor>* rights = nullptr);
+ NetResult SocketShutdown(s32 id, int how);
+ NetResult SocketGetName(s32 id, sockaddr* addr, socklen_t* len);
+ NetResult SocketGetPeerName(s32 id, sockaddr* addr, socklen_t* len);
+-- 
+2.51.0.windows.2
+

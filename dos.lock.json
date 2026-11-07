@@ -1,0 +1,7 @@
+{
+  "repository": "https://codeberg.org/schelling/dosbox-pure.git",
+  "commit": "ba6dcaee84aa2c22d709c3dfdacb7aca5ebc3042",
+  "license": "GPL-2.0-or-later",
+  "route": "PE64 libretro core hosted by Wine, software GDI frontend",
+  "cpu": "interpreter; DISABLE_DYNAREC=1"
+}

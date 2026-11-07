@@ -1,0 +1,7 @@
+{
+  "package": "libc6",
+  "version": "2.39-0ubuntu8.9",
+  "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/glibc/libc6_2.39-0ubuntu8.9_amd64.deb",
+  "sha256": "ff5557d99b51f761c4b7c92368b9cc45565eda17df9bf9eb4b134d09825008be",
+  "scope": "Private runtime only, Ubuntu system libc unchanged"
+}

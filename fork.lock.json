@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "upstream": "https://github.com/shadps4-emu/shadPS4.git",
+  "base_commit": "529ceb32f5546b820588f194b903cc39d08015fe",
+  "commit": "9ac99bb2445e86f525519a4041a6c85362790ad2",
+  "branch": "orbisdesk/platform",
+  "patches": [
+    {
+      "path": "patches/shadPS4/0001-Fix-executable-RAM-views-and-honor-guest-process-exi.patch",
+      "sha256": "ad0dfbcb6bccdef2e5b9579b62bc73b70b9e9fec19255ad27e39fc0fcfde88b8"
+    },
+    {
+      "path": "patches/shadPS4/0002-Preserve-read-only-memory-protection-when-converting.patch",
+      "sha256": "57b09a88983973921c3979f6984442072f840769fcf48a7909a76e5645b8d4c5"
+    },
+    {
+      "path": "patches/shadPS4/0003-Forward-guest-protection-faults-instead-of-retrying-.patch",
+      "sha256": "0aa7f96ae135ca47123680300af56029692e7dd9551557ddbdb9d75b5eca3583"
+    },
+    {
+      "path": "patches/shadPS4/0004-Share-open-file-descriptions-and-track-descriptor-fl.patch",
+      "sha256": "03a080ad2d39bff47e59d59ce8e5f85a660814ac751c28d7c8cbec9e5093cd4e"
+    },
+    {
+      "path": "patches/shadPS4/0005-Fix-kernel-message-exports-and-reject-unsupported-an.patch",
+      "sha256": "0dc5a29b1367c4522ecc98b3a81eaf63647c6609dedd05e0ceb06377856153fd"
+    },
+    {
+      "sha256": "d3f05befe7cfc5ee6b1b05f90536c48550be1b76dc3fc3fb5d658425ed04339f",
+      "path": "patches/shadPS4/0006-Transfer-shared-descriptors-over-local-stream-socket.patch"
+    },
+    {
+      "sha256": "db4273b94608d5da98c7b164fcc2397a963b32223d7b0ad8835cac42cd570b0d",
+      "path": "patches/shadPS4/0007-Implement-Linux-pipes-with-shared-descriptors-and-ve.patch"
+    },
+    {
+      "sha256": "169b13723431d58a5840f011cb4f5c3330b136272972f0fe79b244864deaeb85",
+      "path": "patches/shadPS4/0008-Preserve-Linux-file-identities-and-expose-symlink-me.patch"
+    },
+    {
+      "sha256": "3fa34d9e6a77c3cdd9e44815a498666925fd5ed8f9c32b469b920914c83557bb",
+      "path": "patches/shadPS4/0009-Reject-invalid-file-mmap-offsets-before-host-mapping.patch"
+    },
+    {
+      "sha256": "98747734bf5539b6af58fbf86a73868508ce74bc55502769bc57963cec0234e9",
+      "path": "patches/shadPS4/0010-Honor-Linux-private-file-mappings-and-preserve-prote.patch"
+    },
+    {
+      "path": "patches/shadPS4/0011-Keep-the-guest-TCB-out-of-GS-on-Linux.patch",
+      "sha256": "93118d50c4b507f6cf1e4a806c8796d5d1309838cb784ed052c8d8f4f1fb27bd"
+    },
+    {
+      "path": "patches/shadPS4/0012-Implement-sysarch-FS-and-GS-base-operations-on-Linux.patch",
+      "sha256": "488735cdd53248e3ba0965b07c12fe267e4d9b6449dd49a9bbe0906960bebe9e"
+    },
+    {
+      "path": "patches/shadPS4/0013-Report-complete-Linux-fault-contexts-to-guest-signal.patch",
+      "sha256": "502a184014c9234f554412153d3fa707a62570d2365c7d7c6253e96c9095a068"
+    },
+    {
+      "path": "patches/shadPS4/0014-Start-guest-threads-with-the-alternate-signal-stack-.patch",
+      "sha256": "5c8624cacabeb658d11eebaafb53a40974a89ff5fcf0e0b9e43ab0e5401d2b05"
+    },
+    {
+      "path": "patches/shadPS4/0015-Report-SS-DS-and-ES-in-guest-signal-contexts-on-Linu.patch",
+      "sha256": "d68f7abbd328a26312e00487c414a7fb0410a01b222c39cbe4c369b34972783b"
+    },
+    {
+      "path": "patches/shadPS4/0016-Implement-madvise-with-FreeBSD-advisory-semantics.patch",
+      "sha256": "dc5d628e1489457002e845896d70f990a59aa2b5b0324d254c799a5506c68292"
+    },
+    {
+      "path": "patches/shadPS4/0017-Implement-getrusage-on-Linux-hosts.patch",
+      "sha256": "87409fca0d5eda1a4bc6a20caddcc6954c459a3da494265d9939dfc22b1fb296"
+    }
+  ]
+}

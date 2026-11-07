@@ -1,0 +1,7 @@
+{
+  "release": "v.0.20.0",
+  "url": "https://github.com/shadps4-emu/shadPS4/releases/download/v.0.20.0/shadps4-linux-sdl-0.20.0.zip",
+  "sha256": "be25d0324cd7b74068d32cdb66fa1b7b1e7bb499b062be51c7006d27d41d4255",
+  "github_digest": "sha256:be25d0324cd7b74068d32cdb66fa1b7b1e7bb499b062be51c7006d27d41d4255",
+  "declared_source_commit": "529ceb32f5546b820588f194b903cc39d08015fe"
+}

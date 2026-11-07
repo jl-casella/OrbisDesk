@@ -1,0 +1,4 @@
+LIBRARY nested.dll
+EXPORTS
+    Scale=NestedScale @7
+    OrdinalScale=NestedOrdinal @11 NONAME

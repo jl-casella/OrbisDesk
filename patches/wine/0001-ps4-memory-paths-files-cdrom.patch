@@ -1,0 +1,215 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -89,6 +89,11 @@
+ #include "wine/list.h"
+ #include "wine/rbtree.h"
+ #include "unix_private.h"
++#ifdef __ORBIS__
++#include "pw_wine_platform.h"
++#define mprotect pw_wine_memory_protect
++#define munmap pw_wine_memory_release
++#endif
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(virtual);
+@@ -173,7 +178,7 @@
+ static const UINT_PTR page_mask = 0xfff;
+ static const UINT_PTR granularity_mask = 0xffff;
+ 
+-#ifdef __aarch64__
++#if defined(__aarch64__) || defined(__ORBIS__)
+ static UINT_PTR host_page_size;
+ static UINT_PTR host_page_mask;
+ #else
+@@ -590,6 +595,9 @@
+ 
+ static void *anon_mmap_tryfixed( void *start, size_t size, int prot, int flags )
+ {
++#ifdef __ORBIS__
++    return pw_wine_anon_tryfixed( start, size, prot, flags );
++#else
+     void *ptr;
+ 
+ #ifdef MAP_FIXED_NOREPLACE
+@@ -625,6 +633,7 @@
+         errno = EEXIST;
+     }
+     return ptr;
++#endif /* __ORBIS__ */
+ }
+ 
+ static void reserve_area( void *addr, void *end )
+@@ -3683,8 +3692,12 @@
+     pthread_mutex_init( &virtual_mutex, &attr );
+     pthread_mutexattr_destroy( &attr );
+ 
+-#ifdef __aarch64__
++#if defined(__aarch64__) || defined(__ORBIS__)
++#ifdef __ORBIS__
++    host_page_size = 0x4000; /* PS4 kernel granularity; SDK sysconf is not the ABI. */
++#else
+     host_page_size = sysconf( _SC_PAGESIZE );
++#endif
+     host_page_mask = host_page_size - 1;
+     TRACE( "host page size: %uk\n", (UINT)host_page_size / 1024 );
+ #endif
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -124,6 +124,12 @@
+ #include "wine/list.h"
+ #include "wine/debug.h"
+ #include "unix_private.h"
++#ifdef __ORBIS__
++#include "pw_wine_platform.h"
++#define stat(path,buffer) pw_wine_stat(path,buffer)
++#define fstat(fd,buffer) pw_wine_fstat(fd,buffer)
++#define lstat(path,buffer) pw_wine_lstat(path,buffer)
++#endif
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(file);
+ WINE_DECLARE_DEBUG_CHANNEL(winediag);
+@@ -813,7 +819,14 @@
+ }
+ #endif
+ 
+-#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__DragonFly__)
++#ifdef __ORBIS__
++/* Adapted from prospero-win 0100: no host drive-device discovery on PS4.
++ * Wine still resolves files under explicitly configured drive mappings. */
++static char *parse_mount_entries( FILE *f, dev_t dev, ino_t ino )
++{
++    return NULL;
++}
++#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__DragonFly__)
+ #include <fstab.h>
+ static char *parse_mount_entries( FILE *f, dev_t dev, ino_t ino )
+ {
+@@ -1080,7 +1093,7 @@
+         fclose( f );
+     }
+     mutex_unlock( &mnt_mutex );
+-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
++#elif !defined(__ORBIS__) && (defined(__APPLE__) || defined(__FreeBSD__) || defined(__FreeBSD_kernel__))
+     struct statfs *entry;
+     struct stat st;
+     int i, size;
+@@ -7194,7 +7207,7 @@
+ }
+ 
+ 
+-#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__APPLE__)
++#if !defined(__ORBIS__) && (defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__APPLE__))
+ /* helper for FILE_GetDeviceInfo to hide some platform differences in fstatfs */
+ static inline void get_device_info_fstatfs( FILE_FS_DEVICE_INFORMATION *info, const char *fstypename,
+                                             unsigned int flags )
+@@ -7227,6 +7240,8 @@
+ }
+ #endif
+ 
++
++#ifndef __ORBIS__
+ static inline BOOL is_device_placeholder( int fd )
+ {
+     static const char wine_placeholder[] = "Wine device placeholder";
+@@ -7237,8 +7252,15 @@
+     return !memcmp( buffer, wine_placeholder, sizeof(wine_placeholder) - 1 );
+ }
+ 
++
++#endif /* !__ORBIS__ */
+ NTSTATUS get_device_info( int fd, FILE_FS_DEVICE_INFORMATION *info )
+ {
++#ifdef __ORBIS__
++    /* Mount/device characteristics have not been implemented for PS4.
++     * Preserve output instead of inventing read-only/local/device flags. */
++    return STATUS_NOT_SUPPORTED;
++#else
+     struct stat st;
+ 
+     info->Characteristics = 0;
+@@ -7397,6 +7419,7 @@
+         info->Characteristics |= FILE_DEVICE_IS_MOUNTED;
+     }
+     return STATUS_SUCCESS;
++#endif
+ }
+ 
+ 
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1370,6 +1370,8 @@
+     if (!params->ConsoleHandle)
+         params->ConsoleHandle = CONSOLE_HANDLE_SHELL_NO_WINDOW;
+ 
++    /* PS4 has no inherited host terminal geometry. */
++#ifndef __ORBIS__
+     if (output_fd != -1)
+     {
+         struct winsize size;
+@@ -1379,6 +1381,9 @@
+             params->dwYCountChars = size.ws_row;
+         }
+     }
++#else
++    (void)output_fd;
++#endif
+ }
+ 
+ 
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -342,6 +342,10 @@
+     const char *name = getenv( "USER" );
+     const char *p;
+ 
++#ifdef __ORBIS__
++    if (!home || home[0] != '/' || !name || !name[0])
++        fatal_error( "PS4 requires explicit absolute HOME and USER before Wine startup\n" );
++#else
+     if (!home || !name)
+     {
+         struct passwd *pwd = getpwuid( getuid() );
+@@ -352,6 +356,7 @@
+         }
+         if (!name) name = "wine";
+     }
++#endif
+     if ((p = strrchr( name, '/' ))) name = p + 1;
+     if ((p = strrchr( name, '\\' ))) name = p + 1;
+     home_dir = strdup( home );
+@@ -363,6 +368,10 @@
+ {
+     char *p, *dir;
+     const char *prefix = getenv( "WINEPREFIX" );
++#ifdef __ORBIS__
++    if (!prefix || prefix[0] != '/')
++        fatal_error( "PS4 requires an explicit absolute WINEPREFIX before Wine startup\n" );
++#endif
+ 
+     if (prefix)
+     {
+--- a/dlls/ntdll/unix/cdrom.c
++++ b/dlls/ntdll/unix/cdrom.c
+@@ -127,6 +127,16 @@
+ #include "unix_private.h"
+ #include "wine/debug.h"
+ 
++#ifdef __ORBIS__
++/* Outside the initial PS4 scope. Immediate NT error: no successful I/O or
++ * asynchronous completion is claimed and caller buffers remain untouched. */
++NTSTATUS cdrom_DeviceIoControl( HANDLE device, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user,
++                               IO_STATUS_BLOCK *io, UINT code, void *in_buffer,
++                               UINT in_size, void *out_buffer, UINT out_size )
++{
++    return STATUS_NOT_SUPPORTED;
++}
++#else
+ WINE_DEFAULT_DEBUG_CHANNEL(cdrom);
+ 
+ /* Non-Linux systems do not have linux/cdrom.h and the like, and thus
+@@ -3248,3 +3258,5 @@
+         file_complete_async( device, options, event, apc, apc_user, io, status, sz );
+     return status;
+ }
++
++#endif /* __ORBIS__ */

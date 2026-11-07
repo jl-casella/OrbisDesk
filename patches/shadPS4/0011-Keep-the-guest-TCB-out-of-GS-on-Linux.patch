@@ -1,0 +1,190 @@
+From 4370c3c8966a821c32bfbb43e53c632ce0a1e3ca Mon Sep 17 00:00:00 2001
+From: OrbisWinPrototype <orbis-win@localhost>
+Date: Fri, 30 Oct 2026 21:04:00 -0300
+Subject: [PATCH] Keep the guest TCB out of GS on Linux
+
+Linux stored the guest TCB in the host GS base and rewrote guest fs: TCB
+reads as gs: reads, so a guest that installs its own GS base (sysarch
+AMD64_SET_GSBASE) replaced the TCB for every patched TLS access. Keep the
+TCB pointer in a host thread_local at a fixed offset from the FS thread
+pointer and load it through a trampoline, as Windows does, so GS stays
+free for the guest as on the console.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/cpu_patches.cpp | 48 ++++++++++++++++++++++++++++++++--------
+ src/core/tls.cpp         | 18 +++++++++++++--
+ src/core/tls.h           |  4 ++++
+ 3 files changed, 59 insertions(+), 11 deletions(-)
+
+diff --git a/src/core/cpu_patches.cpp b/src/core/cpu_patches.cpp
+index 605fcf3..a26e317 100644
+--- a/src/core/cpu_patches.cpp
++++ b/src/core/cpu_patches.cpp
+@@ -173,13 +173,23 @@ static void RetrieveTcbPointer(Xbyak::Reg dst, Xbyak::CodeGenerator& c, ZyanI64
+         c.mov(dst, qword[dst + offset]);
+     }
+ }
++#define TCB_POINTER_PATCHES
++#elif defined(__linux__) && defined(ARCH_X86_64)
++static void RetrieveTcbPointer(Xbyak::Reg dst, Xbyak::CodeGenerator& c, ZyanI64 offset) {
++    c.putSeg(fs);
++    c.mov(dst, ptr[reinterpret_cast<void*>(GetTcbSlotOffset())]);
++    if (offset > 0) {
++        c.mov(dst, qword[dst + offset]);
++    }
++}
++#define TCB_POINTER_PATCHES
+ #endif
+ 
+ static void GenerateTcbAccess(void* /* address */, const ZydisDecodedInstruction&,
+                               const ZydisDecodedOperand* operands, Xbyak::CodeGenerator& c) {
+     const auto dst = ZydisToXbyakRegisterOperand(operands[0]);
+ 
+-#if defined(_WIN32)
++#ifdef TCB_POINTER_PATCHES
+     RetrieveTcbPointer(dst, c, operands[1].mem.disp.value);
+ #else
+     const auto src = ZydisToXbyakMemoryOperand(operands[1]);
+@@ -194,7 +204,7 @@ static void GenerateTcbCompare(void* /* address */, const ZydisDecodedInstructio
+                                const ZydisDecodedOperand* operands, Xbyak::CodeGenerator& c) {
+     const auto dst = ZydisToXbyakRegisterOperand(operands[0]);
+ 
+-#if defined(_WIN32)
++#ifdef TCB_POINTER_PATCHES
+     // Prepare a scratch register. Use rax where possible, rbx if rax is in use.
+     const Xbyak::Reg64 scratch = operands[0].reg.value == ZYDIS_REGISTER_RAX ? rbx : rax;
+ 
+@@ -226,7 +236,7 @@ static void GenerateTcbExclusiveOr(void* /* address */, const ZydisDecodedInstru
+                                    const ZydisDecodedOperand* operands, Xbyak::CodeGenerator& c) {
+     const auto dst = ZydisToXbyakRegisterOperand(operands[0]);
+ 
+-#if defined(_WIN32)
++#ifdef TCB_POINTER_PATCHES
+     // Prepare a scratch register. Use rax where possible, rbx if rax is in use.
+     const Xbyak::Reg64 scratch = operands[0].reg.value == ZYDIS_REGISTER_RAX ? rbx : rax;
+ 
+@@ -723,16 +733,25 @@ struct PatchInfo {
+ 
+     /// Whether to use a trampoline for this patch.
+     bool trampoline;
++
++    /// Whether ahead-of-time patching must emit the trampoline instead of skipping it.
++    bool aot_trampoline = false;
+ };
+ 
+ constexpr size_t NearJumpSize = 5;
+ 
+-#if defined(_WIN32)
++#ifdef TCB_POINTER_PATCHES
+ static const bool need_tcb_trampoline = true;
+ #else
+ static const bool need_tcb_trampoline = false;
+ #endif
+ 
++#if defined(__linux__) && defined(ARCH_X86_64)
++static const bool need_tcb_aot_trampoline = true;
++#else
++static const bool need_tcb_aot_trampoline = false;
++#endif
++
+ static const std::unordered_map<ZydisMnemonic, std::vector<PatchInfo>> Patches = {
+     // SSE4a
+     {ZYDIS_MNEMONIC_EXTRQ, {{FilterNoSSE4a, GenerateEXTRQ, true}}},
+@@ -746,10 +765,14 @@ static const std::unordered_map<ZydisMnemonic, std::vector<PatchInfo>> Patches =
+ 
+ #if !defined(__APPLE__)
+     // FS segment patches
+-    // For most of these, Windows needs a trampoline while other platforms do not.
+-    {ZYDIS_MNEMONIC_XOR, {{FilterTcbAccess, GenerateTcbExclusiveOr, need_tcb_trampoline}}},
+-    {ZYDIS_MNEMONIC_MOV, {{FilterTcbAccess, GenerateTcbAccess, need_tcb_trampoline}}},
+-    {ZYDIS_MNEMONIC_CMP, {{FilterTcbAccess, GenerateTcbCompare, need_tcb_trampoline}}}
++    // Windows and Linux load the TCB pointer from host TLS through a trampoline; Linux keeps GS
++    // free for the guest.
++    {ZYDIS_MNEMONIC_XOR,
++     {{FilterTcbAccess, GenerateTcbExclusiveOr, need_tcb_trampoline, need_tcb_aot_trampoline}}},
++    {ZYDIS_MNEMONIC_MOV,
++     {{FilterTcbAccess, GenerateTcbAccess, need_tcb_trampoline, need_tcb_aot_trampoline}}},
++    {ZYDIS_MNEMONIC_CMP,
++     {{FilterTcbAccess, GenerateTcbCompare, need_tcb_trampoline, need_tcb_aot_trampoline}}}
+ #endif
+ };
+ 
+@@ -836,7 +859,11 @@ static std::pair<bool, u64> TryPatch(u8* code, PatchModule* module, bool allow_t
+                     return std::make_pair(false, instruction.length);
+                 }
+ 
+-                if (needs_trampoline && (!allow_trampoline || module->trampoline_exhausted)) {
++                if (needs_trampoline && patch_info.aot_trampoline) {
++                    ASSERT_MSG(!module->trampoline_exhausted,
++                               "No trampoline space for required patch at {}", fmt::ptr(code));
++                } else if (needs_trampoline &&
++                           (!allow_trampoline || module->trampoline_exhausted)) {
+                     return std::make_pair(false, instruction.length);
+                 }
+ 
+@@ -856,6 +883,9 @@ static std::pair<bool, u64> TryPatch(u8* code, PatchModule* module, bool allow_t
+                     } catch (const Xbyak::Error& error) {
+                         trampoline_gen.setSize(trampoline_offset);
+                         if (HandleTrampolineError(module, error)) {
++                            ASSERT_MSG(!patch_info.aot_trampoline,
++                                       "No trampoline space for required patch at {}",
++                                       fmt::ptr(code));
+                             return std::make_pair(false, instruction.length);
+                         }
+                         throw;
+diff --git a/src/core/tls.cpp b/src/core/tls.cpp
+index 3960cd9..0e04c08 100644
+--- a/src/core/tls.cpp
++++ b/src/core/tls.cpp
+@@ -174,9 +174,23 @@ void SetTcbBase(void* image_address) {
+     amd64_set_gsbase(image_address);
+ }
+ #else
++static thread_local void* tcb_slot = nullptr;
++
++static s64 CurrentTcbSlotOffset() {
++    u64 thread_pointer;
++    asm volatile("mov %%fs:0x0, %0" : "=r"(thread_pointer));
++    return static_cast<s64>(reinterpret_cast<u64>(&tcb_slot) - thread_pointer);
++}
++
++s64 GetTcbSlotOffset() {
++    static const s64 offset = CurrentTcbSlotOffset();
++    return offset;
++}
++
+ void SetTcbBase(void* image_address) {
+-    const int ret = syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)image_address);
+-    ASSERT_MSG(ret == 0, "Failed to set GS base: errno {}", errno);
++    ASSERT_MSG(CurrentTcbSlotOffset() == GetTcbSlotOffset(),
++               "TCB slot is not at a fixed offset from the host thread pointer");
++    tcb_slot = image_address;
+ }
+ #endif
+ 
+diff --git a/src/core/tls.h b/src/core/tls.h
+index 37f788d..ae11721 100644
+--- a/src/core/tls.h
++++ b/src/core/tls.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <cstring>
++#include "common/arch.h"
+ #include "common/types.h"
+ #ifdef _WIN32
+ #include <malloc.h>
+@@ -36,6 +37,9 @@ struct Tcb {
+ #ifdef _WIN32
+ /// Gets the thread local storage key for the TCB block.
+ u32 GetTcbKey();
++#elif defined(__linux__) && defined(ARCH_X86_64)
++/// Gets the offset of the TCB pointer from the host thread pointer in FS.
++s64 GetTcbSlotOffset();
+ #endif
+ 
+ /// Sets the data pointer to the TCB block.
+-- 
+2.51.0.windows.2
+

@@ -1,0 +1,178 @@
+From f22d7f017296d9c2b346c7c27a1246ca5cccf83f Mon Sep 17 00:00:00 2001
+From: OrbisWinPrototype <orbis-win@localhost>
+Date: Fri, 30 Oct 2026 19:22:48 -0300
+Subject: [PATCH] Honor Linux private file mappings and preserve protection
+ limits
+
+---
+ src/core/address_space.cpp | 12 +++++++-----
+ src/core/address_space.h   |  3 ++-
+ src/core/memory.cpp        | 26 +++++++++++++++++++++++---
+ src/core/memory.h          |  4 ++++
+ 4 files changed, 36 insertions(+), 9 deletions(-)
+
+diff --git a/src/core/address_space.cpp b/src/core/address_space.cpp
+index 2ad2a52..e9558da 100644
+--- a/src/core/address_space.cpp
++++ b/src/core/address_space.cpp
+@@ -768,8 +768,8 @@ struct AddressSpace::Impl {
+         }
+     }
+ 
+-    void* Map(VAddr virtual_addr, PAddr phys_addr, u64 size, PosixPageProtection prot,
+-              int fd = -1) {
++    void* Map(VAddr virtual_addr, PAddr phys_addr, u64 size, PosixPageProtection prot, int fd = -1,
++              bool private_mapping = false) {
+ #ifdef __APPLE__
+         if ((prot & PROT_EXEC) != 0) {
+             ASSERT_MSG(fd == -1, "Requested execute permissions for file mapping");
+@@ -778,7 +778,8 @@ struct AddressSpace::Impl {
+ #endif
+         const int handle = phys_addr != -1 ? (fd == -1 ? backing_fd : fd) : -1;
+         const off_t host_offset = phys_addr != -1 ? phys_addr : 0;
+-        const int flag = phys_addr != -1 ? MAP_SHARED : (MAP_ANONYMOUS | MAP_PRIVATE);
++        const int flag = phys_addr != -1 ? (private_mapping ? MAP_PRIVATE : MAP_SHARED)
++                                         : (MAP_ANONYMOUS | MAP_PRIVATE);
+         void* ret = mmap(reinterpret_cast<void*>(virtual_addr), size, prot, MAP_FIXED | flag,
+                          handle, host_offset);
+         ASSERT_MSG(ret != MAP_FAILED, "mmap failed: {}", strerror(errno));
+@@ -857,13 +858,14 @@ void* AddressSpace::Map(VAddr virtual_addr, u64 size, PAddr phys_addr, bool is_e
+     return impl->Map(virtual_addr, phys_addr, size, prot);
+ }
+ 
+-void* AddressSpace::MapFile(VAddr virtual_addr, u64 size, u64 offset, u32 prot, uintptr_t fd) {
++void* AddressSpace::MapFile(VAddr virtual_addr, u64 size, u64 offset, u32 prot, uintptr_t fd,
++                            [[maybe_unused]] bool private_mapping) {
+ #ifdef _WIN32
+     return impl->Map(virtual_addr, offset, size,
+                      ToWindowsProt(std::bit_cast<Core::MemoryProt>(prot)), fd);
+ #else
+     return impl->Map(virtual_addr, offset, size, ToPosixProt(std::bit_cast<Core::MemoryProt>(prot)),
+-                     fd);
++                     fd, private_mapping);
+ #endif
+ }
+ 
+diff --git a/src/core/address_space.h b/src/core/address_space.h
+index f0e5fb8..ec0ed31 100644
+--- a/src/core/address_space.h
++++ b/src/core/address_space.h
+@@ -89,7 +89,8 @@ public:
+     void* Map(VAddr virtual_addr, u64 size, PAddr phys_addr = -1, bool exec = false);
+ 
+     /// Memory maps a specified file descriptor.
+-    void* MapFile(VAddr virtual_addr, u64 size, u64 offset, u32 prot, uintptr_t fd);
++    void* MapFile(VAddr virtual_addr, u64 size, u64 offset, u32 prot, uintptr_t fd,
++                  bool private_mapping = false);
+ 
+     /// Unmaps specified virtual memory area and marks it free in the address space.
+     VAddr Unmap(VAddr virtual_addr, u64* size);
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 8a49649..ad227c3 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -721,12 +721,22 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
+     // Detect a non-host backend (ZArchive, ...).
+     Common::FS::IOFile* host_file = file->handle ? file->handle->GetHostFile() : nullptr;
+     const bool non_host_backed = file->handle && host_file == nullptr;
++#ifdef __linux__
++    const bool private_host_mapping =
++        host_file && True(flags & MemoryMapFlags::Private) && False(flags & MemoryMapFlags::Shared);
++#else
++    constexpr bool private_host_mapping = false;
++#endif
++    bool file_write_allowed = non_host_backed;
+ 
+     if (non_host_backed) {
+         // Non-host backends are read-only
+         prot &= ~MemoryProt::CpuWrite;
+     } else {
+         handle = host_file->GetFileMapping();
++        file_write_allowed = private_host_mapping ||
++                             True(host_file->GetAccessMode() & Common::FS::FileAccessMode::Write) ||
++                             True(host_file->GetAccessMode() & Common::FS::FileAccessMode::Append);
+ 
+         if (False(host_file->GetAccessMode() & Common::FS::FileAccessMode::Write) &&
+             False(host_file->GetAccessMode() & Common::FS::FileAccessMode::Append)) {
+@@ -782,13 +792,14 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
+ 
+     auto& new_vma = new_vma_handle->second;
+     new_vma.fd = fd;
++    new_vma.file_write_allowed = file_write_allowed;
+     auto mapped_addr = new_vma.base;
+ 
+     // Delegate the actual mapping to the file backend.
+     Core::FileSys::FileMapContext map_ctx{};
+     map_ctx.mapping_handle = handle;
+     map_ctx.map_native = [&](u8* addr, u64 sz, u64 off, u32 p, uintptr_t map_handle) {
+-        impl.MapFile(reinterpret_cast<VAddr>(addr), sz, off, p, map_handle);
++        impl.MapFile(reinterpret_cast<VAddr>(addr), sz, off, p, map_handle, private_host_mapping);
+     };
+     map_ctx.map_anonymous = [&](u8* addr, u64 sz) {
+         constexpr auto kAnonMarker = static_cast<u64>(-1);
+@@ -1053,6 +1064,7 @@ s64 MemoryManager::ProtectBytes(VAddr addr, VirtualMemoryArea& vma_base, u64 siz
+     const auto adjusted_size = std::min<u64>(vma_base.size - start_in_vma, size);
+     const MemoryProt old_prot = vma_base.prot;
+     const MemoryProt new_prot = prot;
++    const VMAType vma_type = vma_base.type;
+ 
+     if (vma_base.type == VMAType::Free || vma_base.type == VMAType::PoolReserved) {
+         // On PS4, protecting freed memory does nothing.
+@@ -1096,7 +1108,7 @@ s64 MemoryManager::ProtectBytes(VAddr addr, VirtualMemoryArea& vma_base, u64 siz
+     new_vma.prot = prot;
+     MergeAdjacent(vma_map, new_it);
+ 
+-    if (vma_base.type == VMAType::Reserved) {
++    if (vma_type == VMAType::Reserved) {
+         // On PS4, protections change vma_map, but don't apply.
+         // Return early to avoid protecting memory that isn't mapped in address space.
+         return adjusted_size;
+@@ -1134,7 +1146,7 @@ s32 MemoryManager::Protect(VAddr addr, u64 size, MemoryProt prot) {
+     if (addr >= vend) {
+         return ORBIS_OK;
+     }
+-    if (addr + size > vend) {
++    if (size > vend - addr) {
+         size = vend - addr;
+     }
+ 
+@@ -1143,6 +1155,14 @@ s32 MemoryManager::Protect(VAddr addr, u64 size, MemoryProt prot) {
+         MemoryProt::CpuReadWrite | MemoryProt::CpuExec | MemoryProt::GpuReadWrite;
+     MemoryProt valid_flags = prot & flag_mask;
+ 
++    if (True(valid_flags & (MemoryProt::CpuWrite | MemoryProt::GpuWrite))) {
++        for (auto it = FindVMA(addr); it != vma_map.end() && it->first < addr + size; ++it) {
++            if (it->second.type == VMAType::File && !it->second.file_write_allowed) {
++                return ORBIS_KERNEL_ERROR_EACCES;
++            }
++        }
++    }
++
+     // Protect all VMAs between addr and addr + size.
+     s64 protected_bytes = 0;
+     while (protected_bytes < size) {
+diff --git a/src/core/memory.h b/src/core/memory.h
+index b2848a6..13bfc78 100644
+--- a/src/core/memory.h
++++ b/src/core/memory.h
+@@ -113,6 +113,7 @@ struct VirtualMemoryArea {
+     std::string name = "";
+     s32 fd = 0;
+     bool disallow_merge = false;
++    bool file_write_allowed = false;
+ 
+     bool Contains(VAddr addr, u64 size) const {
+         return addr >= base && (addr + size) <= (base + this->size);
+@@ -148,6 +149,9 @@ struct VirtualMemoryArea {
+         if (prot != next.prot || type != next.type) {
+             return false;
+         }
++        if (type == VMAType::File && file_write_allowed != next.file_write_allowed) {
++            return false;
++        }
+         if (name.compare(next.name) != 0) {
+             return false;
+         }
+-- 
+2.51.0.windows.2
+

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: LGPL-2.1-or-later -->
+<!-- Phase 9: local test page, no network. C:\orbis\webtest\index.html on the console.
+     webview64/32.exe (MSHTML + Wine Gecko) read the title and the text of #es5 and #es2020;
+     in the browser each line shows what ran. A script that the engine cannot parse leaves its
+     line at "not run": the two scripts are separate so an ES2020 syntax error does not stop
+     the ES5 one. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width">
+<title>orbis-webtest</title>
+<style>
+  body { font-family: sans-serif; background: #1e1e1e; color: #ebebeb; margin: 16px; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  table { border-collapse: collapse; }
+  td { border: 1px solid #555; padding: 4px 8px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 60px); gap: 6px; margin-top: 12px; }
+  .grid div { height: 30px; background: #0078d7; }
+  .flex { display: flex; justify-content: space-between; width: 200px; margin-top: 8px; }
+  .flex span { width: 40px; height: 20px; background: #2e8b57; }
+</style>
+</head>
+<body>
+<h1>orbis-webtest</h1>
+<table>
+  <tr><td>ES5 script</td><td id="es5">not run</td></tr>
+  <tr><td>ES2020 script</td><td id="es2020">not run</td></tr>
+  <tr><td>canvas</td><td id="canvas-result">not run</td></tr>
+  <tr><td>scripts time (ms)</td><td id="time">not run</td></tr>
+  <tr><td>user agent</td><td id="ua">not run</td></tr>
+</table>
+<canvas id="canvas" width="200" height="60"></canvas>
+<div class="grid"><div></div><div></div><div></div></div>
+<div class="flex"><span></span><span></span><span></span></div>
+<script>
+  // ES5 only: what Wine's jscript runs in IE=edge mode.
+  var start = new Date().getTime();
+  function set(id, text) { var e = document.getElementById(id); if (e) e.innerText = text; }
+  var sum = 0, i;
+  for (i = 0; i < 100000; i++) sum += i % 7;
+  set('es5', sum === 299995 ? 'es5-ok' : 'es5-wrong ' + sum);
+  var canvas = document.getElementById('canvas');
+  if (canvas && canvas.getContext) {
+    var c = canvas.getContext('2d');
+    c.fillStyle = '#d83b01'; c.fillRect(0, 0, 200, 60);
+    c.fillStyle = '#ffffff'; c.fillRect(20, 20, 160, 20);
+    set('canvas-result', c.getImageData(10, 10, 1, 1).data[0] === 0xd8 ? 'canvas-ok' : 'canvas-wrong');
+  } else set('canvas-result', 'no canvas');
+  set('ua', navigator.userAgent);
+  set('time', String(new Date().getTime() - start));
+</script>
+<script>
+  // ES2020: classes, arrow functions, template literals, destructuring, optional chaining,
+  // nullish coalescing, async/await, BigInt.
+  class Probe {
+    static async run() {
+      const values = [1, 2, 3].map((n) => n * 2);
+      const [first, ...rest] = values;
+      const depth = ({ a: { b: 5 } })?.a?.b ?? 0;
+      const big = 2n ** 64n;
+      await Promise.resolve();
+      return `${first}-${rest.length}-${depth}-${big}`;
+    }
+  }
+  Probe.run().then((text) => {
+    document.getElementById('es2020').textContent =
+      text === '2-2-5-18446744073709551616' ? 'es2020-ok' : `es2020-wrong ${text}`;
+  });
+</script>
+</body>
+</html>

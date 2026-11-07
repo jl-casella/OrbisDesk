@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "openorbis": {
+    "version": "v0.5.4",
+    "url": "https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/toolchain-llvm-18.tar.gz",
+    "sha256": "3c7cd5bb593ca74fa1c13fd59f3938dc0fc07985167f7275063019e63abe4526"
+  },
+  "shadps4": {
+    "version": "v0.20.0",
+    "source_commit": "529ceb32f5546b820588f194b903cc39d08015fe",
+    "executable_sha256": "d2844a3ad350e2c51edc6e61dc6684b29dcde76e23746f1bdf97cb9367ec88c3",
+    "url": "https://github.com/shadps4-emu/shadPS4/releases/download/v.0.20.0/shadps4-win64-sdl-2026-0.20.0.zip",
+    "sha256": "d5cdc55c57e85e5fe44ff867b420246dc832077356d943ccc43c5d950c878b37"
+  }
+}

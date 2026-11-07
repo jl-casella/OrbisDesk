@@ -1,0 +1,119 @@
+diff -ru a/src/steam/backend/cm_client.cpp b/src/steam/backend/cm_client.cpp
+--- a/src/steam/backend/cm_client.cpp	2026-11-07 07:50:55.828970500 -0300
++++ b/src/steam/backend/cm_client.cpp	2026-11-07 07:51:46.206934100 -0300
+@@ -208,6 +208,11 @@
+   if (left_out) log("family step=license truncated=" + std::to_string(left_out));
+ }
+ 
++// OrbisDesk: the session of an anonymous logon (no account, no token)
++bool IsAnonymous(const StoredSession& stored) {
++  return stored.steam_id == cm::kAnonUserSteamId && stored.account_name.empty() && stored.refresh_token.empty();
++}
++
+ std::uint32_t RemainingMs(Clock::time_point deadline) {
+   const auto remaining =
+       std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+@@ -406,8 +411,12 @@
+ 
+   CmError Logon(const StoredSession& stored, const cm::DeviceIdentity& device) {
+     logon_pending_ = true;
+-    const auto body = cm::EncodeLogon(stored.account_name, stored.refresh_token,
+-                                      stored.cell_id.value_or(0), device);
++    // OrbisDesk: an anonymous logon goes out under the anonymous user's id (kAnonUserSteamId)
++    const bool anonymous = IsAnonymous(stored);
++    if (anonymous) steam_id_ = cm::kAnonUserSteamId;
++    const auto body = anonymous ? cm::EncodeAnonymousLogon(stored.cell_id.value_or(0), device)
++                                : cm::EncodeLogon(stored.account_name, stored.refresh_token,
++                                                  stored.cell_id.value_or(0), device);
+     if (body.empty()) return CmError::kProtocol;
+     if (const auto sent = Send(cm::kEMsgClientLogon, body); sent != CmError::kNone) return sent;
+     if (const auto waited = WaitFor([this] { return logon_.has_value(); });
+@@ -828,7 +837,8 @@
+                        Clock::time_point deadline, std::unique_ptr<MessageTransport>* transport,
+                        std::unique_ptr<Session>* opened) {
+   if (cancel.load(std::memory_order_acquire)) return CmError::kCanceled;
+-  if (stored.account_name.empty() || stored.refresh_token.empty() || stored.steam_id == 0)
++  if (!IsAnonymous(stored) &&
++      (stored.account_name.empty() || stored.refresh_token.empty() || stored.steam_id == 0))
+     return CmError::kNoSession;
+   if (!device_) {
+     if (!device_storage_) return CmError::kProtocol;
+diff -ru a/src/steam/backend/cm_messages.cpp b/src/steam/backend/cm_messages.cpp
+--- a/src/steam/backend/cm_messages.cpp	2026-11-07 07:50:55.637250700 -0300
++++ b/src/steam/backend/cm_messages.cpp	2026-11-07 07:51:37.026797700 -0300
+@@ -129,6 +129,20 @@
+   return body.bytes();
+ }
+ 
++// OrbisDesk: the fields SteamKit2's LogOnAnonymous sends; no account, no token, no
++// should_remember_password.
++std::vector<std::uint8_t> EncodeAnonymousLogon(std::uint32_t cell_id, const DeviceIdentity& device) {
++  proto::Writer body;
++  body.AddVarint(1, kProtocolVersion);
++  body.AddVarint(3, cell_id);
++  body.AddVarint(5, kClientPackageVersion);
++  body.AddString(6, "english");
++  body.AddVarint(7, 0);  // EOSType WinUnknown, as EncodeLogon
++  body.AddBytes(30, device.machine_id);
++  if (!body.ok()) return {};
++  return body.bytes();
++}
++
+ std::vector<std::uint8_t> EncodeHeartBeat() { return {}; }
+ 
+ bool DecodeLogonResponse(const std::vector<std::uint8_t>& body, LogonResponse* response) {
+diff -ru a/src/steam/backend/cm_messages.h b/src/steam/backend/cm_messages.h
+--- a/src/steam/backend/cm_messages.h	2026-11-07 07:50:55.448157900 -0300
++++ b/src/steam/backend/cm_messages.h	2026-11-07 07:51:33.403331100 -0300
+@@ -57,6 +57,10 @@
+ inline constexpr std::uint32_t kClientPackageVersion = 1771;
+ // Individual account, desktop instance, public universe, account 0: the pre-logon identity.
+ inline constexpr std::uint64_t kAnonymousSteamId = 0x0110000100000000ull;
++// OrbisDesk: anonymous user (account type AnonUser), public universe: the identity of an
++// anonymous logon, which Steam allows for content any account may download (free tools,
++// dedicated servers). A StoredSession with this steam_id and no token logs on anonymously.
++inline constexpr std::uint64_t kAnonUserSteamId = 0x01A0000000000000ull;
+ inline constexpr std::size_t kMaxFrameBytes = 8 * 1024 * 1024;
+ inline constexpr std::size_t kMaxRepeatedEntries = 100'000;
+ 
+@@ -87,6 +91,8 @@
+ };
+ 
+ std::vector<std::uint8_t> EncodeHello();
++// OrbisDesk: CMsgClientLogon of an anonymous logon (no account name, no token)
++std::vector<std::uint8_t> EncodeAnonymousLogon(std::uint32_t cell_id, const DeviceIdentity& device);
+ std::vector<std::uint8_t> EncodeLogon(const std::string& account_name,
+                                       const std::string& refresh_token, std::uint32_t cell_id,
+                                       const DeviceIdentity& device);
+diff -ru a/src/steam/backend/http_client.cpp b/src/steam/backend/http_client.cpp
+--- a/src/steam/backend/http_client.cpp	2026-11-07 07:50:56.020736300 -0300
++++ b/src/steam/backend/http_client.cpp	2026-11-07 07:55:28.037305900 -0300
+@@ -270,7 +270,11 @@
+ #define PLAYDEN_SETOPT(option, value) \
+     do { if (curl_easy_setopt(easy, option, value) != CURLE_OK) goto cleanup; } while (false)
+     PLAYDEN_SETOPT(CURLOPT_URL, request.url.c_str());
+-    PLAYDEN_SETOPT(CURLOPT_CAINFO, ca_bundle_.c_str());
++    // OrbisDesk: ca_bundle_ holds the PEM text, not a path (MBEDTLS_FS_IO is off on the console)
++    {  // its own block: the cleanup gotos above may not jump over an initialization
++      curl_blob ca_blob{const_cast<char*>(ca_bundle_.data()), ca_bundle_.size(), CURL_BLOB_COPY};
++      PLAYDEN_SETOPT(CURLOPT_CAINFO_BLOB, &ca_blob);
++    }
+     PLAYDEN_SETOPT(CURLOPT_SSL_VERIFYPEER, 1L);
+     PLAYDEN_SETOPT(CURLOPT_SSL_VERIFYHOST, 2L);
+     PLAYDEN_SETOPT(CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+diff -ru a/src/steam/backend/ws_client.cpp b/src/steam/backend/ws_client.cpp
+--- a/src/steam/backend/ws_client.cpp	2026-11-07 07:50:56.220956700 -0300
++++ b/src/steam/backend/ws_client.cpp	2026-11-07 07:52:03.770887700 -0300
+@@ -93,9 +93,11 @@
+     const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
+     easy_ = curl_easy_init();
+     if (!easy_) return HttpError::kInitializationFailed;
++    curl_blob ca_blob{const_cast<char*>(ca_bundle_.data()), ca_bundle_.size(), CURL_BLOB_COPY};
+     bool configured =
+         curl_easy_setopt(easy_, CURLOPT_URL, url.c_str()) == CURLE_OK &&
+-        curl_easy_setopt(easy_, CURLOPT_CAINFO, ca_bundle_.c_str()) == CURLE_OK &&
++        // OrbisDesk: ca_bundle_ holds the PEM text, not a path (MBEDTLS_FS_IO is off on the console)
++        curl_easy_setopt(easy_, CURLOPT_CAINFO_BLOB, &ca_blob) == CURLE_OK &&
+         curl_easy_setopt(easy_, CURLOPT_SSL_VERIFYPEER, 1L) == CURLE_OK &&
+         curl_easy_setopt(easy_, CURLOPT_SSL_VERIFYHOST, 2L) == CURLE_OK &&
+         curl_easy_setopt(easy_, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2) == CURLE_OK &&

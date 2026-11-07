@@ -1,0 +1,66 @@
+From 9c6c9d7fc2b1ff5712c3746807404c7de763c0a8 Mon Sep 17 00:00:00 2001
+From: Orbis Win Prototype <orbis-win@localhost>
+Date: Thu, 29 Oct 2026 20:00:49 -0300
+Subject: [PATCH] Fix executable RAM views and honor guest process exit status
+
+---
+ src/core/address_space.cpp            | 16 ++++++----------
+ src/core/libraries/kernel/process.cpp |  5 +++--
+ 2 files changed, 9 insertions(+), 12 deletions(-)
+
+diff --git a/src/core/address_space.cpp b/src/core/address_space.cpp
+index 10b0bc3..2ad2a52 100644
+--- a/src/core/address_space.cpp
++++ b/src/core/address_space.cpp
+@@ -271,19 +271,15 @@ struct AddressSpace::Impl {
+                 ret = VirtualProtect(ptr, size, prot, &resultvar);
+                 ASSERT_MSG(ret, "VirtualProtect failed. {}", Common::GetLastErrorMsg());
+             } else {
+-                if (prot == PAGE_NOACCESS) {
++                const ULONG view_prot = fd == -1 ? PAGE_EXECUTE_READWRITE
++                                                : (prot == PAGE_NOACCESS ? PAGE_READWRITE : prot);
++                ptr = MapViewOfFile3(backing, process, reinterpret_cast<PVOID>(virtual_addr), phys_addr,
++                                     size, MEM_REPLACE_PLACEHOLDER, view_prot, nullptr, 0);
++                ASSERT_MSG(ptr, "MapViewOfFile3 failed. {}", Common::GetLastErrorMsg());
++                if (view_prot != prot) {
+                     DWORD resultvar;
+-                    ptr = MapViewOfFile3(backing, process, reinterpret_cast<PVOID>(virtual_addr),
+-                                         phys_addr, size, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE,
+-                                         nullptr, 0);
+-                    ASSERT_MSG(ptr, "MapViewOfFile3 failed. {}", Common::GetLastErrorMsg());
+                     bool ret = VirtualProtect(ptr, size, prot, &resultvar);
+                     ASSERT_MSG(ret, "VirtualProtect failed. {}", Common::GetLastErrorMsg());
+-                } else {
+-                    ptr =
+-                        MapViewOfFile3(backing, process, reinterpret_cast<PVOID>(virtual_addr),
+-                                       phys_addr, size, MEM_REPLACE_PLACEHOLDER, prot, nullptr, 0);
+-                    ASSERT_MSG(ptr, "MapViewOfFile3 failed. {}", Common::GetLastErrorMsg());
+                 }
+             }
+         } else {
+diff --git a/src/core/libraries/kernel/process.cpp b/src/core/libraries/kernel/process.cpp
+index 276318a..28d85f0 100644
+--- a/src/core/libraries/kernel/process.cpp
++++ b/src/core/libraries/kernel/process.cpp
+@@ -9,6 +9,7 @@
+ #include "core/libraries/kernel/process.h"
+ #include "core/libraries/libs.h"
+ #include "core/linker.h"
++#include <cstdlib>
+ 
+ namespace Libraries::Kernel {
+ 
+@@ -309,8 +310,8 @@ u32 PS4_SYSV_ABI posix_getuid() {
+ }
+ 
+ s32 PS4_SYSV_ABI exit(s32 status) {
+-    UNREACHABLE_MSG("Exiting with status code {}", status);
+-    return 0;
++    LOG_INFO(Lib_Kernel, "Guest requested process exit, status = {}", status);
++    std::quick_exit(status);
+ }
+ 
+ s32 PS4_SYSV_ABI sceKernelSetProcessProperty(u32 prop_type, const void* prop_data, size_t prop_size,
+-- 
+2.51.0.windows.2
+

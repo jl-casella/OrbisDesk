@@ -1,0 +1,15 @@
+diff -ru a/src/steam/backend/auth_client.cpp b/src/steam/backend/auth_client.cpp
+--- a/src/steam/backend/auth_client.cpp	2026-11-07 13:36:00.963278453 -0300
++++ b/src/steam/backend/auth_client.cpp	2026-11-07 13:36:00.984222651 -0300
+@@ -37,8 +37,9 @@
+     while (!cancel.load()) {
+       const auto remaining = until - std::chrono::steady_clock::now();
+       if (remaining <= decltype(remaining)::zero()) return true;
+-      std::this_thread::sleep_for(std::min(remaining,
+-          std::chrono::duration_cast<decltype(remaining)>(std::chrono::milliseconds(25))));
++      // OrbisDesk: remaining is const; libstdc++'s duration_cast refuses a const target type
++      std::this_thread::sleep_for(std::min<std::remove_cv_t<decltype(remaining)>>(remaining,
++          std::chrono::duration_cast<std::remove_cv_t<decltype(remaining)>>(std::chrono::milliseconds(25))));
+     }
+     return false;
+   };

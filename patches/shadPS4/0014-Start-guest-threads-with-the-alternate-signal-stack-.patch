@@ -1,0 +1,31 @@
+From a9782b839700898c50ad79368509b4468895089f Mon Sep 17 00:00:00 2001
+From: OrbisWinPrototype <orbis-win@localhost>
+Date: Fri, 30 Oct 2026 22:01:34 -0300
+Subject: [PATCH] Start guest threads with the alternate signal stack disabled
+
+A thread had an all-zero sigaltstack, so a handler installed with
+SA_ONSTACK on a thread that never called sigaltstack ran on a stack at
+address 0. FreeBSD starts threads with SS_DISABLE and runs such handlers on
+the current stack; do the same.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/libraries/kernel/threads/pthread.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/core/libraries/kernel/threads/pthread.h b/src/core/libraries/kernel/threads/pthread.h
+index 6f400c3..6d8a43e 100644
+--- a/src/core/libraries/kernel/threads/pthread.h
++++ b/src/core/libraries/kernel/threads/pthread.h
+@@ -355,7 +355,7 @@ struct Pthread {
+     // std::atomic_bool in_sigsuspend{};
+     std::atomic_bool sigsuspend_interrupted{};
+     Sigset sigwait_set{};
+-    OrbisKernelExceptionHandlerStack sigaltstack{};
++    OrbisKernelExceptionHandlerStack sigaltstack{nullptr, 0, POSIX_SS_DISABLE};
+     Mcontext suspended_context{};
+     std::atomic_bool is_suspended_in_signal{false};
+ 
+-- 
+2.51.0.windows.2
+

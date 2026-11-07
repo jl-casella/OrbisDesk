@@ -1,0 +1,49 @@
+From 49ff41fb5b783177621a6c1ef50aff0351e3d20f Mon Sep 17 00:00:00 2001
+From: Orbis Win Prototype <orbis-win@localhost>
+Date: Thu, 29 Oct 2026 20:21:00 -0300
+Subject: [PATCH] Preserve read-only memory protection when converting
+ permission bits
+
+---
+ src/core/memory.cpp | 11 ++++-------
+ 1 file changed, 4 insertions(+), 7 deletions(-)
+
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 593ca3c..8a49649 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -802,8 +802,8 @@ s32 MemoryManager::MapFile(void** out_addr, VAddr virtual_addr, u64 size, Memory
+         if (True(mp & MemoryProt::CpuRead)) {
+             perms |= Core::MemoryPermission::Read;
+         }
+-        if (True(mp & MemoryProt::CpuReadWrite)) {
+-            perms |= Core::MemoryPermission::ReadWrite;
++        if (True(mp & MemoryProt::CpuWrite)) {
++            perms |= Core::MemoryPermission::Write;
+         }
+         if (True(mp & MemoryProt::CpuExec)) {
+             perms |= Core::MemoryPermission::Execute;
+@@ -1070,8 +1070,8 @@ s64 MemoryManager::ProtectBytes(VAddr addr, VirtualMemoryArea& vma_base, u64 siz
+     if (True(prot & MemoryProt::CpuRead)) {
+         perms |= Core::MemoryPermission::Read;
+     }
+-    if (True(prot & MemoryProt::CpuReadWrite)) {
+-        perms |= Core::MemoryPermission::ReadWrite;
++    if (True(prot & MemoryProt::CpuWrite)) {
++        perms |= Core::MemoryPermission::Write;
+     }
+     if (True(prot & MemoryProt::CpuExec)) {
+         perms |= Core::MemoryPermission::Execute;
+@@ -1082,9 +1082,6 @@ s64 MemoryManager::ProtectBytes(VAddr addr, VirtualMemoryArea& vma_base, u64 siz
+     if (True(prot & MemoryProt::GpuWrite)) {
+         perms |= Core::MemoryPermission::Write;
+     }
+-    if (True(prot & MemoryProt::GpuReadWrite)) {
+-        perms |= Core::MemoryPermission::ReadWrite;
+-    }
+ 
+     if (vma_base.type == VMAType::Direct || vma_base.type == VMAType::Pooled ||
+         vma_base.type == VMAType::File) {
+-- 
+2.51.0.windows.2
+

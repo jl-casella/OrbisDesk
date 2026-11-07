@@ -1,0 +1,80 @@
+From 14232ee2d90a8fe537ddf2d87d8a6a2b60154a9a Mon Sep 17 00:00:00 2001
+From: Orbis Win Prototype <orbis-win@localhost>
+Date: Fri, 30 Oct 2026 12:59:49 +0000
+Subject: [PATCH 5/5] Fix kernel message exports and reject unsupported
+ ancillary data
+
+---
+ src/core/libraries/kernel/kernel.cpp  | 2 ++
+ src/core/libraries/net/net.cpp        | 4 +++-
+ src/core/libraries/net/net_kernel.cpp | 4 ++--
+ src/core/libraries/net/net_kernel.h   | 2 +-
+ 4 files changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/src/core/libraries/kernel/kernel.cpp b/src/core/libraries/kernel/kernel.cpp
+index 735f7d7..573f34b 100644
+--- a/src/core/libraries/kernel/kernel.cpp
++++ b/src/core/libraries/kernel/kernel.cpp
+@@ -526,6 +526,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
+     LIB_FUNCTION("oBr313PppNE", "libkernel", 1, "libkernel", Libraries::Net::sys_sendto);
+     LIB_FUNCTION("Ez8xjo9UF4E", "libkernel", 1, "libkernel", Libraries::Net::sys_recv);
+     LIB_FUNCTION("lUk6wrGXyMw", "libkernel", 1, "libkernel", Libraries::Net::sys_recvfrom);
++    LIB_FUNCTION("hI7oVeOluPM", "libkernel", 1, "libkernel", Libraries::Net::sys_recvmsg);
++    LIB_FUNCTION("aNeavPDNKzA", "libkernel", 1, "libkernel", Libraries::Net::sys_sendmsg);
+ 
+     LIB_FUNCTION("TUuiYS2kE8s", "libScePosix", 1, "libkernel", Libraries::Net::sys_shutdown);
+     LIB_FUNCTION("TU-d9PfIHPM", "libScePosix", 1, "libkernel", Libraries::Net::sys_socket);
+diff --git a/src/core/libraries/net/net.cpp b/src/core/libraries/net/net.cpp
+index a802306..fe35f10 100644
+--- a/src/core/libraries/net/net.cpp
++++ b/src/core/libraries/net/net.cpp
+@@ -2045,6 +2045,8 @@ static s32 sceNetRecvmsgImpl(OrbisNetId s, OrbisNetMsghdr* msg, s32 flags) {
+         offset += chunk;
+     }
+     msg->msg_namelen = namelen;
++    msg->msg_controllen = 0;
++    msg->msg_flags = 0;
+     return r;
+ }
+ 
+@@ -2213,7 +2215,7 @@ static s32 sceNetSendmsgImpl(OrbisNetId s, const OrbisNetMsghdr* msg, s32 flags)
+         return SetErrno(ORBIS_NET_EFAULT);
+     }
+     if (msg->msg_control != nullptr && msg->msg_controllen != 0) {
+-        LOG_WARNING(Lib_Net, "ancillary data ignored ({} bytes)", msg->msg_controllen);
++        return SetErrno(ORBIS_NET_EOPNOTSUPP);
+     }
+     // Gather into one buffer so a datagram goes out whole.
+     std::vector<u8> buffer;
+diff --git a/src/core/libraries/net/net_kernel.cpp b/src/core/libraries/net/net_kernel.cpp
+index b106340..b5990f3 100644
+--- a/src/core/libraries/net/net_kernel.cpp
++++ b/src/core/libraries/net/net_kernel.cpp
+@@ -307,9 +307,9 @@ int PS4_SYSV_ABI sys_sendto(OrbisNetId s, const void* buf, u64 len, int flags,
+     return static_cast<int>(Posix(sceNetSendto(s, buf, len, flags, addr, addrlen)));
+ }
+ 
+-int PS4_SYSV_ABI sys_sendmsg(OrbisNetId s, const OrbisNetMsghdr* msg, int flags) {
++s64 PS4_SYSV_ABI sys_sendmsg(OrbisNetId s, const OrbisNetMsghdr* msg, int flags) {
+     const KeepNetErrno keep;
+-    return static_cast<int>(Posix(sceNetSendmsg(s, msg, flags)));
++    return Posix(sceNetSendmsg(s, msg, flags));
+ }
+ 
+ s64 PS4_SYSV_ABI sys_recv(OrbisNetId s, void* buf, u64 len, int flags) {
+diff --git a/src/core/libraries/net/net_kernel.h b/src/core/libraries/net/net_kernel.h
+index b6c6f09..bb04dd2 100644
+--- a/src/core/libraries/net/net_kernel.h
++++ b/src/core/libraries/net/net_kernel.h
+@@ -44,7 +44,7 @@ int PS4_SYSV_ABI sys_socketclose(OrbisNetId s);
+ int PS4_SYSV_ABI sys_send(OrbisNetId s, const void* buf, u64 len, int flags);
+ int PS4_SYSV_ABI sys_sendto(OrbisNetId s, const void* buf, u64 len, int flags,
+                             const OrbisNetSockaddr* addr, u32 addrlen);
+-int PS4_SYSV_ABI sys_sendmsg(OrbisNetId s, const OrbisNetMsghdr* msg, int flags);
++s64 PS4_SYSV_ABI sys_sendmsg(OrbisNetId s, const OrbisNetMsghdr* msg, int flags);
+ s64 PS4_SYSV_ABI sys_recv(OrbisNetId s, void* buf, u64 len, int flags);
+ s64 PS4_SYSV_ABI sys_recvfrom(OrbisNetId s, void* buf, u64 len, int flags, OrbisNetSockaddr* addr,
+                               u32* paddrlen);
+-- 
+2.51.0.windows.2
+

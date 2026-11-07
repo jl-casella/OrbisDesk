@@ -1,0 +1,3 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* W179: winecfg's icon for its Control Panel applet (fixtures/win32/winecfgcpl.c) */
+1 ICON "winecfg.ico"

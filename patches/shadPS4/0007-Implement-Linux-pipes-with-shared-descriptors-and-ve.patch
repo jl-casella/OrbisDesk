@@ -1,0 +1,510 @@
+From f42070cabeb048cb0247711d7f30ad6f115ceba6 Mon Sep 17 00:00:00 2001
+From: Orbis Win Prototype <orbis-win@localhost>
+Date: Fri, 30 Oct 2026 14:10:41 -0300
+Subject: [PATCH] Implement Linux pipes with shared descriptors and vectored IO
+
+---
+ src/core/libraries/kernel/file_system.cpp | 87 ++++++++++++++++++++-
+ src/core/libraries/net/net_kernel.cpp     | 24 +++++-
+ src/core/net/guest_net.cpp                | 94 ++++++++++++++++++++++-
+ src/core/net/guest_net.h                  | 12 ++-
+ src/core/net/host_net.cpp                 | 67 ++++++++++++++++
+ src/core/net/host_net.h                   |  7 ++
+ 6 files changed, 283 insertions(+), 8 deletions(-)
+
+diff --git a/src/core/libraries/kernel/file_system.cpp b/src/core/libraries/kernel/file_system.cpp
+index 542a980..3ebd107 100644
+--- a/src/core/libraries/kernel/file_system.cpp
++++ b/src/core/libraries/kernel/file_system.cpp
+@@ -361,6 +361,15 @@ s32 PS4_SYSV_ABI posix_fcntl(s32 fd, s32 command, u64 argument) {
+         return table->SetDescriptorFlags(fd, argument);
+     case 3:
+         if (file->type == Core::FileSys::FileType::Socket) {
++            if (Core::Net::GetObjectKind(fd) == Core::Net::NetObjectKind::Pipe) {
++                Core::Net::PipeInfo info{};
++                const auto result = Core::Net::PipeGetInfo(fd, &info);
++                if (result.error != Core::Net::Host::Error::Ok) {
++                    *__Error() = Libraries::Net::ToOrbisErrno(result.error);
++                    return -1;
++                }
++                return info.access | (info.nonblocking ? ORBIS_KERNEL_O_NONBLOCK : 0);
++            }
+             Core::Net::SocketInfo info{};
+             const auto result = Core::Net::SocketGetInfo(fd, &info);
+             if (result.error != Core::Net::Host::Error::Ok) {
+@@ -475,6 +484,47 @@ s64 ReadFile(Core::FileSys::File* file, void* buf, u64 nbytes) {
+     return bytes;
+ }
+ 
++static s64 NetworkVectorIO(s32 fd, const OrbisKernelIovec* iov, s32 count, bool writing) {
++    if (count < 0 || count > 1024 || (count && !iov)) {
++        *__Error() = POSIX_EINVAL;
++        return -1;
++    }
++    size_t size = 0;
++    for (s32 index = 0; index < count; ++index) {
++        if (iov[index].iov_len && !iov[index].iov_base) {
++            *__Error() = POSIX_EFAULT;
++            return -1;
++        }
++        if (iov[index].iov_len > INT32_MAX - size) {
++            *__Error() = POSIX_EINVAL;
++            return -1;
++        }
++        size += iov[index].iov_len;
++    }
++    std::vector<u8> bytes(size);
++    size_t offset = 0;
++    if (writing) {
++        for (s32 index = 0; index < count; ++index) {
++            if (iov[index].iov_len) {
++                std::memcpy(bytes.data() + offset, iov[index].iov_base, iov[index].iov_len);
++            }
++            offset += iov[index].iov_len;
++        }
++        return Libraries::Net::KernelWrite(fd, bytes.data(), bytes.size());
++    }
++    const auto result = Libraries::Net::KernelRead(fd, bytes.data(), bytes.size());
++    if (result > 0) {
++        for (s32 index = 0; index < count && offset < result; ++index) {
++            const size_t amount = std::min<u64>(iov[index].iov_len, result - offset);
++            if (amount) {
++                std::memcpy(iov[index].iov_base, bytes.data() + offset, amount);
++            }
++            offset += amount;
++        }
++    }
++    return result;
++}
++
+ s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
+     auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
+     auto* file = h->GetFile(fd);
+@@ -483,6 +533,9 @@ s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
+         return -1;
+     }
+ 
++    if (file->type == Core::FileSys::FileType::Socket) {
++        return NetworkVectorIO(fd, iov, iovcnt, false);
++    }
+     std::scoped_lock lk{file->m_mutex};
+     if (file->type == Core::FileSys::FileType::Device) {
+         s64 result = file->device->readv(iov, iovcnt);
+@@ -533,6 +586,9 @@ s64 PS4_SYSV_ABI writev(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
+         return -1;
+     }
+ 
++    if (file->type == Core::FileSys::FileType::Socket) {
++        return NetworkVectorIO(fd, iov, iovcnt, true);
++    }
+     std::scoped_lock lk{file->m_mutex};
+ 
+     if (file->type == Core::FileSys::FileType::Device) {
+@@ -574,6 +630,10 @@ s64 PS4_SYSV_ABI posix_lseek(s32 fd, s64 offset, s32 whence) {
+         *__Error() = POSIX_EBADF;
+         return -1;
+     }
++    if (Core::Net::GetObjectKind(fd) == Core::Net::NetObjectKind::Pipe) {
++        *__Error() = POSIX_ESPIPE;
++        return -1;
++    }
+ 
+     std::scoped_lock lk{file->m_mutex};
+     if (file->type == Core::FileSys::FileType::Device) {
+@@ -1429,6 +1489,10 @@ s32 PS4_SYSV_ABI sceKernelRename(const char* from, const char* to) {
+ }
+ 
+ s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 offset) {
++    if (Core::Net::GetObjectKind(fd) == Core::Net::NetObjectKind::Pipe) {
++        *__Error() = POSIX_ESPIPE;
++        return -1;
++    }
+     if (offset < 0) {
+         *__Error() = POSIX_EINVAL;
+         return -1;
+@@ -1636,6 +1700,10 @@ s64 PS4_SYSV_ABI sceKernelGetdirentries(s32 fd, char* buf, u64 nbytes, s64* base
+ }
+ 
+ s64 PS4_SYSV_ABI posix_pwritev(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt, s64 offset) {
++    if (Core::Net::GetObjectKind(fd) == Core::Net::NetObjectKind::Pipe) {
++        *__Error() = POSIX_ESPIPE;
++        return -1;
++    }
+     if (offset < 0) {
+         *__Error() = POSIX_EINVAL;
+         return -1;
+@@ -1861,11 +1929,26 @@ s32 PS4_SYSV_ABI posix_select(s32 nfds, GuestFdSet* readfds, GuestFdSet* writefd
+ }
+ 
+ s32 PS4_SYSV_ABI posix_pipe(s32* descriptors) {
+-    *__Error() = descriptors ? POSIX_EOPNOTSUPP : POSIX_EFAULT;
+-    return -1;
++    if (!descriptors) {
++        *__Error() = POSIX_EFAULT;
++        return -1;
++    }
++    s32 created[2];
++    const auto result = Core::Net::PipeCreate(created);
++    if (result.error != Core::Net::Host::Error::Ok) {
++        *__Error() = Libraries::Net::ToOrbisErrno(result.error);
++        return -1;
++    }
++    descriptors[0] = created[0];
++    descriptors[1] = created[1];
++    return 0;
+ }
+ 
+ void RegisterFileSystem(Core::Loader::SymbolsResolver* sym) {
++    LIB_FUNCTION("I7ImcLds-uU", "libkernel", 1, "libkernel", posix_readv);
++    LIB_FUNCTION("I7ImcLds-uU", "libScePosix", 1, "libkernel", posix_readv);
++    LIB_FUNCTION("Z2aKdxzS4KE", "libkernel", 1, "libkernel", posix_writev);
++    LIB_FUNCTION("Z2aKdxzS4KE", "libScePosix", 1, "libkernel", posix_writev);
+     LIB_FUNCTION("-Jp7F+pXxNg", "libkernel", 1, "libkernel", posix_pipe);
+     LIB_FUNCTION("-Jp7F+pXxNg", "libScePosix", 1, "libkernel", posix_pipe);
+     LIB_FUNCTION("iiQjzvfWDq0", "libkernel", 1, "libkernel", posix_dup);
+diff --git a/src/core/libraries/net/net_kernel.cpp b/src/core/libraries/net/net_kernel.cpp
+index b5990f3..ce14198 100644
+--- a/src/core/libraries/net/net_kernel.cpp
++++ b/src/core/libraries/net/net_kernel.cpp
+@@ -131,6 +131,7 @@ s32 KernelClose(s32 fd) {
+     LOG_DEBUG(Lib_Net, "close({}): {}", fd,
+               !kind                                       ? "not a net object"
+               : *kind == Core::Net::NetObjectKind::Socket ? "socket"
++              : *kind == Core::Net::NetObjectKind::Pipe   ? "pipe"
+               : *kind == Core::Net::NetObjectKind::Epoll  ? "epoll"
+                                                           : "resolver");
+     if (!kind) {
+@@ -153,6 +154,10 @@ s32 KernelClose(s32 fd) {
+ 
+ s64 KernelRead(s32 fd, void* buf, u64 nbytes) {
+     const KeepNetErrno keep;
++    if (Core::Net::GetObjectKind(fd) == Core::Net::NetObjectKind::Pipe) {
++        const auto result = Core::Net::PipeRead(fd, buf, nbytes);
++        return result.error == Error::Ok ? result.value : PosixError(ToOrbisErrno(result.error));
++    }
+     if (Core::Net::GetObjectKind(fd) != Core::Net::NetObjectKind::Socket) {
+         return PosixError(ORBIS_NET_EBADF);
+     }
+@@ -161,6 +166,10 @@ s64 KernelRead(s32 fd, void* buf, u64 nbytes) {
+ 
+ s64 KernelWrite(s32 fd, const void* buf, u64 nbytes) {
+     const KeepNetErrno keep;
++    if (Core::Net::GetObjectKind(fd) == Core::Net::NetObjectKind::Pipe) {
++        const auto result = Core::Net::PipeWrite(fd, buf, nbytes);
++        return result.error == Error::Ok ? result.value : PosixError(ToOrbisErrno(result.error));
++    }
+     if (Core::Net::GetObjectKind(fd) != Core::Net::NetObjectKind::Socket) {
+         return PosixError(ORBIS_NET_EBADF);
+     }
+@@ -176,6 +185,15 @@ s32 KernelFstat(s32 fd, Libraries::Kernel::OrbisKernelStat* sb) {
+     }
+     std::memset(sb, 0, sizeof(*sb));
+     sb->st_mode = 0140000u | 0777u;
++    if (Core::Net::GetObjectKind(fd) == Core::Net::NetObjectKind::Pipe) {
++        Core::Net::PipeInfo info{};
++        if (const auto result = Core::Net::PipeGetInfo(fd, &info); result.error != Error::Ok) {
++            return PosixError(ToOrbisErrno(result.error));
++        }
++        sb->st_mode = 0010000u | 0600u;
++        sb->st_dev = info.identity.device;
++        sb->st_ino = info.identity.inode;
++    }
+     sb->st_nlink = 1;
+     sb->st_blksize = 4096;
+     sb->st_size = 0;
+@@ -187,7 +205,8 @@ s64 KernelSelect(std::span<Core::Net::SelectEntry> entries, s64 timeout_us) {
+     sockets.reserve(entries.size());
+     for (auto& e : entries) {
+         e.ready = 0;
+-        if (Core::Net::GetObjectKind(e.id) == Core::Net::NetObjectKind::Socket) {
++        const auto kind = Core::Net::GetObjectKind(e.id);
++        if (kind == Core::Net::NetObjectKind::Socket || kind == Core::Net::NetObjectKind::Pipe) {
+             sockets.push_back(e);
+         }
+     }
+@@ -234,6 +253,9 @@ int PS4_SYSV_ABI sys_getsockname(OrbisNetId s, OrbisNetSockaddr* addr, u32* padd
+ 
+ int PS4_SYSV_ABI sys_getsockopt(OrbisNetId s, int level, int optname, void* optval, u32* optlen) {
+     const KeepNetErrno keep;
++    if (Core::Net::GetObjectKind(s) == Core::Net::NetObjectKind::Pipe) {
++        return PosixError(ORBIS_NET_ENOTSOCK);
++    }
+     return static_cast<int>(Posix(sceNetGetsockopt(s, level, optname, optval, optlen)));
+ }
+ 
+diff --git a/src/core/net/guest_net.cpp b/src/core/net/guest_net.cpp
+index b87e9f8..ce9eefe 100644
+--- a/src/core/net/guest_net.cpp
++++ b/src/core/net/guest_net.cpp
+@@ -63,8 +63,10 @@ const Host::WakeHandle* ThreadWake() {
+ }
+ 
+ struct GuestSocket {
+-    GuestSocket(Host::NativeSocket native_, int type_, u32 generation_)
+-        : native(native_), type(type_), generation(generation_) {}
++    GuestSocket(Host::NativeSocket native_, int type_, u32 generation_, int pipe_access_ = -1,
++                Host::PipeIdentity pipe_identity_ = {})
++        : native(native_), type(type_), generation(generation_), pipe_access(pipe_access_),
++          pipe_identity(pipe_identity_) {}
+     GuestSocket(std::shared_ptr<P2P::DatagramSocket> dgram, u32 generation_)
+         : native(Host::InvalidSocket), type(SOCK_DGRAM), generation(generation_),
+           p2p_dgram(std::move(dgram)) {}
+@@ -79,7 +81,7 @@ struct GuestSocket {
+         if (p2p_dgram) {
+             p2p_dgram->Close();
+         }
+-        if (native != Host::InvalidSocket && type == SOCK_STREAM) {
++        if (native != Host::InvalidSocket && type == SOCK_STREAM && pipe_access < 0) {
+             Host::PrepareClose(native, !nonblocking);
+         }
+         Host::CloseSocket(native);
+@@ -100,6 +102,8 @@ struct GuestSocket {
+     const Host::NativeSocket native; // invalid for P2P
+     const int type;
+     const u32 generation; // tells reused ids apart in epoll tags
++    const int pipe_access = -1;
++    const Host::PipeIdentity pipe_identity{};
+     const std::shared_ptr<P2P::DatagramSocket> p2p_dgram;
+     const std::shared_ptr<P2P::StreamSocket> p2p_stream;
+ 
+@@ -259,7 +263,10 @@ public:
+         }
+         switch (it->second.object.index()) {
+         case 0:
+-            return NetObjectKind::Socket;
++            return std::get<std::shared_ptr<SocketReference>>(it->second.object)
++                               ->socket->pipe_access < 0
++                       ? NetObjectKind::Socket
++                       : NetObjectKind::Pipe;
+         case 1:
+             return NetObjectKind::Epoll;
+         default:
+@@ -597,6 +604,7 @@ std::optional<NetObjectKind> GetObjectKind(s32 id) {
+ NetResult CloseObject(s32 id) {
+     switch (g_objects.Kind(id).value_or(NetObjectKind::Socket)) {
+     case NetObjectKind::Socket:
++    case NetObjectKind::Pipe:
+         return SocketClose(id); // EBADF for unknown ids
+     case NetObjectKind::Epoll:
+         return EpollDestroy(id);
+@@ -684,6 +692,81 @@ bool BroadcastAllowed(Host::NativeSocket s) {
+ 
+ } // namespace
+ 
++NetResult PipeCreate(s32 ids[2]) {
++    Host::NativeSocket native[2];
++    Host::PipeIdentity identity{};
++    if (const auto error = Host::CreatePipe(native, &identity); error != Error::Ok) {
++        return NetResult::Fail(error);
++    }
++    auto reader = std::make_shared<GuestSocket>(native[0], SOCK_STREAM,
++                                                g_next_generation.fetch_add(1), 0, identity);
++    auto writer = std::make_shared<GuestSocket>(native[1], SOCK_STREAM,
++                                                g_next_generation.fetch_add(1), 1, identity);
++    const auto first = g_objects.Insert(std::move(reader));
++    if (first.error != Error::Ok) {
++        return first;
++    }
++    const auto second = g_objects.Insert(std::move(writer));
++    if (second.error != Error::Ok) {
++        SocketClose(static_cast<s32>(first.value));
++        return second;
++    }
++    ids[0] = static_cast<s32>(first.value);
++    ids[1] = static_cast<s32>(second.value);
++    return NetResult::Ok();
++}
++
++NetResult PipeGetInfo(s32 id, PipeInfo* info) {
++    const auto pipe = g_objects.Get<GuestSocket>(id);
++    if (!pipe || pipe->pipe_access < 0) {
++        return NetResult::Fail(Error::BadF);
++    }
++    *info = {pipe->pipe_access, pipe->nonblocking, pipe->pipe_identity};
++    return NetResult::Ok();
++}
++
++NetResult PipeRead(s32 id, void* buffer, size_t size) {
++    const auto pipe = g_objects.Get<GuestSocket>(id);
++    if (!pipe || pipe->pipe_access != 0) {
++        return NetResult::Fail(Error::BadF);
++    }
++    if (!buffer && size) {
++        return NetResult::Fail(Error::Fault);
++    }
++    if (size > INT64_MAX) {
++        return NetResult::Fail(Error::Inval);
++    }
++    if (!size) {
++        return NetResult::Ok();
++    }
++    return RunBlocking(*pipe, Side::Recv, Host::Readable, std::nullopt, !pipe->nonblocking, [&] {
++        const auto result = Host::ReadPipe(pipe->native, buffer, size);
++        return NetResult{result.value, result.error};
++    });
++}
++
++NetResult PipeWrite(s32 id, const void* buffer, size_t size) {
++    const auto pipe = g_objects.Get<GuestSocket>(id);
++    if (!pipe || pipe->pipe_access != 1) {
++        return NetResult::Fail(Error::BadF);
++    }
++    if (!buffer && size) {
++        return NetResult::Fail(Error::Fault);
++    }
++    if (size > INT64_MAX) {
++        return NetResult::Fail(Error::Inval);
++    }
++    if (!size) {
++        return NetResult::Ok();
++    }
++    const auto* bytes = static_cast<const u8*>(buffer);
++    return SendAll(*pipe, size, !pipe->nonblocking, true, [&](size_t sent) {
++        const auto result =
++            Host::WritePipe(pipe->native, bytes + sent, std::min(size - sent, MaxStreamSendChunk));
++        return NetResult{result.value, result.error};
++    });
++}
++
+ NetResult SocketCreate(int family, int type, int protocol) {
+     // FreeBSD returns EPROTONOSUPPORT for a mismatched protocol, macOS EPROTOTYPE.
+     if ((family == AF_INET || family == AF_INET6) && protocol != 0 &&
+@@ -1074,6 +1157,9 @@ NetResult SocketGetInfo(s32 id, SocketInfo* info) {
+     if (!s) {
+         return NetResult::Fail(Error::BadF);
+     }
++    if (s->pipe_access >= 0) {
++        return NetResult::Fail(Error::NotSock);
++    }
+     info->type = s->type;
+     info->p2p = s->IsP2P();
+     info->nonblocking = s->nonblocking;
+diff --git a/src/core/net/guest_net.h b/src/core/net/guest_net.h
+index 72ff9e1..6b946b7 100644
+--- a/src/core/net/guest_net.h
++++ b/src/core/net/guest_net.h
+@@ -54,7 +54,17 @@ struct IdAllocator {
+ };
+ void SetIdAllocator(IdAllocator allocator);
+ 
+-enum class NetObjectKind { Socket, Epoll, External };
++enum class NetObjectKind { Socket, Pipe, Epoll, External };
++
++struct PipeInfo {
++    int access;
++    bool nonblocking;
++    Host::PipeIdentity identity;
++};
++NetResult PipeCreate(s32 ids[2]);
++NetResult PipeRead(s32 id, void* buffer, size_t size);
++NetResult PipeWrite(s32 id, const void* buffer, size_t size);
++NetResult PipeGetInfo(s32 id, PipeInfo* info);
+ 
+ std::optional<NetObjectKind> GetObjectKind(s32 id);
+ NetResult CloseObject(s32 id);
+diff --git a/src/core/net/host_net.cpp b/src/core/net/host_net.cpp
+index fa8cd41..37a2cf3 100644
+--- a/src/core/net/host_net.cpp
++++ b/src/core/net/host_net.cpp
+@@ -8,6 +8,12 @@
+ 
+ #include "core/net/host_net.h"
+ 
++#ifdef __linux__
++#include <pthread.h>
++#include <signal.h>
++#include <sys/stat.h>
++#endif
++
+ #ifdef _WIN32
+ #include <mstcpip.h>
+ #include <wepoll.h>
+@@ -269,6 +275,67 @@ NativeSocket CreateSocket(int family, int type, int protocol, Error* error) {
+     return s;
+ }
+ 
++Error CreatePipe(NativeSocket out[2], PipeIdentity* identity) {
++    out[0] = out[1] = InvalidSocket;
++#ifdef __linux__
++    int descriptors[2];
++    if (pipe2(descriptors, O_NONBLOCK | O_CLOEXEC) < 0) {
++        return LastError();
++    }
++    struct stat status;
++    if (fstat(descriptors[0], &status) < 0) {
++        const auto error = LastError();
++        close(descriptors[0]);
++        close(descriptors[1]);
++        return error;
++    }
++    *identity = {static_cast<u64>(status.st_dev), static_cast<u64>(status.st_ino)};
++    out[0] = descriptors[0];
++    out[1] = descriptors[1];
++    return Error::Ok;
++#else
++    return Error::OpNotSupp;
++#endif
++}
++
++IoResult ReadPipe(NativeSocket pipe, void* buffer, size_t size) {
++#ifdef __linux__
++    const auto result = read(pipe, buffer, size);
++    return {result, result < 0 ? LastError() : Error::Ok};
++#else
++    return {-1, Error::OpNotSupp};
++#endif
++}
++
++IoResult WritePipe(NativeSocket pipe, const void* buffer, size_t size) {
++#ifdef __linux__
++    sigset_t mask, previous, pending;
++    sigemptyset(&mask);
++    sigaddset(&mask, SIGPIPE);
++    const int error = pthread_sigmask(SIG_BLOCK, &mask, &previous);
++    if (error) {
++        return {-1, TranslateNative(error)};
++    }
++    if (sigpending(&pending) < 0) {
++        const auto failure = LastError();
++        pthread_sigmask(SIG_SETMASK, &previous, nullptr);
++        return {-1, failure};
++    }
++    const bool already_pending = sigismember(&pending, SIGPIPE) == 1;
++    const auto result = write(pipe, buffer, size);
++    const auto failure = result < 0 ? LastError() : Error::Ok;
++    if (failure == Error::Pipe && !already_pending) {
++        timespec timeout{};
++        while (sigtimedwait(&mask, nullptr, &timeout) < 0 && errno == EINTR) {
++        }
++    }
++    pthread_sigmask(SIG_SETMASK, &previous, nullptr);
++    return {result, failure};
++#else
++    return {-1, Error::OpNotSupp};
++#endif
++}
++
+ Error CreateSocketPair(int family, int type, int protocol, NativeSocket out[2]) {
+     out[0] = out[1] = InvalidSocket;
+ #ifdef _WIN32
+diff --git a/src/core/net/host_net.h b/src/core/net/host_net.h
+index 174d7e0..3c196fb 100644
+--- a/src/core/net/host_net.h
++++ b/src/core/net/host_net.h
+@@ -111,6 +111,13 @@ bool ConfigureSocket(NativeSocket s, int type);
+ void CloseSocket(NativeSocket s);
+ // Windows has no socketpair(), so it uses a loopback TCP connection (stream only).
+ Error CreateSocketPair(int family, int type, int protocol, NativeSocket out[2]);
++struct PipeIdentity {
++    u64 device;
++    u64 inode;
++};
++Error CreatePipe(NativeSocket out[2], PipeIdentity* identity);
++IoResult ReadPipe(NativeSocket pipe, void* buffer, size_t size);
++IoResult WritePipe(NativeSocket pipe, const void* buffer, size_t size);
+ 
+ Error PrepareBind(NativeSocket s, bool reuse_addr, bool reuse_port);
+ // SO_LINGER in seconds. Darwin's SO_LINGER counts clock ticks, SO_LINGER_SEC is the BSD one.
+-- 
+2.51.0.windows.2
+

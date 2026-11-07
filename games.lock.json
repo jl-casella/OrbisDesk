@@ -1,0 +1,42 @@
+{
+  "reactos": {
+    "repository": "https://github.com/reactos/reactos",
+    "commit": "5f6ef754f90eef792e4ef90561bcff2cac4d3afb",
+    "checkout": ".deps/reactos-games",
+    "sparse": [
+      "base/applications/games/solitaire",
+      "base/applications/games/spider",
+      "sdk/lib/3rdparty/cardlib",
+      "dll/win32/cards",
+      "COPYING",
+      "COPYING.LIB"
+    ],
+    "licenses": {
+      "sol.exe": "Public domain (J Brown, cardlib example; solitaire/ReadMe.txt)",
+      "cardlib": "Public domain (J Brown; sdk/lib/3rdparty/cardlib/ReadMe.txt)",
+      "spider.exe": "GPL-2.0 (headers refer to ReactOS COPYING)",
+      "cards.dll": "LGPL-2.1-or-later (cards.c); card images free to use (dll/win32/cards/COPYING)"
+    }
+  },
+  "spacecadetpinball": {
+    "repository": "https://github.com/k4zmu2a/SpaceCadetPinball",
+    "commit": "cb9b7b886244a27773f66b0b19fdc2998392565e",
+    "describe": "Release_2.1.0-6-gcb9b7b8",
+    "checkout": ".deps/spacecadetpinball",
+    "license": "MIT (code only; game data PINBALL.DAT/WAV/MID is Microsoft's and is not included)"
+  },
+  "sdl2": {
+    "repository": "https://github.com/libsdl-org/SDL",
+    "tag": "release-2.32.8",
+    "commit": "98d1f3a45aae568ccd6ed5fec179330f47d4d356",
+    "checkout": ".deps/sdl2",
+    "license": "Zlib"
+  },
+  "sdl2_mixer": {
+    "repository": "https://github.com/libsdl-org/SDL_mixer",
+    "tag": "release-2.8.1",
+    "commit": "171eb2d420d5643e4ee11514a06e04a41a463bbd",
+    "checkout": ".deps/sdl2-mixer",
+    "license": "Zlib (built with WAVE and native MIDI only, no vendored codecs)"
+  }
+}

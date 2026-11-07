@@ -1,0 +1,117 @@
+From f1dcef550e51307766e848e90eb18f5e47b1a02b Mon Sep 17 00:00:00 2001
+From: OrbisWinPrototype <orbis-win@localhost>
+Date: Fri, 30 Oct 2026 21:04:01 -0300
+Subject: [PATCH] Report complete Linux fault contexts to guest signal handlers
+
+Guest handlers received a context without trap number, error code, flags,
+FPU state or segment bases, and si_addr held the RIP instead of the faulting
+address. Translate the Linux trap vector to the FreeBSD trap code, copy the
+error code, RFLAGS, CS, the FXSAVE area and the FS/GS bases, write RFLAGS and
+the FPU state back on return, and keep si_addr for SIGSEGV and SIGBUS.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../libraries/kernel/threads/exception.cpp    | 43 +++++++++++++++++++
+ src/core/signals.cpp                          |  4 +-
+ 2 files changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/libraries/kernel/threads/exception.cpp b/src/core/libraries/kernel/threads/exception.cpp
+index 73d588f..3604724 100644
+--- a/src/core/libraries/kernel/threads/exception.cpp
++++ b/src/core/libraries/kernel/threads/exception.cpp
+@@ -10,6 +10,7 @@
+ #include "core/libraries/kernel/threads/pthread.h"
+ #include "core/libraries/libs.h"
+ #include "core/signals.h"
++#include "core/tls.h"
+ 
+ #ifdef _WIN64
+ #include "common/ntapi.h"
+@@ -17,6 +18,13 @@
+ #include <csignal>
+ #include <sys/ucontext.h>
+ #endif
++#if defined(__linux__) && defined(ARCH_X86_64)
++#include <array>
++#include <cstring>
++#include <asm/prctl.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++#endif
+ #include <unordered_set>
+ #include "exception.h"
+ 
+@@ -24,6 +32,18 @@ namespace Libraries::Kernel {
+ 
+ #ifndef _WIN32
+ static thread_local ucontext_t* s_current_host_context = nullptr;
++#if defined(__linux__) && defined(ARCH_X86_64)
++static constexpr u64 McFpFormatXmm = 0x10002;
++static constexpr u64 McFpOwnedFpu = 0x20001;
++static constexpr int McHasBases = 0x2;
++static constexpr size_t FxsaveSize = 512;
++
++static int LinuxTrapToOrbis(greg_t trap) {
++    static constexpr std::array<int, 20> orbis_traps{18, 10, 19, 3, 20, 21, 1, 22, 23, 24,
++                                                     25, 26, 27, 9, 12, 0,  6, 14, 28, 29};
++    return trap >= 0 && trap < static_cast<greg_t>(orbis_traps.size()) ? orbis_traps[trap] : 0;
++}
++#endif
+ #else
+ static thread_local PCONTEXT s_current_host_context = nullptr;
+ #endif
+@@ -101,6 +121,25 @@ Ucontext::Ucontext(siginfo_t const* inf, ucontext_t* raw_context) {
+     uc_mcontext.mc_gs = (regs[REG_CSGSFS] >> 16) & 0xFFFF;
+     uc_mcontext.mc_rip = regs[REG_RIP];
+     uc_mcontext.mc_addr = reinterpret_cast<uint64_t>(inf->si_addr);
++    uc_mcontext.mc_trapno = LinuxTrapToOrbis(regs[REG_TRAPNO]);
++    uc_mcontext.mc_err = regs[REG_ERR];
++    uc_mcontext.mc_rflags = regs[REG_EFL];
++    uc_mcontext.mc_cs = regs[REG_CSGSFS] & 0xFFFF;
++    uc_mcontext.mc_len = sizeof(uc_mcontext);
++    uc_mcontext.mc_flags = McHasBases;
++    uc_mcontext.mc_fsbase = reinterpret_cast<u64>(Core::GetTcbBase());
++    if (syscall(SYS_arch_prctl, ARCH_GET_GS, &uc_mcontext.mc_gsbase) != 0) {
++        uc_mcontext.mc_gsbase = 0;
++    }
++    std::memset(uc_mcontext.mc_fpstate, 0, sizeof(uc_mcontext.mc_fpstate));
++    if (raw_context->uc_mcontext.fpregs) {
++        std::memcpy(uc_mcontext.mc_fpstate, raw_context->uc_mcontext.fpregs, FxsaveSize);
++        uc_mcontext.mc_fpformat = McFpFormatXmm;
++        uc_mcontext.mc_ownedfp = McFpOwnedFpu;
++    } else {
++        uc_mcontext.mc_fpformat = 0;
++        uc_mcontext.mc_ownedfp = 0;
++    }
+ #endif
+ #else
+ #error "ucontext_t conversion not implemented for current architecture."
+@@ -224,6 +263,10 @@ void Ucontext::SyncHostFromGuest() {
+     // regs[REG_CSGSFS] |= (greg_t{uc_mcontext.mc_fs} << 32);
+     // regs[REG_CSGSFS] |= (greg_t{uc_mcontext.mc_gs} << 16);
+     regs[REG_RIP] = uc_mcontext.mc_rip;
++    regs[REG_EFL] = uc_mcontext.mc_rflags;
++    if (s_current_host_context->uc_mcontext.fpregs && uc_mcontext.mc_fpformat == McFpFormatXmm) {
++        std::memcpy(s_current_host_context->uc_mcontext.fpregs, uc_mcontext.mc_fpstate, FxsaveSize);
++    }
+ #endif
+ #else
+ #error "ucontext_t conversion not implemented for current architecture."
+diff --git a/src/core/signals.cpp b/src/core/signals.cpp
+index d79829e..0392a3d 100644
+--- a/src/core/signals.cpp
++++ b/src/core/signals.cpp
+@@ -261,7 +261,9 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
+         guest_info._si_signo = sig == SIGUSR1 ? 0 : NativeToOrbisSignal(info->si_signo);
+         guest_info._si_errno = NativeToPosixErrno(info->si_errno);
+         guest_info._si_code = NativeSiCodeToGuest(sig, info->si_code);
+-        guest_info._si_addr = (void*)context.uc_mcontext.mc_rip;
++        guest_info._si_addr = sig == SIGSEGV || sig == SIGBUS
++                                  ? info->si_addr
++                                  : reinterpret_cast<void*>(context.uc_mcontext.mc_rip);
+     }
+     Siginfo* info_p = info ? &guest_info : nullptr;
+     Ucontext* context_p = raw_context ? &context : nullptr;
+-- 
+2.51.0.windows.2
+

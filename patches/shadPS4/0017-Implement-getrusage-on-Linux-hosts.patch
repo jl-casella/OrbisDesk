@@ -1,0 +1,85 @@
+From 9ac99bb2445e86f525519a4041a6c85362790ad2 Mon Sep 17 00:00:00 2001
+From: OrbisWinPrototype <orbis-win@localhost>
+Date: Sat, 31 Oct 2026 00:05:49 -0300
+Subject: [PATCH] Implement getrusage on Linux hosts
+
+getrusage resolved to a stub. The amd64 struct rusage has the same layout on
+FreeBSD and Linux, so map RUSAGE_SELF, RUSAGE_CHILDREN and RUSAGE_THREAD to
+the host call and copy the result. Unknown targets fail with EINVAL, a null
+buffer with EFAULT, and other hosts report ENOSYS.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/libraries/kernel/kernel.cpp | 42 ++++++++++++++++++++++++++++
+ 1 file changed, 42 insertions(+)
+
+diff --git a/src/core/libraries/kernel/kernel.cpp b/src/core/libraries/kernel/kernel.cpp
+index 58a744d..0e23dd3 100644
+--- a/src/core/libraries/kernel/kernel.cpp
++++ b/src/core/libraries/kernel/kernel.cpp
+@@ -39,6 +39,7 @@
+ #endif
+ #if defined(__linux__) && defined(ARCH_X86_64)
+ #include <asm/prctl.h>
++#include <sys/resource.h>
+ #include <sys/syscall.h>
+ #include <unistd.h>
+ #endif
+@@ -234,6 +235,46 @@ s32 PS4_SYSV_ABI posix_getpagesize() {
+     return 16_KB;
+ }
+ 
++s32 PS4_SYSV_ABI posix_getrusage(s32 who, void* usage) {
++#if defined(__linux__) && defined(ARCH_X86_64)
++    // The amd64 struct rusage is two timevals and fourteen longs on FreeBSD and Linux alike.
++    constexpr s32 RusageSelf = 0;
++    constexpr s32 RusageChildren = -1;
++    constexpr s32 RusageThread = 1;
++    static_assert(sizeof(struct rusage) == 144);
++    if (usage == nullptr) {
++        *Kernel::__Error() = POSIX_EFAULT;
++        return -1;
++    }
++    int host_who;
++    switch (who) {
++    case RusageSelf:
++        host_who = RUSAGE_SELF;
++        break;
++    case RusageChildren:
++        host_who = RUSAGE_CHILDREN;
++        break;
++    case RusageThread:
++        host_who = RUSAGE_THREAD;
++        break;
++    default:
++        *Kernel::__Error() = POSIX_EINVAL;
++        return -1;
++    }
++    struct rusage host_usage{};
++    if (getrusage(host_who, &host_usage) != 0) {
++        SetPosixErrno(errno);
++        return -1;
++    }
++    std::memcpy(usage, &host_usage, sizeof(host_usage));
++    return ORBIS_OK;
++#else
++    LOG_ERROR(Lib_Kernel, "unsupported on this host, who {}", who);
++    *Kernel::__Error() = POSIX_ENOSYS;
++    return -1;
++#endif
++}
++
+ // stubbed on non-devkit consoles
+ s32 PS4_SYSV_ABI sceKernelGetGPI() {
+     LOG_DEBUG(Kernel, "called");
+@@ -551,6 +592,7 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
+     LIB_FUNCTION("k+AXqu2-eBc", "libkernel", 1, "libkernel", posix_getpagesize);
+     LIB_FUNCTION("k+AXqu2-eBc", "libScePosix", 1, "libkernel", posix_getpagesize);
+     LIB_FUNCTION("b7uXQmnfB2s", "libkernel", 1, "libkernel", posix_sysarch);
++    LIB_FUNCTION("hHlZQUnlxSM", "libkernel", 1, "libkernel", posix_getrusage);
+     LIB_FUNCTION("7NwggrWJ5cA", "libkernel", 1, "libkernel", __sys_regmgr_call);
+ 
+     LIB_FUNCTION("mkawd0NA9ts", "libkernel", 1, "libkernel", posix_sysconf);
+-- 
+2.51.0.windows.2
+

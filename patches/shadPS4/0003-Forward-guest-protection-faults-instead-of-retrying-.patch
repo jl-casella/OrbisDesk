@@ -1,0 +1,42 @@
+From c6de833f6bec304b6f08c37520428ba2ed147a1a Mon Sep 17 00:00:00 2001
+From: Orbis Win Prototype <orbis-win@localhost>
+Date: Thu, 29 Oct 2026 20:48:34 -0300
+Subject: [PATCH] Forward guest protection faults instead of retrying GPU
+ tracking
+
+---
+ src/video_core/page_manager.cpp | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/src/video_core/page_manager.cpp b/src/video_core/page_manager.cpp
+index c8e463c..af3c5f2 100644
+--- a/src/video_core/page_manager.cpp
++++ b/src/video_core/page_manager.cpp
+@@ -434,9 +434,23 @@ struct SignalImpl : public PageManager::Impl {
+     static bool GuestFaultSignalHandler(void* context, void* fault_address) {
+         const auto addr = reinterpret_cast<VAddr>(fault_address);
+         const auto size = std::min<u64>(8, PageManager::GetNextPageAddr(addr) - addr);
++        if (!rasterizer->IsMapped(addr, size)) {
++            return false;
++        }
++        u32 protection{};
++        if (Core::Memory::Instance()->QueryProtection(addr, nullptr, nullptr, &protection) != 0) {
++            return false;
++        }
++        const auto prot = static_cast<Core::MemoryProt>(protection);
++        const bool is_write = Common::IsWriteError(context);
++        const auto write_perms = Core::MemoryProt::CpuWrite | Core::MemoryProt::GpuWrite;
++        const auto read_perms = Core::MemoryProt::CpuReadWrite | Core::MemoryProt::GpuReadWrite;
++        if (!True(prot & (is_write ? write_perms : read_perms))) {
++            return false;
++        }
+         const auto is_gpu_thread =
+             std::this_thread::get_id() == rasterizer->GetGpuCommandProcessorThread();
+-        if (Common::IsWriteError(context)) {
++        if (is_write) {
+             return rasterizer->InvalidateMemory(addr, size, is_gpu_thread);
+         } else {
+             return rasterizer->ReadMemory(addr, size, is_gpu_thread);
+-- 
+2.51.0.windows.2
+
