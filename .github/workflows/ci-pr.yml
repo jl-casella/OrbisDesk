@@ -1,0 +1,59 @@
+name: PR checks
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  metadata:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - name: Public documentation, layout and pins
+        run: |
+          python3 tools/check-repository-layout.py
+          python3 tools/check-docs-bilingual.py
+          python3 tools/build-doc-index.py --check
+          python3 tools/ci/check-locks.py
+          python3 tests/test_project_brand.py
+          python3 -m unittest discover -s tools/ci -p 'test_*.py'
+          python3 -m compileall -q tools tests
+  host:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - name: Host prerequisites
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends build-essential gcc-mingw-w64-i686
+          python3 tools/restore-dependencies.py --fetch --only prospero-win
+      - name: Generate own fixtures and run sanitized host tests
+        run: |
+          python3 tools/ci/bootstrap.py --fixtures
+          bash tools/test-vm.sh
+          bash tools/test-pe32.sh
+      - name: Host failure evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: host-failure-${{ github.run_id }}
+          retention-days: 7
+          path: |
+            reports/ci/
+            build/host/*.log
+            build/host/*.json

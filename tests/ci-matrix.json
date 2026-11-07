@@ -1,0 +1,340 @@
+{
+  "schema_version": 1,
+  "profile": "platform-v1",
+  "scope": "Own PE loader/translator and native service probes; no Wine boot or product acceptance",
+  "cases": [
+    {
+      "id": "console32",
+      "kind": "baseline",
+      "case": "console32",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "console32-official",
+      "kind": "baseline",
+      "case": "console32",
+      "emulator": "official",
+      "expected": "blocked",
+      "exit_code": 0,
+      "timeout_seconds": 60,
+      "blocker": "process.cpp:312 exit: Unreachable code!"
+    },
+    {
+      "id": "console-bare",
+      "kind": "baseline",
+      "case": "console-bare",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "lifecycle-host",
+      "kind": "baseline",
+      "case": "lifecycle-host",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 42,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-preferred",
+      "kind": "baseline",
+      "case": "pe-preferred",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 42,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-relocated",
+      "kind": "baseline",
+      "case": "pe-relocated",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 42,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-invalid",
+      "kind": "baseline",
+      "case": "pe-invalid",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-collision",
+      "kind": "baseline",
+      "case": "pe-collision",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-fourk-preferred",
+      "kind": "baseline",
+      "case": "pe-fourk-preferred",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 42,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-fourk-relocated",
+      "kind": "baseline",
+      "case": "pe-fourk-relocated",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 42,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-subpage",
+      "kind": "baseline",
+      "case": "pe-subpage",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-dll-preferred",
+      "kind": "baseline",
+      "case": "pe-dll-preferred",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 42,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-dll-relocated",
+      "kind": "baseline",
+      "case": "pe-dll-relocated",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 42,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-dll-missing",
+      "kind": "baseline",
+      "case": "pe-dll-missing",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-dll-symbol",
+      "kind": "baseline",
+      "case": "pe-dll-symbol",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-dll-ordinal",
+      "kind": "baseline",
+      "case": "pe-dll-ordinal",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-dll-invalid",
+      "kind": "baseline",
+      "case": "pe-dll-invalid",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-dll-dependency",
+      "kind": "baseline",
+      "case": "pe-dll-dependency",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-init-order",
+      "kind": "baseline",
+      "case": "pe-init-order",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-init-relocated",
+      "kind": "baseline",
+      "case": "pe-init-relocated",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-init-failure",
+      "kind": "baseline",
+      "case": "pe-init-failure",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-tls-threads",
+      "kind": "baseline",
+      "case": "pe-tls-threads",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-tls-invalid",
+      "kind": "baseline",
+      "case": "pe-tls-invalid",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "pe-process",
+      "kind": "baseline",
+      "case": "pe-process",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "files",
+      "kind": "baseline",
+      "case": "files",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "threads-adapter",
+      "kind": "baseline",
+      "case": "threads-adapter",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "vm-stress",
+      "kind": "baseline",
+      "case": "vm-stress",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60
+    },
+    {
+      "id": "ipc",
+      "kind": "services",
+      "case": "ipc",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60,
+      "assertions": [
+        "msg-nonblocking",
+        "msg-vectors",
+        "scm-concurrent-order",
+        "scm-cycle-rejected",
+        "scm-descriptor-reclamation",
+        "scm-discard-and-peek",
+        "scm-indirect-cycle-rejected",
+        "scm-invalid-no-data",
+        "scm-queued-owner",
+        "scm-rights",
+        "scm-socket-close-survival",
+        "scm-stream-boundary",
+        "scm-truncation",
+        "scm-zero-control",
+        "socket-dup-shared-status"
+      ]
+    },
+    {
+      "id": "pipes",
+      "kind": "services",
+      "case": "pipes",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60,
+      "assertions": [
+        "pipe-basic-fifo-eof",
+        "pipe-access-errors",
+        "pipe-vectors",
+        "pipe-nonblocking-backpressure",
+        "pipe-dup-last-writer",
+        "pipe-scm-rights",
+        "pipe-blocking-wakeup",
+        "pipe-atomic-writers",
+        "pipe-broken-reader",
+        "pipe-allocation-rollback"
+      ]
+    },
+    {
+      "id": "filesystem",
+      "kind": "services",
+      "case": "filesystem",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60,
+      "assertions": [
+        "fs-cpu-query-error-contract",
+        "fs-directory-close-reuse",
+        "fs-directory-pages",
+        "fs-directory-rename",
+        "fs-directory-rewind",
+        "fs-empty-directory",
+        "fs-fixtures",
+        "fs-invalid-paths-ownership",
+        "fs-openat-duplicate",
+        "fs-openat-namespaces",
+        "fs-untracked-dirfd-rejected"
+      ]
+    },
+    {
+      "id": "metadata",
+      "kind": "services",
+      "case": "metadata",
+      "emulator": "fork",
+      "expected": "passed",
+      "exit_code": 0,
+      "timeout_seconds": 60,
+      "assertions": [
+        "metadata-dangling-link",
+        "metadata-directory-identity",
+        "metadata-file-identity",
+        "metadata-link-follow",
+        "metadata-open-directory-rename",
+        "metadata-open-file-rename",
+        "metadata-readlink-bounds",
+        "metadata-readlink-errors",
+        "metadata-stat-fstat"
+      ]
+    }
+  ]
+}

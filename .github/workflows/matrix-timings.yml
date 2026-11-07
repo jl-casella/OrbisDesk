@@ -1,0 +1,31 @@
+name: Collect matrix timings
+on:
+  workflow_run:
+    workflows: ['Manual platform matrix']
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  timings:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      # Deliberately use default-branch code, not executable artifacts from the completed run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - name: Read final job and step durations
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MATRIX_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: python3 tools/ci/collect-timings.py --run-id "$MATRIX_RUN_ID"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: matrix-timings-${{ github.event.workflow_run.id }}
+          retention-days: 14
+          if-no-files-found: error
+          path: reports/ci/timings.json

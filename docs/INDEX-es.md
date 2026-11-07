@@ -165,6 +165,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 
 ## Borradores y planes (no son evidencia de aceptación)
 
+- [CI_PLAN-es.md](CI_PLAN-es.md) — Plan de CI: checks rápidos de PR, piloto manual de matriz y distribuciones
 - [HARDWARE_W168-escritorio-borrador-es.md](HARDWARE_W168-escritorio-borrador-es.md) — W168 (borrador): accesos directos en el escritorio
 - [HARDWARE_W172-fase7-borrador-es.md](HARDWARE_W172-fase7-borrador-es.md) — W172: Direct3D 10/11 en 32 bits con el dxgi de DXVK, y winecfg (fase 7)
 - [HARDWARE_W174-red-borrador-es.md](HARDWARE_W174-red-borrador-es.md) — W174: red para programas Windows (fase 8, borrador)
@@ -207,3 +208,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [HARDWARE_fase7-mando-plan-borrador-es.md](HARDWARE_fase7-mando-plan-borrador-es.md) — Fase 7, resto: mando de la PS4 por XInput y DirectInput, y joy.cpl (plan, borrador)
 - [HARDWARE_fase7-plan-borrador-es.md](HARDWARE_fase7-plan-borrador-es.md) — Fase 7 del plan PE32: dxgi de DXVK por programa y winecfg (plan, borrador)
 - [HARDWARE_temas-plan-borrador-es.md](HARDWARE_temas-plan-borrador-es.md) — Temas claro y oscuro en winecfg (plan, borrador)
+
+## Otras notas públicas
+
+- [CI-es.md](CI-es.md) — Ejecutar CI y medir la matriz de plataforma

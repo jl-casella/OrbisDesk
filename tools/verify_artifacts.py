@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check target architectures and reject duplicate OELF load segments."""
+import argparse
 import json
 import pathlib
 import struct
@@ -41,7 +42,8 @@ def verify_pe32(path):
 
 
 if __name__ == "__main__":
-    results = {name: verify_elf(ROOT / "out" / name) for name in ("probe.elf", "probe.oelf")}
+    parser=argparse.ArgumentParser();parser.add_argument("--fixtures-only",action="store_true");args=parser.parse_args()
+    results = {name: verify_elf(ROOT / "out" / name) for name in (() if args.fixtures_only else ("probe.elf", "probe.oelf"))}
     results.update({name: verify_pe32(ROOT / "out" / name) for name in ("console32.exe", "console32-bare.exe", "gdi32.exe", "minimal32.exe", "minimal4k32.exe",
                                                                   "imports32.exe", "testmath.dll", "nested.dll", "lifecycle.dll",
                                                                   "lifecycle-peer.dll", "lifecycle-fail.dll", "lifecycle-host.exe", "process32.exe")})

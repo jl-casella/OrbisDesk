@@ -227,6 +227,8 @@ Secuencia física enfocada para UI/ciclo de vida: abrir la app afectada, interac
 
 | Tema | Navegación principal |
 | --- | --- |
+| Checks de PR, medición manual de matriz, gates de main y distribuciones | [Plan de implementación de CI](docs/CI_PLAN-es.md) |
+| Ejecutar el workflow manual, interpretar tiempos y reproducir diagnósticos | [Operación de CI](docs/CI-es.md) |
 | Recuperación de fuentes y límites de build limpia | [Estructura](docs/REPOSITORY_LAYOUT-es.md), [lock](dependencies.lock.json), [restaurador](tools/restore-dependencies.py) |
 | Invitados, mundo PE32, base fija y estado compartido | [Investigación y resultados WoW64](docs/investigacion-wow64-en-explorer-es.md), [base fija](docs/investigacion-gta-vc-base-0x400000-es.md) |
 | ABI nativa, memoria, TLS, señales, IPC y servicios del emulador | [Incrementos 01–25 en el índice](docs/INDEX-es.md), [adaptadores PS4](platform/ps4/), [reproducción de plataforma](native/shad_platform_check.c) |

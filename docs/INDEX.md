@@ -165,6 +165,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 
 ## Drafts and plans (not acceptance evidence)
 
+- [CI_PLAN.md](CI_PLAN.md) — CI plan: fast PR checks, a manual matrix pilot and distributions
 - [HARDWARE_W168-escritorio-borrador.md](HARDWARE_W168-escritorio-borrador.md) — W168 (draft): direct access to the desktop
 - [HARDWARE_W172-fase7-borrador.md](HARDWARE_W172-fase7-borrador.md) — W172: Direct3D 10/11 in 32 bits with the dxgi of DXVK, and winecfg (phase 7)
 - [HARDWARE_W174-red-borrador.md](HARDWARE_W174-red-borrador.md) — W174: programme network Windows (phase 8, draft)
@@ -207,3 +208,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [HARDWARE_fase7-mando-plan-borrador.md](HARDWARE_fase7-mando-plan-borrador.md) — Phase 7, rest: command of PS4 by XInput and DirectInput, and joy.cpl (plan, draft)
 - [HARDWARE_fase7-plan-borrador.md](HARDWARE_fase7-plan-borrador.md) — Phase 7 of the plan PE32: dxgi of DXVK per program and winecfg (plan, draft)
 - [HARDWARE_temas-plan-borrador.md](HARDWARE_temas-plan-borrador.md) — Clear and dark themes in winecfg (plan, draft)
+
+## Other public notes
+
+- [CI.md](CI.md) — Running CI and measuring the platform matrix
