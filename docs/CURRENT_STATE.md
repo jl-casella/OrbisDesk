@@ -1,8 +1,28 @@
-<a id="punto-de-retoma-orbisdesk-paquete-limpio-w284-0383-2026-11-07"></a>
-
-# Handoff point: OrbisDesk, clean W284 package (03.83), 2026-11-07
+# Handoff point: OrbisDesk W288 (03.87), 2026-11-07
 
 [English](CURRENT_STATE.md) | [Español](CURRENT_STATE-es.md)
+
+Latest uploaded build: W288, `OrbisDesk.pkg` 03.87. Not yet tested on the console. Details for W285–W288: [HARDWARE_W285_W288](HARDWARE_W285_W288.md).
+
+- **W285:** a guest's audio streams leave the mixer when it unloads (orphan list, not freed). Tested with NFS U2 closed from the overlay; that run released its own stream.
+- **W286:** RADV's GPU logs go to `/data/orbisdesk/gpu`. The old `/data/orbis-win` folder was deleted from the console.
+- **W287:** GRAPHICS overlay entry, per 32-bit program: DXVK or wined3d for D3D8/9, Vulkan or OpenGL for wined3d. MangoHud now attaches to wined3d games (SuperMarioKart, confirmed in the log). The saved renderer was not applied, because wined3d stayed loaded between runs.
+- **W288:** wined3d reads the program's renderer at each `wined3d_create`. Next check: SuperMarioKart with `gl` saved should log `PWD3D renderer=gl ... from the program`.
+- **Earlier on 2026-11-07 (W273–W282, no separate documents):**
+  - per-guest command line and module name during load;
+  - zero-timeout message wait fix (Quake 3, NFS U2);
+  - real CPU affinity through `scePthreadSetaffinity` (6 title cores); process affinity changes are refused;
+  - NFS U2 pinned to one core, only for threads that start in its EXE;
+  - x87 fault traces, and 32-bit frames in hang dumps;
+  - winmm/dinput singleton threads no longer belong to a guest;
+  - winmm removes a timer whose callback is unmapped or faults (NFS U2 second start has music again);
+  - wmvcore reports a missing winegstreamer instead of crashing (GTA San Andreas).
+- **Steam:** S2 01.06 (anonymous depot download, 8/8 files verified) and S3 01.07 (QR sign-in, saved session, library of 36 games) passed on the console. Reopening S3 without a QR is still to be checked. See [STEAM_S3](STEAM_S3.md).
+- **Games reported working by the user on this day:** Quake 3, Max Payne 1 and 2, NFS Underground 2 (including music on a second start), NFS Most Wanted, GTA San Andreas, Worms 4, Call of Duty (level loads). SuperMarioKart runs; its MangoHud and renderer choice are being checked.
+
+<a id="punto-de-retoma-orbisdesk-paquete-limpio-w284-0383-2026-11-07"></a>
+
+# Previous handoff: OrbisDesk, clean W284 package (03.83), 2026-11-07
 
 W284 physical test downloaded: root mode, image and interface active for about
 11 minutes, with no recorded fatal exit. The selector capture confirms OrbisDesk

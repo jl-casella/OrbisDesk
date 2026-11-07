@@ -11,7 +11,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [AGENTS.md](../AGENTS.md) — OrbisDesk: guide for AI-assisted development
 - [README.md](../README.md) — OrbisDesk
 - [THIRD_PARTY.md](../THIRD_PARTY.md) — Licences and provenance
-- [CURRENT_STATE.md](CURRENT_STATE.md) — Handoff point: OrbisDesk, clean W284 package (03.83), 2026-11-07
+- [CURRENT_STATE.md](CURRENT_STATE.md) — Handoff point: OrbisDesk W288 (03.87), 2026-11-07
 - [DOCUMENTATION_POLICY.md](DOCUMENTATION_POLICY.md) — Documentation policy
 - [REBRANDING_ORBISDESK.md](REBRANDING_ORBISDESK.md) — OrbisDesk: name and update compatibility
 - [REPOSITORY_LAYOUT.md](REPOSITORY_LAYOUT.md) — Repository contents and dependency reconstruction
@@ -33,6 +33,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [STEAM_S1.md](STEAM_S1.md) — S1: HTTPS native to the Steam customer (ORBS00001)
 - [STEAM_S2.md](STEAM_S2.md) — S2: anonymous download of a Steam depot
 - [STEAM_S3.md](STEAM_S3.md) — S3: user login by QR and library
+- [STEAM_S4.md](STEAM_S4.md) — S4: install a game from the library
 - [THIRD_PARTY_FONTS.md](THIRD_PARTY_FONTS.md) — FreeType and runtime sources
 
 ## Platform and Wine increments (historical)
@@ -158,6 +159,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [HARDWARE_W197.md](HARDWARE_W197.md) — W196 and W197: close a Unity game without closing the app
 - [HARDWARE_W228.md](HARDWARE_W228.md) — W228: ROOT mode and USB drives as units
 - [HARDWARE_W284.md](HARDWARE_W284.md) — OrbisDesk: package with a clean name (W284)
+- [HARDWARE_W285_W288.md](HARDWARE_W285_W288.md) — W285–W288: guest audio streams, GPU log folder, GRAPHICS menu and MangoHud on wined3d
 - [HARDWARE_mando-hid.md](HARDWARE_mando-hid.md) — Command as a HID gamepad (Wine HID stack within the process)
 - [HARDWARE_mando-juegos-analisis.md](HARDWARE_mando-juegos-analisis.md) — Command for games after W195: analysis (draft, no code changes)
 
