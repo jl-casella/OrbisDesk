@@ -14,6 +14,8 @@ import pathlib
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+HOST_CONFIGURE_ARGS = ('--enable-archs=i386,x86_64 --disable-tests --without-x '
+                       '--without-freetype --enable-wineusb-sys')
 
 
 def main():
@@ -33,7 +35,10 @@ def main():
     script = builder.read_text().replace('root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)',
                                         'root=' + __import__('shlex').quote(str(upstream)))
     script = script.replace('CONFIGURE_ARGS="--enable-archs=i386,x86_64 --disable-tests"',
-                            'CONFIGURE_ARGS="--enable-archs=i386,x86_64 --disable-tests --without-x --without-freetype"')
+                            'CONFIGURE_ARGS="' + HOST_CONFIGURE_ARGS + '"')
+    # Prefix initialization needs wineusb.sys PE resources even when configure
+    # cannot detect libusb and would otherwise disable the whole module. The
+    # host Unix closure separately omits the unused USB backend, not this PE.
     # Incremental bring-up: upstream -B also reruns configure and makedep for
     # every DLL. Reproducibility rebuilds are a separate, explicit validation.
     script = script.replace('make -B -j', 'make -j')

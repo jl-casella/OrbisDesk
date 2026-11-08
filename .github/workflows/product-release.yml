@@ -89,6 +89,13 @@ jobs:
             build/**/configure.log
             build/**/package.log
             .deps/wine/runtime/driver.log
+            .deps/wine/runtime/configure.log
+            .deps/wine/runtime/make-*.log
+            .deps/wine/runtime/build/config.log
+            reports/increment15/host-build/*.log
+            reports/increment15/host-build/*.json
+            reports/increment15/prefix-producer/*/*.log
+            reports/increment15/prefix-producer/*/report.json
             .deps/wine/ps4-unix/configure.log
             .deps/wine/ps4-unix/config.log
       - name: Product candidate

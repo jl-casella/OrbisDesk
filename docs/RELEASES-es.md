@@ -70,6 +70,16 @@ Un fragmento posterior en `f42fa6141ac4bc91a391aecf21be2fd52821475e` llega a `pr
 
 Las pruebas acotadas ejecutan el tramo final real de cada script con resultados de Ninja controlados: salida cero sin líneas de error aprueba, y una salida no nula sigue fallando y conserva su log. Validan únicamente el manejo de estado/logs del shell, no la compilación de Mesa. El traceback suministrado no demuestra por sí solo que ese bug causó el fallo GitHub; revisar el ZIP `product-evidence-*` correspondiente o el log completo de la próxima corrida antes de afirmar que la etapa Zink está resuelta en GitHub.
 
+## Cierre PE de Wine anfitrión: corrida 42512489326
+
+La corrida `42512489326` en `78225f28a32da0315271b5691a54484b17cb4139` aprobó libc++, glslang, Mesa/RADV, ambos loaders Vulkan, Mesa Zink PE64/PE32, ambas builds MangoHud, vkcube, fixtures y la build PE inicial de Wine. Falló inmediatamente en `product-build-host-wine-closure` con `Missing required PE64 targets: ['wineusb.sys']`. Esto demuestra avance en GitHub después de corregir el wrapper Zink, no una construcción completa del producto.
+
+El configure de Wine fijado desactiva `wineusb.sys` si faltan los archivos de desarrollo de libusb. La build anfitriona preparada que funcionaba usaba una opción adicional `--enable-wineusb-sys`, ausente en el builder reproducible. Ahora el builder habilita explícitamente el módulo PE real de recursos. Coincide con el diseño existente del prefijo anfitrión: `build-host-wine-unix.py` omite el backend Unix USB del host que no se usa, mientras que el cierre PE exige los recursos del driver. No habilita soporte USB en consola ni reemplaza módulos por stubs; se conservan los controles de targets/imports requeridos.
+
+Una comprobación local acotada usó la fuente Wine fijada y un directorio temporal nuevo, pasando explícitamente `--without-usb` para no depender de libusb instalado. Sin la opción nueva, configure omitió el target PE64; con ella, apareció y `make -j2 dlls/wineusb.sys/x86_64-windows/wineusb.sys` compiló el PE real correctamente (salida 0). Esto verifica la corrección de configuración/módulo, no el cierre anfitrión completo, el arranque del prefijo ni la release en GitHub.
+
+La evidencia de release ahora incluye también logs de configuración/compilación Wine nativa, logs/informes del cierre anfitrión y logs/JSON del productor de prefijo generado. No se agregan archivos comprimidos del prefijo ni contenido del usuario a la subida de evidencia. Hace falta una build/configuración nueva para aplicar la opción; reejecutar la revisión anterior del workflow o reutilizar su Makefile configurado no verifica el fix.
+
 ## Instalación y flujo dev → main
 
 El PKG solo no alcanza: también necesita su runtime en `/data`. Seguir las instrucciones del candidato, respaldar registros/documentos/configuración/partidas y usar una actualización que preserve cambios del usuario si ya existe una instalación. El archivo es un runtime nuevo; reemplazar un prefijo instalado sin combinar puede perder estado. Actions no hace transferencias FTP ni instala en consola.

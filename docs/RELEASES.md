@@ -70,6 +70,16 @@ A later excerpt on `f42fa6141ac4bc91a391aecf21be2fd52821475e` reaches `product-b
 
 Focused tests execute each actual shell trailer with controlled Ninja outcomes: zero with no error lines succeeds, and a nonzero status remains a failure while retaining output. They validate shell status/log handling only, not Mesa compilation. The supplied traceback alone does not prove this bug caused that hosted failure; inspect the corresponding `product-evidence-*` archive or the next run's complete log before claiming the Zink stage is fixed in GitHub.
 
+## Host Wine PE closure: run 42512489326
+
+Run `42512489326` at `78225f28a32da0315271b5691a54484b17cb4139` passed libc++, glslang, Mesa/RADV, both Vulkan loaders, PE64/PE32 Mesa Zink, both MangoHud builds, vkcube, fixtures and the initial Wine PE build. It failed immediately in `product-build-host-wine-closure` with `Missing required PE64 targets: ['wineusb.sys']`. This establishes hosted progress beyond the Zink wrapper correction, not a complete product build.
+
+The pinned Wine configure disables `wineusb.sys` when libusb development files are absent. The working prepared host build used an additional `--enable-wineusb-sys` flag, missing from the reproducible builder. The builder now explicitly enables the real PE resource module. This matches the existing host-prefix design: `build-host-wine-unix.py` omits the unused host USB Unix backend, while the PE closure requires the driver resources. It does not enable console USB support or replace a module with a stub; the required-target/import checks remain unchanged.
+
+A focused local check used the pinned Wine source and a fresh temporary build, explicitly passing `--without-usb` to avoid relying on installed libusb. Without the new option, configure omitted the PE64 target; with it, the target appeared and `make -j2 dlls/wineusb.sys/x86_64-windows/wineusb.sys` compiled the actual PE successfully (exit 0). This verifies the configuration/module correction, not the complete host closure, prefix boot or hosted release.
+
+Release evidence now also includes native Wine configure/compiler logs, the host closure logs/reports and generated prefix-producer logs/report JSON. Prefix archives and user content are not added to the evidence upload. A fresh build/configuration is needed to apply the option; rerunning the old workflow revision or reusing its configured Makefile does not verify the fix.
+
 ## Installation and the dev → main flow
 
 A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.
