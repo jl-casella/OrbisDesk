@@ -86,6 +86,14 @@ La corrida `42521647656` en `52634fb50e231665afc9a765bd568badf3cf01d3` compiló 
 
 El cierre anfitrión ahora construye un mapa de alias por arquitectura desde las declaraciones `IMPORTLIB` de los targets PE configurados y resuelve cada import diferido de fuentes al nombre real del módulo. Los imports ausentes siguen llegando al control de rechazo existente; los alias conflictivos y las variables sin expandir fallan explícitamente. No se renombra ni parchea ningún PE. La comprobación local ejercitó el mapa con 1.490 targets configurados (478 alias), resolviendo `winspool` a `winspool.drv` en ambas arquitecturas, y probó casos malformados/ausentes/ambiguos. Es validación del resolutor, no otra construcción completa del cierre ni aceptación del producto en GitHub. La próxima build nueva de rama debe compilar el driver/dependencias agregados y continuar la preparación del prefijo.
 
+## Ejecutables nativos de Wine: corrida 42526738112
+
+La corrida `42526738112` en `9a844ba31aba52cab493d750af9f124d83d23e54` aprobó el cierre PE y la construcción de bibliotecas Unix. La preparación del prefijo falló antes de iniciar Wine: no existía `loader/wine`. Seleccionar las bibliotecas Unix del cierre no construía implícitamente el lanzador nativo ni wineserver en un runner limpio; la computadora preparada ya tenía esas salidas adicionales.
+
+`build-host-wine-unix.py` ahora construye explícitamente `loader/all` y `server/wineserver` junto con las bibliotecas/datos. El target del loader también genera `loader/wine.inf` y el preloader Linux. `unix-report.json` registra hashes del lanzador, preloader, servidor e INF además de los hashes existentes de bibliotecas/datos. La preparación del prefijo comprueba esos archivos, los permisos de ejecución y sus entradas PE/fixture antes de arrancar, indicando directamente los prerrequisitos ausentes. Compilar correctamente los ejecutables nativos no demuestra que funcionen wineboot, el fixture del prefijo o el producto PS4; esos gates posteriores se conservan.
+
+Una build local temporal nueva de la fuente fijada ejecutó correctamente `make -j2 loader/all server/wineserver`, generó los tres ejecutables ELF nativos y `wine.inf`, y obtuvo salida 0 de `wineserver --version` (`Wine 11.17`). Esto verifica la compilación de los ejecutables nativos, no un runtime completo ni el arranque del prefijo.
+
 ## Instalación y flujo dev → main
 
 El PKG solo no alcanza: también necesita su runtime en `/data`. Seguir las instrucciones del candidato, respaldar registros/documentos/configuración/partidas y usar una actualización que preserve cambios del usuario si ya existe una instalación. El archivo es un runtime nuevo; reemplazar un prefijo instalado sin combinar puede perder estado. Actions no hace transferencias FTP ni instala en consola.

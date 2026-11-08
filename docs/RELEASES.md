@@ -86,6 +86,14 @@ Run `42521647656` on `52634fb50e231665afc9a765bd568badf3cf01d3` built the requir
 
 The host closure now builds an architecture-specific alias map from `IMPORTLIB` declarations belonging to configured PE targets, resolving each source delayed import to its actual module filename. Missing imports still reach the existing rejection check; conflicting aliases and unexpanded variables fail explicitly. No PE file is renamed or patched. Local checks exercised the alias map against 1,490 configured targets (478 aliases), resolving `winspool` to `winspool.drv` on both architectures, and tested malformed/missing/ambiguous cases. This is resolver validation, not a new complete closure build or hosted product acceptance. The next fresh branch build must compile the added driver/dependencies and continue prefix preparation.
 
+## Native Wine entry points: run 42526738112
+
+Run `42526738112` at `9a844ba31aba52cab493d750af9f124d83d23e54` passed the PE closure and Unix-library build. Prefix preparation then failed before starting Wine: `loader/wine` did not exist. Selecting the closure's Unix libraries did not implicitly build the native launcher or wineserver on a clean runner; the prepared workstation had those additional build outputs already.
+
+`build-host-wine-unix.py` now explicitly builds `loader/all` and `server/wineserver` alongside the libraries/data. The loader target also generates `loader/wine.inf` and the Linux preloader. `unix-report.json` records hashes for the launcher, preloader, server and INF in addition to existing library/data hashes. Prefix preparation checks these files, executable permissions and its PE/fixture inputs before launching, reporting missing prerequisites directly. A successful native tools build still does not establish that wineboot, the prefix fixture or the PS4 product runs; those subsequent gates remain unchanged.
+
+A local fresh temporary build of the pinned source successfully ran `make -j2 loader/all server/wineserver`, produced all three native ELF executables and `wine.inf`, and returned exit 0 from `wineserver --version` (`Wine 11.17`). This verifies compilation of the native entry points, not a complete runtime or prefix boot.
+
 ## Installation and the dev → main flow
 
 A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.
