@@ -43,14 +43,12 @@ if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ]; then
     -Dopengl=true -Degl=disabled -Dgbm=disabled -Dglx=disabled -Dgles1=disabled -Dgles2=disabled \
     -Dllvm=disabled -Dzlib=disabled -Dzstd=disabled -Dshader-cache=disabled -Dxmlconfig=disabled \
     -Dexpat=disabled -Dlibunwind=disabled -Dvalgrind=disabled -Dvideo-codecs= -Dbuild-tests=false \
-    -Dtools= -Dgallium-va=disabled -Dgallium-rusticl=false 2>&1 | tail -15
+    -Dtools= -Dgallium-va=disabled -Dgallium-rusticl=false
 fi
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-zink.py $SRC
 # W264 (W262: every 32-bit program that loaded this Mesa ended the app): no WGL hook on the process's other threads
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-wgl-hooks.py $SRC
 # W266 (W264: Call of Duty's "zink: could not create swapchain" after a surface for hwnd 0): WGL/kopper traces
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-zink-trace.py $SRC
-ninja -C $build src/gallium/targets/libgl-gdi/opengl32.dll src/gallium/targets/wgl/libgallium_wgl.dll > $build.log 2>&1
-(grep -E "^FAILED" $build.log || true) | wc -l
-grep -oE "[^ ]+:[0-9]+:[0-9]+: error: .*" $build.log | sort -u | head -30 || true
+ninja -C $build src/gallium/targets/libgl-gdi/opengl32.dll src/gallium/targets/wgl/libgallium_wgl.dll 2>&1 | tee "$build.log"
 ls -la $build/src/gallium/targets/libgl-gdi/opengl32.dll $build/src/gallium/targets/wgl/libgallium_wgl.dll 2>&1

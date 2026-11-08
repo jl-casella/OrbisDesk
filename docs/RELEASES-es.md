@@ -64,6 +64,12 @@ La extracción ahora incluye ambos directorios y compara componentes completos d
 
 Una comprobación local acotada usó el archivo original con SHA-256 verificado `ae67086eb04bed7ca11ab880349b5f1ab6f50e1b88cda376eaf8a845b935762b`, fuentes recién extraídas, directorios de build aislados y el compilador/sysroot PS4 preparado. La selección anterior reprodujo el fallo de configuración por el directorio ausente (salida 1); agregar `llvm/utils/llvm-lit` permitió terminar la configuración/generación CMake (salida 0). Esto verifica únicamente la corrección de fuentes/configuración, no la compilación de libc++ ni del producto completo en GitHub.
 
+## Estado y evidencia de la build Zink
+
+Un fragmento posterior en `f42fa6141ac4bc91a391aecf21be2fd52821475e` llega a `product-build-mesa-zink` y registra salida 1 tras 129,636 segundos; no incluye el error del compilador ni demuestra si Ninja falló. La inspección encontró otro bug reproducible del shell: los pipelines diagnósticos con `grep` del wrapper PE64 devuelven 1 cuando una build correcta no contiene líneas de fallo, y `set -euo pipefail` lo interpreta como fallo de construcción. Se quitaron esos resúmenes redundantes. Ambos wrappers PE64 y PE32 ahora envían la salida de Ninja por `tee` al log del producto, conservando el código de salida de Ninja con `pipefail`, y retienen toda la salida de configuración Meson. Esto también expone errores reales del compilador que antes quedaban en `~/vk-h0/build/mesa-zink*.log`, fuera de las rutas de evidencia subidas.
+
+Las pruebas acotadas ejecutan el tramo final real de cada script con resultados de Ninja controlados: salida cero sin líneas de error aprueba, y una salida no nula sigue fallando y conserva su log. Validan únicamente el manejo de estado/logs del shell, no la compilación de Mesa. El traceback suministrado no demuestra por sí solo que ese bug causó el fallo GitHub; revisar el ZIP `product-evidence-*` correspondiente o el log completo de la próxima corrida antes de afirmar que la etapa Zink está resuelta en GitHub.
+
 ## Instalación y flujo dev → main
 
 El PKG solo no alcanza: también necesita su runtime en `/data`. Seguir las instrucciones del candidato, respaldar registros/documentos/configuración/partidas y usar una actualización que preserve cambios del usuario si ya existe una instalación. El archivo es un runtime nuevo; reemplazar un prefijo instalado sin combinar puede perder estado. Actions no hace transferencias FTP ni instala en consola.

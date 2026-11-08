@@ -41,10 +41,8 @@ if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ]; then
     -Dopengl=true -Degl=disabled -Dgbm=disabled -Dglx=disabled -Dgles1=disabled -Dgles2=disabled \
     -Dllvm=disabled -Dzlib=disabled -Dzstd=disabled -Dshader-cache=disabled -Dxmlconfig=disabled \
     -Dexpat=disabled -Dlibunwind=disabled -Dvalgrind=disabled -Dvideo-codecs= -Dbuild-tests=false \
-    -Dtools= -Dgallium-va=disabled -Dgallium-rusticl=false 2>&1 | tail -15
+    -Dtools= -Dgallium-va=disabled -Dgallium-rusticl=false
 fi
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-zink.py $SRC
-ninja -C $build src/gallium/targets/libgl-gdi/opengl32.dll src/gallium/targets/wgl/libgallium_wgl.dll > $build.log 2>&1
-grep -E "^FAILED" $build.log | wc -l
-grep -oE "[^ ]+:[0-9]+:[0-9]+: error: .*" $build.log | sort -u | head -30
+ninja -C $build src/gallium/targets/libgl-gdi/opengl32.dll src/gallium/targets/wgl/libgallium_wgl.dll 2>&1 | tee "$build.log"
 ls -la $build/src/gallium/targets/libgl-gdi/opengl32.dll $build/src/gallium/targets/wgl/libgallium_wgl.dll 2>&1

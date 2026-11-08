@@ -64,6 +64,12 @@ The extraction now includes both directories and matches complete path component
 
 A focused local check used the original archive with verified SHA-256 `ae67086eb04bed7ca11ab880349b5f1ab6f50e1b88cda376eaf8a845b935762b`, fresh extracted sources, isolated build directories and the prepared PS4 compiler/sysroot. The original selection reproduced the missing-directory configure failure (exit 1); adding `llvm/utils/llvm-lit` allowed CMake configuration/generation to finish (exit 0). This verifies the source/configure correction only, not compilation of libc++ or the full hosted product.
 
+## Zink build status and evidence
+
+A later excerpt on `f42fa6141ac4bc91a391aecf21be2fd52821475e` reaches `product-build-mesa-zink` and reports exit 1 after 129.636 seconds; it does not include the compiler error or establish whether Ninja failed. Inspection found a separate reproducible shell bug: the PE64 wrapper's diagnostic `grep` pipelines return 1 when a successful build contains no matching failure lines, and `set -euo pipefail` treats that as a build failure. Those redundant summaries are removed. Both PE64 and PE32 wrappers now stream Ninja output through `tee` into the product log while preserving Ninja's exit code with `pipefail`, and retain complete Meson setup output. This also exposes actual compiler errors that previously remained in `~/vk-h0/build/mesa-zink*.log` outside the evidence upload paths.
+
+Focused tests execute each actual shell trailer with controlled Ninja outcomes: zero with no error lines succeeds, and a nonzero status remains a failure while retaining output. They validate shell status/log handling only, not Mesa compilation. The supplied traceback alone does not prove this bug caused that hosted failure; inspect the corresponding `product-evidence-*` archive or the next run's complete log before claiming the Zink stage is fixed in GitHub.
+
 ## Installation and the dev → main flow
 
 A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.
