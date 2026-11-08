@@ -1,6 +1,7 @@
 """A failed nested builder must expose its real error and retain its exit status."""
 from contextlib import redirect_stdout
 import io
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,24 @@ from common import run
 
 
 class BuildLogTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'posix', 'Process group cleanup is POSIX-specific')
+    def test_timeout_stops_driver_and_descendant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            pidfile = directory / 'child.pid'
+            child = ('import os,pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); '
+                     'print("real descendant started", flush=True); time.sleep(60)')
+            driver = ('import subprocess,sys,time; subprocess.Popen([sys.executable,"-c",sys.argv[1],sys.argv[2]]); '
+                      'time.sleep(60)')
+            with redirect_stdout(io.StringIO()), self.assertRaises(subprocess.TimeoutExpired):
+                run([sys.executable, '-c', driver, child, pidfile], directory / 'timeout.log', timeout=2)
+            pid = int(pidfile.read_text())
+            state = Path('/proc') / str(pid) / 'stat'
+            if state.exists():
+                # A reparented zombie is dead and cannot keep compiling/writing ccache.
+                self.assertEqual(state.read_text().rsplit(')', 1)[1].split()[0], 'Z')
+            self.assertIn('real descendant started', (directory / 'timeout.log').read_text())
+
     def test_nested_failure_reaches_actions_output(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)

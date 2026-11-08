@@ -18,6 +18,43 @@ from common import ROOT, RESULTS, phase, revision, sha, write_json
 ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 
 
+def prepare_user_environment(work):
+    config = work / 'config'
+    share = work / 'share'
+    config.mkdir()
+    share.mkdir()
+    # The pinned official/fork CreateDefaultUsers asks about save migration when
+    # home/1000 is absent, even on a fresh profile. There is nothing to migrate
+    # in a private test home. Let shadPS4 create its own users.json normally.
+    for user in range(1000, 1004):
+        for directory in ('savedata', 'trophy', 'inputs'):
+            (share / 'shadPS4/home' / str(user) / directory).mkdir(parents=True, exist_ok=True)
+    return dict(os.environ, XDG_CONFIG_HOME=str(config), XDG_DATA_HOME=str(share))
+
+
+def collect_emulator_evidence(work, folder):
+    user = work / 'share/shadPS4'
+    selected = [user / 'config.json', user / 'users.json']
+    if (user / 'log').is_dir():
+        selected += sorted((user / 'log').rglob('*'))
+    files = []
+    for source in selected:
+        if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(user.resolve()):
+            continue
+        relative = source.relative_to(user)
+        target = folder / 'emulator-user' / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        size = source.stat().st_size
+        limit = 16 * 1024 * 1024
+        with source.open('rb') as stream:
+            stream.seek(max(0, size - limit))
+            target.write_bytes(stream.read())
+        files.append({'path': relative.as_posix(), 'source_bytes': size,
+                      'captured_bytes': target.stat().st_size, 'truncated': size > limit})
+    write_json(folder / 'emulator-evidence.json', {'files': files,
+        'scope': 'Private fresh shadPS4 test profile, not Wine or a user console profile'})
+
+
 def records(text, marker):
     return [json.loads(value) for value in re.findall(marker + r' (\{[^\r\n]+\})', text)]
 
@@ -37,7 +74,10 @@ def evaluate(spec, text, exit_code, timed_out, reference_matches=True):
         if len(starts) != 1 or len(ends) != 1 or ends[0].get('status') != 'passed' or ends[0].get('code') != 0:
             errors.append('guest-result-contract')
         if spec['expected'] == 'blocked':
-            if not timed_out or spec['blocker'] not in text:
+            # The pinned official assertion traps on hosted Linux; under the
+            # local debugger it can remain alive until the case timeout.
+            termination_matches = timed_out or exit_code in spec.get('blocker_exit_codes', [])
+            if not termination_matches or spec['blocker'] not in text:
                 errors.append('official-blocker-signature-differs')
         elif timed_out or exit_code != spec['exit_code']:
             errors.append('process-exit-or-timeout')
@@ -86,9 +126,12 @@ def execute(spec, fixtures, references, emulator):
             command += ['--fork']
         command += ['--config-clean', '--fullscreen', 'false', '--mount', str(data), '/data',
                     '-g', str(guest / 'eboot.bin'), '--', '/app0/eboot.bin', *guest_args]
-        (work / 'config').mkdir()
-        (work / 'share').mkdir()
-        env = dict(os.environ, XDG_CONFIG_HOME=str(work / 'config'), XDG_DATA_HOME=str(work / 'share'))
+        env = prepare_user_environment(work)
+        write_json(folder / 'launch.json', {'command': command, 'emulator_kind': spec['emulator'],
+            'fresh_user_home': True, 'empty_user_ids': list(range(1000, 1004)),
+            'environment': {key: env.get(key) for key in ('DISPLAY', 'WAYLAND_DISPLAY', 'SDL_VIDEODRIVER',
+                'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'VK_ICD_FILENAMES')},
+            'vulkan_icd_selected_by_launcher': '/usr/share/vulkan/icd.d/lvp_icd.x86_64.json'})
         start = time.monotonic()
         with (folder / 'stdout.log').open('w') as stdout, (folder / 'stderr.log').open('w') as stderr:
             proc = subprocess.Popen(command, cwd=work, stdout=stdout, stderr=stderr, env=env,
@@ -101,6 +144,7 @@ def execute(spec, fixtures, references, emulator):
                 timed_out = True
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
+        collect_emulator_evidence(work, folder)
         text = ANSI.sub('', (folder / 'stdout.log').read_text(errors='replace') +
                         (folder / 'stderr.log').read_text(errors='replace'))
         output_matches = True
@@ -119,10 +163,40 @@ def execute(spec, fixtures, references, emulator):
                   'elf_sha256': sha(source), 'emulator_kind': spec['emulator'],
                   'emulator_sha256': emulator['executable_sha256'] if spec['emulator'] == 'fork' else
                       sha(ROOT / '.deps/shadPS4-linux/squashfs-root/usr/bin/shadps4'),
-                  'reference_output_matches': output_matches}
+                  'reference_output_matches': output_matches if spec['case'] in ('console32', 'console-bare') else None,
+                  'guest_marker_seen': bool(records(text, 'PWPS4') or records(text, 'PWSERVICE'))}
         write_json(folder / 'report.json', result)
         print(json.dumps(result), flush=True)
         return result
+
+
+def execute_cases(cases, report, fixtures, references, emulator, stop_on_startup_failure=False):
+    report.update(selected_case_count=len(cases), pending_cases=[case['id'] for case in cases],
+                  case_timeout_budget_seconds=sum(case['timeout_seconds'] for case in cases),
+                  execution_completed=False, contract_passed=False)
+    write_json(RESULTS / 'matrix-report.json', report)
+    with phase('matrix-execution') as timing:
+        for case in cases:
+            report['active_case'] = case['id']
+            write_json(RESULTS / 'matrix-report.json', report)
+            report['cases'].append(execute(case, fixtures, references, emulator))
+            report['pending_cases'].remove(case['id'])
+            report['active_case'] = None
+            if stop_on_startup_failure and len(report['cases']) == 2:
+                first, second = report['cases']
+                selected = cases[:2]
+                if (selected[0].get('case') == selected[1].get('case') and
+                        {c.get('emulator') for c in selected} == {'fork', 'official'} and
+                        all(c.get('timed_out') and c.get('guest_marker_seen') is False
+                            for c in (first, second))):
+                    report['abort_reason'] = 'Both emulators timed out on the same probe without guest markers'
+                    timing['failed'] = True
+                    write_json(RESULTS / 'matrix-report.json', report)
+                    print(report['abort_reason'] + '; preserving evidence and leaving remaining cases pending', flush=True)
+                    return
+            write_json(RESULTS / 'matrix-report.json', report)
+        timing['failed'] = any(not case['outcome_as_expected'] for case in report['cases'])
+    report['execution_completed'] = True
 
 
 def main():
@@ -130,6 +204,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--profile', choices=('platform-v1', 'platform-core'), default='platform-v1')
     parser.add_argument('--case', action='append', help='Local focused run only; report is explicitly incomplete')
+    parser.add_argument('--stop-on-startup-failure', action='store_true',
+                        help='Stop if the initial fork/official pair both time out without guest markers')
     parser.add_argument('--report-dir', type=Path, default=RESULTS)
     args = parser.parse_args()
     RESULTS = args.report_dir.resolve()
@@ -140,7 +216,9 @@ def main():
     report = {'schema_version': 1, 'source_sha': revision(), 'profile': args.profile,
               'scope': 'Own PE translator/loader and native services, not Wine boot or product validation',
               'Wine_booted': False, 'hardware_status': 'pending', 'contract_passed': False,
-              'complete_profile': not bool(args.case), 'cases': [], 'setup_error': None}
+              'complete_profile': False, 'execution_completed': False, 'cases': [], 'setup_error': None,
+              'selected_case_count': None, 'pending_cases': [], 'active_case': None}
+    write_json(RESULTS / 'matrix-report.json', report)
     try:
         fixtures = json.loads((ROOT / 'out/ci-fixtures.json').read_text())
         references = json.loads((ROOT / 'reports/ci/windows-reference.json').read_text(encoding='utf-8-sig'))
@@ -169,6 +247,9 @@ def main():
                       locks={p.name: sha(p) for p in ROOT.glob('*.lock.json')},
                       fixture_manifest_sha256=sha(ROOT / 'out/ci-fixtures.json'),
                       checkout_dirty=bool(subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain'])))
+        cache_report = RESULTS / 'emulator-cache.json'
+        if cache_report.exists():
+            report['emulator_cache'] = json.loads(cache_report.read_text())
         cases = json.loads(contract_path.read_text())['cases']
         if len(cases) != 31 or len({case['id'] for case in cases}) != 31:
             raise ValueError('platform-v1 must contain exactly 31 distinct top-level cases')
@@ -179,10 +260,8 @@ def main():
             if set(args.case) - {c['id'] for c in cases}:
                 raise ValueError('Unknown case selector')
             cases = [case for case in cases if case['id'] in args.case]
-        with phase('matrix-execution') as timing:
-            for case in cases:
-                report['cases'].append(execute(case, fixtures, references, emulator))
-            timing['failed'] = any(not case['outcome_as_expected'] for case in report['cases'])
+        execute_cases(cases, report, fixtures, references, emulator, args.stop_on_startup_failure)
+        report['complete_profile'] = not bool(args.case) and len(report['cases']) == expected_count
         report['contract_passed'] = (not args.case and len(report['cases']) == expected_count and
                                      all(case['outcome_as_expected'] for case in report['cases']))
     except Exception as exc:

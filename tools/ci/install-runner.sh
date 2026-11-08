@@ -12,7 +12,7 @@ echo 'deb [signed-by=/usr/share/keyrings/orbisdesk-llvm.gpg] https://apt.llvm.or
   | sudo tee /etc/apt/sources.list.d/orbisdesk-llvm.list >/dev/null
 sudo apt-get update -o Acquire::Retries=3 -o Acquire::https::Timeout=30
 sudo apt-get install -y --no-install-recommends \
-  build-essential clang-19 lld-19 llvm-19 libc++-19-dev libc++abi-19-dev \
+  build-essential clang-19 clang-tools-19 lld-19 llvm-19 libc++-19-dev libc++abi-19-dev ccache \
   gcc-mingw-w64-i686 ninja-build pkg-config git unzip xvfb xauth \
   libvulkan1 mesa-vulkan-drivers libx11-dev libxext-dev libwayland-dev \
   libdecor-0-dev libxkbcommon-dev libglfw3-dev libgles2-mesa-dev libfuse2 \
@@ -21,6 +21,9 @@ sudo apt-get install -y --no-install-recommends \
 # SDL3's CheckX11 requires the RandR headers and library even under Xvfb.
 pkg-config --exists xrandr
 pkg-config --modversion xrandr
-python3 -m pip install --disable-pip-version-check --target .deps/linux-tools 'cmake==4.2.3'
+python3 -m pip install --disable-pip-version-check --upgrade --target .deps/linux-tools 'cmake==4.2.3' 'ninja==1.13.0'
 clang-19 --version
+command -v clang-scan-deps-19
+clang-scan-deps-19 --version
+.deps/linux-tools/bin/ninja --version
 df -h .

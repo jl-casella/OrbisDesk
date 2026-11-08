@@ -32,7 +32,7 @@ These are local WSL measurements or historical reports, not GitHub runner benchm
 | Historical GUI/text campaign, four runs | About 5 minutes wall time | Prepared Wine/runtime; separate from the platform matrix |
 | Recent incremental emulator build | About 2 minutes | Not a cold compiler/submodule/build measurement |
 
-Initial targets: fast PR jobs finish in 2–5 minutes including setup; manual pilot has a 90-minute outer timeout, a 45-minute bootstrap/build budget and a 20-minute test budget, with explicit per-case timeouts. These are guardrails to tune after the pilot, not promised run times. Install/download steps must also have finite retry/time limits.
+Initial target for fast PR jobs: 2–5 minutes including setup. The original manual budgets were 90 minutes overall, 45 for bootstrap/build and 20 for tests. A hosted branch run subsequently measured 41 min 30 s for emulator compilation and hit the 20-minute test limit; the next compilation hit a one-hour limit. The current [CI runbook](CI.md) uses verified emulator/ccache reuse and budgets of 200 minutes overall, 20 for preparation, 80 internally for compilation inside a 90-minute step, and 40 for tests; per-case limits stay unchanged. Internal/outer margins allow cleanup and evidence saving. These are guardrails, not promised run times or proof of a slowdown fix. Install/download steps also need finite retry/time limits.
 
 ## PR 1 — fast checks on pull requests
 

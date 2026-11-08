@@ -1,7 +1,7 @@
 name: Collect matrix timings
 on:
   workflow_run:
-    workflows: ['Manual platform matrix']
+    workflows: ['Manual platform matrix', 'PR checks']
     types: [completed]
 permissions:
   contents: read
