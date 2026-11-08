@@ -18,5 +18,9 @@
   "setup-python": {
     "tag": "v7.1.0",
     "sha": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0"
+  },
+  "setup-dotnet": {
+    "sha": "26b0ec14cb23fa6904739307f278c14f94c95bf1",
+    "tag": "v5"
   }
 }

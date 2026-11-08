@@ -212,3 +212,4 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 ## Other public notes
 
 - [CI.md](CI.md) — Running CI and measuring the platform matrix
+- [RELEASES.md](RELEASES.md) — Product builds, releases and the development branch

@@ -1,0 +1,126 @@
+name: Build PKG and release
+run-name: OrbisDesk product ${{ github.event_name }} · ${{ github.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish an experimental release after a successful clean build'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: orbisdesk-product-release
+  cancel-in-progress: false
+jobs:
+  authorize:
+    if: github.event_name == 'workflow_dispatch' || vars.ORBISDESK_AUTO_RELEASE == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Owner-only manual runs; main-only publication
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ github.repository_owner }}
+          EVENT: ${{ github.event_name }}
+          AUTO_ENABLED: ${{ vars.ORBISDESK_AUTO_RELEASE }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          if [ "$EVENT" = workflow_dispatch ]; then
+            test "${ACTOR,,}" = "${OWNER,,}"
+            test "${TRIGGERING_ACTOR,,}" = "${OWNER,,}"
+          else
+            test "$AUTO_ENABLED" = true || { echo 'Enable ORBISDESK_AUTO_RELEASE=true after a successful manual pilot.'; exit 1; }
+          fi
+      - name: Allocate package version
+        id: version
+        env:
+          VERSION_BASE: ${{ vars.ORBISDESK_RELEASE_VERSION_BASE || '400' }}
+        run: |
+          python3 - <<'PY'
+          import os
+          number = int(os.environ['VERSION_BASE']) + int(os.environ['GITHUB_RUN_NUMBER']) - 1
+          if not 1 <= number <= 9999:
+              raise SystemExit('SFO version namespace exhausted or invalid')
+          major, minor = divmod(number, 100)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'version={major:02}.{minor:02}\n')
+          PY
+  checks:
+    needs: authorize
+    uses: ./.github/workflows/ci-pr.yml
+  build:
+    needs: [authorize, checks]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install clean runner prerequisites
+        timeout-minutes: 20
+        run: bash tools/ci/install-product.sh
+      - name: Build product from pinned sources
+        env:
+          PRODUCT_VERSION: ${{ needs.authorize.outputs.version }}
+        run: python3 tools/ci/build-product.py --version "$PRODUCT_VERSION"
+      - name: Verify and assemble exact product assets
+        run: python3 tools/ci/release.py assemble
+      - name: Preserve build evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: product-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          path: |
+            reports/ci/
+            build/**/compile.log
+            build/**/build.log
+            build/**/configure.log
+            build/**/package.log
+            .deps/wine/runtime/driver.log
+            .deps/wine/ps4-unix/configure.log
+            .deps/wine/ps4-unix/config.log
+      - name: Product candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: product-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: error
+          path: out/release/
+  publish:
+    needs: [authorize, checks, build]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: product-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/release
+      - name: Publish tag, notes and verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/release.py publish

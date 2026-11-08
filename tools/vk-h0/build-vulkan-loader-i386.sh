@@ -11,7 +11,9 @@ B=$H/build/vk-loader-i386
 TAG=v1.4.335
 cd $H/src
 [ -d Vulkan-Loader ] && [ -d $H/vk-headers ] || { echo 'run build-vulkan-loader.sh first'; exit 1; }
-[ "$(git -C Vulkan-Loader describe --tags --exact-match 2>/dev/null)" = $TAG ] || { echo "Vulkan-Loader is not $TAG"; exit 1; }
+ROOT=$(cd "$HERE/../.." && pwd)
+EXPECTED=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["repositories"]["Vulkan-Loader"]["commit"])' "$ROOT/dependencies.lock.json")
+[ "$(git -C Vulkan-Loader rev-parse HEAD)" = "$EXPECTED" ] || { echo 'Vulkan-Loader differs from dependencies.lock.json'; exit 1; }
 git -C Vulkan-Loader log -1 --format="loader %H"
 cat > $H/build/mingw-toolchain-i686.cmake <<TC
 set(CMAKE_SYSTEM_NAME Windows)

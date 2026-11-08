@@ -212,3 +212,4 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 ## Otras notas públicas
 
 - [CI-es.md](CI-es.md) — Ejecutar CI y medir la matriz de plataforma
+- [RELEASES-es.md](RELEASES-es.md) — Construcción del producto, releases y rama de desarrollo

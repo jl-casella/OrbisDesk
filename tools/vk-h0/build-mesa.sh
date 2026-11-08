@@ -3,8 +3,9 @@
 # (patches/mesa-ps4.patch, port/mesa/ac_ps4_drm.c, static, no LLVM, no WSI), with our
 # OpenOrbis SDK and clang 19 in place of PacBrew's and clang 21.
 set -euo pipefail
+ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
-OPENORBIS=/mnt/c/Users/JoseCasella/DEV/Codex/PS4/.deps/sdk/OpenOrbis/PS4Toolchain
+OPENORBIS=${ORBISDESK_ROOT}/.deps/sdk/OpenOrbis/PS4Toolchain
 SYSROOT=$H/sysroot
 MESA=$H/src/mesa
 build=$H/build/mesa
@@ -14,7 +15,7 @@ build=$H/build/mesa
 # pw_vk_pthread_once (native/wine_vk_runtime.c) instead.
 overlay=$SYSROOT/libc-overlay
 extra=""
-TARBALL=/mnt/c/Users/JoseCasella/DEV/Codex/PS4/.deps/vk/mesa-26.0.8.tar.xz
+TARBALL=${ORBISDESK_ROOT}/.deps/vk/mesa-26.0.8.tar.xz
 # the PS4 port's Mesa patches, winsys and header overlay: DolphinPS4's for G001
 D=$H/dolphin
 port=$D
@@ -33,7 +34,7 @@ if [ "${VARIANT:-}" = wine ]; then
   MESA=$H/src/mesa-crema
   port=$H/crema
   rm -rf $port && mkdir -p $port
-  cp -r /mnt/c/Users/JoseCasella/DEV/Codex/PS4/upstream/Crema/{patches,port} $port/
+  cp -r ${ORBISDESK_ROOT}/upstream/Crema/{patches,port} $port/
   find $port -type f -exec sed -i 's/\r$//' {} +
   patches="$port/patches/mesa-ps4.patch $port/patches/mesa-ps4-aligned-vertex-fetch.patch"
   winsys_paths="s#/data/Crema/gpu#/data/orbisdesk/gpu#g"
@@ -46,14 +47,14 @@ if [ ! -f $MESA/.ps4-patched ]; then
   for patch_file in $patches; do (cd $MESA && patch -p1 --quiet < $patch_file); done
   touch $MESA/.ps4-patched
 fi
-python3 /mnt/c/Users/JoseCasella/DEV/Codex/PS4/tools/vk-h0/fix-mesa-detect.py $MESA
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/fix-mesa-detect.py $MESA
 tar -xJf $TARBALL -C $MESA --strip-components=1 mesa-26.0.8/src/vulkan/wsi/wsi_common.c mesa-26.0.8/src/vulkan/wsi/wsi_common_headless.c mesa-26.0.8/src/amd/vulkan/radv_wsi.h
-python3 /mnt/c/Users/JoseCasella/DEV/Codex/PS4/tools/vk-h0/patch-mesa-wsi.py $MESA
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-wsi.py $MESA
 sed -e "${winsys_paths:-s#^##}" $port/port/mesa/ac_ps4_drm.c > $MESA/src/amd/common/ac_ps4_drm.c
 if [ "${VARIANT:-}" = wine ]; then
-  python3 /mnt/c/Users/JoseCasella/DEV/Codex/PS4/tools/vk-h0/patch-crema-telemetry.py "$MESA/src/amd/common/ac_ps4_drm.c"
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-crema-telemetry.py "$MESA/src/amd/common/ac_ps4_drm.c"
   # W126: VK_EXT_map_memory_placed for Wine's 32-bit programs (DXVK x86)
-  python3 /mnt/c/Users/JoseCasella/DEV/Codex/PS4/tools/vk-h0/patch-mesa-placed.py "$MESA"
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-placed.py "$MESA"
 fi
 pc=$H/mesa-pkgconfig; mkdir -p $pc
 cat > $pc/libdrm_amdgpu.pc <<PC
@@ -115,7 +116,5 @@ libs=(src/amd/vulkan/libvulkan_radeon.a src/amd/addrlib/libaddrlib.a
     src/util/libxmlconfig.a src/vulkan/runtime/libvulkan_instance.a
     src/vulkan/runtime/libvulkan_runtime.a src/vulkan/util/libvulkan_util.a
     src/vulkan/wsi/libvulkan_wsi.a)
-ninja -C $build -k 0 "${libs[@]}" > $build.log 2>&1 || true
-grep -E "^FAILED" $build.log | wc -l
-grep -oE "[^ ]+:[0-9]+:[0-9]+: error: .*" $build.log | sort -u | head -40
+ninja -C $build -k 0 "${libs[@]}" > $build.log 2>&1
 ls -la $build/src/amd/vulkan/libvulkan_radeon.a

@@ -14,7 +14,7 @@ The workflows are:
 | `Manual platform matrix` | Manual only | Produce fixtures, run the same binaries on Windows, prepare Linux dependencies, build and run the diagnostic contract |
 | `Collect matrix timings` | Completion of the manual workflow | Read final job and step timings from GitHub; upload `timings.json` |
 
-No workflow publishes a release, builds the complete Wine desktop, accesses FTP or changes branch protection. A successful matrix uploads a diagnostic bundle only. Product distributions remain later phases of the plan.
+These diagnostic workflows do not publish releases, build the complete Wine desktop, access FTP or change branch protection. A successful matrix uploads a diagnostic bundle only. The separate experimental [product release workflow](RELEASES.md) attempts the clean full build; its first successful hosted pilot is still pending.
 
 ## First measured run
 

@@ -4,6 +4,8 @@
 
 Status: phases 1–3 implemented for review, 2026-11-07; the first cold GitHub pilot remains pending. See [running CI](CI.md) for workflow inputs, evidence and activation. Phases 4–6 remain proposed. Branch protections and product releases are unchanged; the first manual run supplies the data for deciding where the heavier checks belong.
 
+Follow-up on 2026-11-07: the owner requested a clean hosted product build and manual/automatic main releases. The separate [release runbook](RELEASES.md) describes the experimental implementation, rollout switch and current limits. The first successful clean product pilot remains pending; the diagnostic matrix is not yet an automatic release gate. The promotion proposal below remains a future stricter policy, not the active workflow behavior.
+
 ## Goal and rollout
 
 ```text

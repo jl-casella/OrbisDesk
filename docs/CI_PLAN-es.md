@@ -4,6 +4,8 @@
 
 Estado: fases 1–3 implementadas para revisión, 2026-11-07; el primer piloto en frío de GitHub sigue pendiente. Ver [ejecutar CI](CI-es.md) para parámetros, evidencia y activación. Las fases 4–6 siguen propuestas. No cambian las protecciones de ramas ni los releases del producto; la primera corrida manual dará los datos para decidir dónde ejecutar las comprobaciones pesadas.
 
+Continuación del 2026-11-07: el owner pidió construcción limpia en GitHub y releases manuales/automáticas desde main. La [guía de releases](RELEASES-es.md) separada describe la implementación experimental, activación y límites. Sigue pendiente el primer piloto satisfactorio del producto limpio; la matriz de diagnóstico aún no es gate automático de release. La propuesta de promoción siguiente queda como política futura más estricta, no como comportamiento activo.
+
 ## Objetivo y despliegue por etapas
 
 ```text

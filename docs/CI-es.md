@@ -14,7 +14,7 @@ Los workflows son:
 | `Manual platform matrix` | Sólo manual | Producir fixtures, ejecutar los mismos binarios en Windows, preparar dependencias Linux, compilar y ejecutar el contrato de diagnóstico |
 | `Collect matrix timings` | Finalización del workflow manual | Leer tiempos finales de jobs y pasos desde GitHub; subir `timings.json` |
 
-Ningún workflow publica releases, compila el escritorio Wine completo, accede por FTP ni cambia protecciones de ramas. Una matriz satisfactoria sube únicamente un paquete de diagnósticos. Las distribuciones del producto siguen siendo fases posteriores del plan.
+Estos workflows de diagnóstico no publican releases, compilan el escritorio Wine completo, acceden por FTP ni cambian protecciones de ramas. Una matriz satisfactoria sube únicamente un paquete de diagnósticos. El [workflow experimental de release](RELEASES-es.md) separado intenta la construcción completa limpia; su primer piloto satisfactorio en GitHub sigue pendiente.
 
 ## Primera corrida medida
 

@@ -3,9 +3,10 @@
 # fork of MangoHud, built as a PE64 Vulkan implicit layer with llvm-mingw. Its subprojects
 # (imgui, implot, spdlog, minhook, vulkan headers) come from its Meson wraps.
 set -euo pipefail
+ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
 L=$H/llvm-mingw/bin
-SRC=/mnt/c/Users/JoseCasella/DEV/Codex/PS4/.deps/vk/mangohud-win/repo
+SRC=${ORBISDESK_ROOT}/.deps/vk/mangohud-win/repo
 W=$H/src/mangohud-win
 build=$H/build/mangohud
 export PATH="$H/mesa-venv/bin:$H/host-tools/bin:$PATH"
@@ -21,10 +22,10 @@ grep -q 'OrbisDesk: no hook thread' $W/src/win/main.cpp || \
   sed -i 's|        CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)MainThread, NULL, 0, NULL);|        /* OrbisDesk: no hook thread for the Vulkan layer (tools/vk-h0/build-mangohud.sh) */|' $W/src/win/main.cpp
 grep -c 'OrbisDesk: no hook thread' $W/src/win/main.cpp
 # W096: protect shared UI globals across concurrently rendering Wine guests.
-python3 /mnt/c/Users/JoseCasella/DEV/Codex/PS4/tools/vk-h0/patch-mangohud-shared-process.py "$W"
-python3 /mnt/c/Users/JoseCasella/DEV/Codex/PS4/tools/vk-h0/patch-mangohud-teardown.py "$W"
-python3 /mnt/c/Users/JoseCasella/DEV/Codex/PS4/tools/vk-h0/patch-mangohud-frame-sampling.py "$W"
-python3 /mnt/c/Users/JoseCasella/DEV/Codex/PS4/tools/vk-h0/patch-mangohud-orbis-metrics.py "$W"
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-shared-process.py "$W"
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-teardown.py "$W"
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-frame-sampling.py "$W"
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-orbis-metrics.py "$W"
 cat > $build-cross.ini <<INI
 [binaries]
 c = '$L/x86_64-w64-mingw32-clang'

@@ -13,9 +13,12 @@ from project_brand import normalize_marker
 EBOOT_BASE=0x1100000000
 ROOT=pathlib.Path(__file__).resolve().parents[1];sdk=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
 parser=argparse.ArgumentParser()
+parser.add_argument('--app-version',default='03.87',help='SFO and boot-selector version (NN.NN)')
 parser.add_argument('--mangohud',choices=('enabled','disabled'),default='enabled',
                     help='load the MangoHud layer (default enabled; disabled is a diagnostic control)')
 args=parser.parse_args()
+if not __import__('re').fullmatch(r'[0-9]{2}\.[0-9]{2}',args.app_version):
+    parser.error('app-version must be NN.NN')
 mangohud_enabled=args.mangohud=='enabled'
 work=ROOT/'build/wine-hardware-w288';app=work/'app';out=ROOT/'out/wine-hardware-w288'
 app.mkdir(parents=True,exist_ok=True);out.mkdir(parents=True,exist_ok=True)
@@ -30,6 +33,7 @@ def run(command):
 renamed=work/'wine_boot_entry.o'
 run([*flags,'-Dmain=pw_wine_boot_main','-c',ROOT/'native/wine_boot.c','-o',renamed])
 wrapper=work/'wine_hardware.o';run([*flags,'-DPW_MANGOHUD_LAYER_ENABLED='+str(int(mangohud_enabled)),
+    '-DHW_VERSION="'+args.app_version+'"',
     '-I'+str(ROOT/'native'),'-c',ROOT/'native/wine_hardware.c','-o',wrapper])
 heap=work/'native_heap.o';run([*flags,'-c',ROOT/'native/native_heap.c','-o',heap])
 telemetry=work/'telemetry.o';run([*flags,'-I'+str(ROOT/'platform/ps4'),'-c',ROOT/'native/telemetry.c','-o',telemetry])
@@ -915,8 +919,8 @@ for folder in (data/'wine/lib/wine/x86_64-windows',prefix/'drive_c/windows/syste
 print(json.dumps({'stripped_modules':stripped['modules'],'mib_before':stripped['bytes_before']>>20,
                   'mib_after':stripped['bytes_after']>>20,'kept':len(stripped['kept'])}))
 content='IV0000-ORBW00002_00-ORBISWINW0010000'
-pkg=package_app(ROOT,app,out,'OrbisDesk','ORBW00002',content,version='03.87',filename='OrbisDesk.pkg')
-manifest={'build':'W288','app_version':'03.87','title_id':'ORBW00002','package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),
+pkg=package_app(ROOT,app,out,'OrbisDesk','ORBW00002',content,version=args.app_version,filename='OrbisDesk.pkg')
+manifest={'build':'W288','app_version':args.app_version,'title_id':'ORBW00002','package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),
     'package_bytes':pkg.stat().st_size,'eboot_sha256':sha(app/'eboot.bin'),'base_wine_elf_sha256':base['bootstrap_sha256'],
     'wine_commit':wine_commit,'prefix_package':verified,'hardware_status':'pending','Wine_booted':False,
     'runtime_root':str(data.relative_to(ROOT)),

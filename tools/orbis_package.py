@@ -10,11 +10,12 @@ def package_app(root,app,out,title,title_id,content_id,version='01.00',filename=
         with log.open('a') as stream:
             subprocess.run(list(map(str,command)),cwd=app,env=env,stdout=stream,stderr=subprocess.STDOUT,check=True)
     tool=sdk/'bin/linux/PkgTool.Core';sys=app/'sce_sys';sys.mkdir(exist_ok=True);sfo=sys/'param.sfo'
-    run([tool,'sfo_new',sfo])
+    pkg_command=['dotnet','--roll-forward','Major',sdk/'bin/windows/PkgTool.Core.dll'] if shutil.which('dotnet') else [tool]
+    run([*pkg_command,'sfo_new',sfo])
     fields={'APP_TYPE':(1,'Integer',4),'APP_VER':(version,'Utf8',8),'ATTRIBUTE':(0,'Integer',4),
         'CATEGORY':('gd','Utf8',4),'CONTENT_ID':(content_id,'Utf8',48),'DOWNLOAD_DATA_SIZE':(0,'Integer',4),
         'SYSTEM_VER':(0,'Integer',4),'TITLE':(title,'Utf8',128),'TITLE_ID':(title_id,'Utf8',12),'VERSION':(version,'Utf8',8)}
-    for name,(value,kind,size) in fields.items():run([tool,'sfo_setentry',sfo,name,'--type',kind,'--maxsize',size,'--value',value])
+    for name,(value,kind,size) in fields.items():run([*pkg_command,'sfo_setentry',sfo,name,'--type',kind,'--maxsize',size,'--value',value])
     # W170: the app icon of tools/make-app-icon.py (a PS4-shaped window), when it has been made
     icon=root/'out/app-icon/icon0.png'
     shutil.copyfile(icon if icon.exists() else root/'build/hardware-h001b/app/sce_sys/icon0.png',sys/'icon0.png')
@@ -28,6 +29,8 @@ def package_app(root,app,out,title,title_id,content_id,version='01.00',filename=
         if dotnet.is_file():
             win=lambda p:subprocess.check_output(['wslpath','-w',str(p.resolve())],text=True).strip()
             run([dotnet,'--roll-forward','Major',win(sdk/'bin/windows/PkgTool.Core.dll'),verb,*[win(p) for p in args]])
+        elif shutil.which('dotnet'):
+            run(['dotnet','--roll-forward','Major',sdk/'bin/windows/PkgTool.Core.dll',verb,*args])
         else:run([tool,verb,*args])
     crypto('pkg_build',app/'pkg.gp4',out)
     package=out/(content_id+'.pkg');crypto('pkg_validate',package)

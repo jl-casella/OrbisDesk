@@ -31,7 +31,9 @@
 #include <pthread.h>
 /* W001 and W002 sources and evidence: reports/wine-hardware-w00N/release-w00N. */
 #define HW_BUILD "W288"
+#ifndef HW_VERSION
 #define HW_VERSION "03.87"
+#endif
 #define HW_DIR "/data/orbisdesk/w288"
 #define HW_EXE "C:\\windows\\explorer.exe"
 #define HW_RESULT "text-result.txt"
