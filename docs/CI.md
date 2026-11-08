@@ -46,6 +46,8 @@ The evidence artifact also preserves `build/shadPS4-linux/configure.log`, `build
 
 The first hosted pilot, run `42429594632`, attempt 1 at source `12eae3a4db4cbf46ec15914449c597743ec6a0a3` on 2026-11-07 (Argentina time), failed in CMake configuration of the fork. Source restoration, SDK/official extraction, diagnostic ELF and service ELF builds completed; matrix execution did not start. About three minutes refers to the bootstrap step, not execution of the 31 cases. Its original artifact omitted the CMake configure log, so the underlying configuration error could not be determined from that evidence. The subsequent logging change fixes that evidence gap; it does not claim to fix the still-unknown configuration error. Start a **new manual run at updated main** after merging it; rerunning the old SHA retains the old workflow.
 
+The next pilot at `cbf26969c4ecc8e82b65d693abd550bf6abee15e` exposed `SDL_missing_dependency` at `externals/sdl3/cmake/sdlchecks.cmake:521`: the pinned SDL3 requires XRANDR headers and a library. The runner installation omitted `libxrandr-dev`. The installer now explicitly includes it and verifies `pkg-config xrandr` before configuration. This fixes the identified prerequisite; completion of the emulator build and matrix still requires a new hosted run. The product installer uses this same runner installer and receives the fix too.
+
 The collector's separate `timings.json` includes all final jobs and steps. Wall time spans run start to the last completed job; summed job time includes parallel work and therefore differs. Queue time is reported separately. The collector reads GitHub metadata and never downloads or executes artifacts from the tested run.
 
 ## Reproduce or investigate locally
