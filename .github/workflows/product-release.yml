@@ -7,6 +7,11 @@ on:
         description: 'Publish an experimental release after a successful clean build'
         type: boolean
         default: false
+      cache_mode:
+        description: 'Reuse verified dependency blocks, or cold to rebuild all dependencies'
+        type: choice
+        options: [reuse, cold]
+        default: reuse
   push:
     branches: [main]
 permissions:
@@ -56,6 +61,8 @@ jobs:
     needs: [authorize, checks]
     runs-on: ubuntu-22.04
     timeout-minutes: 360
+    env:
+      PRODUCT_CACHE_MODE: ${{ inputs.cache_mode || 'reuse' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -70,10 +77,64 @@ jobs:
       - name: Install clean runner prerequisites
         timeout-minutes: 20
         run: bash tools/ci/install-product.sh
+      - name: Fingerprint product dependency blocks
+        id: product-key
+        run: python3 tools/ci/product_cache.py keys
+      - name: Restore verified download candidates
+        continue-on-error: true
+        if: env.PRODUCT_CACHE_MODE == 'reuse'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/product-downloads
+          key: product-downloads-v1-${{ steps.product-key.outputs.downloads_key }}-complete-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            product-downloads-v1-${{ steps.product-key.outputs.downloads_key }}-complete-
+            product-downloads-v1-${{ steps.product-key.outputs.downloads_key }}-partial-
+      - name: Restore exact graphics snapshot candidate
+        continue-on-error: true
+        if: env.PRODUCT_CACHE_MODE == 'reuse'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/product-cache/graphics
+          key: product-graphics-v1-${{ steps.product-key.outputs.graphics_key }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: product-graphics-v1-${{ steps.product-key.outputs.graphics_key }}-
+      - name: Restore exact host Wine snapshot candidate
+        continue-on-error: true
+        if: env.PRODUCT_CACHE_MODE == 'reuse'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/product-cache/wine
+          key: product-wine-v1-${{ steps.product-key.outputs.wine_key }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: product-wine-v1-${{ steps.product-key.outputs.wine_key }}-
       - name: Build product from pinned sources
         env:
           PRODUCT_VERSION: ${{ needs.authorize.outputs.version }}
-        run: python3 tools/ci/build-product.py --version "$PRODUCT_VERSION"
+        run: python3 tools/ci/build-product.py --version "$PRODUCT_VERSION" --cache-mode "$PRODUCT_CACHE_MODE"
+      - name: Verify reusable blocks even if a later product phase failed
+        id: product-ready
+        if: always() && !cancelled()
+        run: python3 tools/ci/product_cache.py ready
+      - name: Save verified product downloads
+        continue-on-error: true
+        if: always() && !cancelled() && steps.product-ready.outputs.downloads_ready == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/product-downloads
+          key: product-downloads-v1-${{ steps.product-key.outputs.downloads_key }}-${{ steps.product-ready.outputs.downloads_kind }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save completed graphics block
+        continue-on-error: true
+        if: always() && !cancelled() && steps.product-ready.outputs.graphics_ready == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/product-cache/graphics
+          key: product-graphics-v1-${{ steps.product-key.outputs.graphics_key }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save completed host Wine block
+        continue-on-error: true
+        if: always() && !cancelled() && steps.product-ready.outputs.wine_ready == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/product-cache/wine
+          key: product-wine-v1-${{ steps.product-key.outputs.wine_key }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Verify and assemble exact product assets
         run: python3 tools/ci/release.py assemble
       - name: Preserve build evidence

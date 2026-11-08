@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tarfile
 from common import ROOT, RESULTS, phase, run, revision, sha, write_json
-from bootstrap import download
+from product_cache import ProductCache, normalize_wine_source, product_download as download
 
 
 LLVM_RUNTIME_SUBTREES = (
@@ -41,14 +41,15 @@ def python(name, *args):
     step(name, [sys.executable, ROOT / 'tools' / (name + '.py'), *args])
 
 
-def build(version):
-    # A release must not silently use a developer prefix or previously compiled DLLs.
+def build(version, cache_mode='reuse'):
+    # Only verified snapshots may populate fresh destinations after this guard.
     for directory in (ROOT / '.deps/sdk', ROOT / '.deps/wine', ROOT / 'out', Path.home() / 'vk-h0'):
         if directory.exists():
             raise ValueError('Clean product build requires an absent directory: ' + str(directory))
     if subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain']).strip():
         raise ValueError('Product source checkout is dirty')
     RESULTS.mkdir(parents=True, exist_ok=True)
+    cache = ProductCache(cache_mode)
     deps = json.loads((ROOT / 'dependencies.lock.json').read_text())
     # Steam is a separate product and not a dependency of this release recipe.
     names = [n for n in deps['repositories'] if n not in ('mangojuice', 'playden-ps5')]
@@ -83,21 +84,28 @@ def build(version):
             source.extractall(home / 'src', members=members, filter='data')
         write_json(RESULTS / 'product-downloads.json', {
             'assets': assets, 'locks': {p.name: sha(p) for p in ROOT.glob('*.lock.json')}})
+    graphics_reused = cache.use('graphics')
+    # Recreate the venv rather than restoring host interpreter symlinks.
     step('graphics-environment', ['bash', ROOT / 'tools/vk-h0/fetch.sh'])
     # Pin the graphics Python tools after the historical fetch script creates the venv.
     step('graphics-python', [home / 'mesa-venv/bin/pip', 'install', 'meson==1.12.1', 'Mako==1.4.3',
                             'MarkupSafe==3.0.4', 'PyYAML==6.0.3', 'packaging==26.3'])
     env = dict(os.environ, PATH=str(ROOT / '.deps/linux-tools/cmake/data/bin') + ':' + os.environ['PATH'])
-    for name in ('fetch-llvm-mingw', 'setup-libcxx', 'build-glslang'):
-        step(name, ['bash', ROOT / 'tools/vk-h0' / (name + '.sh')], env)
-    step('mesa-wine', ['bash', ROOT / 'tools/vk-h0/build-mesa.sh'], dict(env, VARIANT='wine'))
-    for name in ('build-vulkan-loader', 'build-vulkan-loader-i386', 'build-mesa-zink',
-                 'build-mesa-zink-i386', 'build-mangohud', 'build-mangohud-i386', 'build-vkcube'):
-        step(name, ['bash', ROOT / 'tools/vk-h0' / (name + '.sh')], env)
+    if not graphics_reused:
+        for name in ('fetch-llvm-mingw', 'setup-libcxx', 'build-glslang'):
+            step(name, ['bash', ROOT / 'tools/vk-h0' / (name + '.sh')], env)
+        step('mesa-wine', ['bash', ROOT / 'tools/vk-h0/build-mesa.sh'], dict(env, VARIANT='wine'))
+        for name in ('build-vulkan-loader', 'build-vulkan-loader-i386', 'build-mesa-zink',
+                     'build-mesa-zink-i386', 'build-mangohud', 'build-mangohud-i386', 'build-vkcube'):
+            step(name, ['bash', ROOT / 'tools/vk-h0' / (name + '.sh')], env)
+        cache.save('graphics')
     python('build', '--fixtures-only')
-    python('build-wine', '--jobs', '2')
-    python('build-host-wine-closure', '--jobs', '2')
-    python('build-host-wine-unix')
+    normalize_wine_source()
+    if not cache.use('wine'):
+        python('build-wine', '--jobs', '2')
+        python('build-host-wine-closure', '--jobs', '2')
+        python('build-host-wine-unix')
+        cache.save('wine')
     python('prepare-host-prefix')
     producers = list((ROOT / 'reports/increment15/prefix-producer').glob('*/report.json'))
     if len(producers) != 1:
@@ -127,7 +135,8 @@ def build(version):
     step('web-closure', [sys.executable, '-I', ROOT / 'tools/check-web-closure.py', ROOT / data['runtime_root']])
     write_json(RESULTS / 'product-build.json', {
         'source_sha': revision(), 'manifest': str(manifest.relative_to(ROOT)), 'manifest_sha256': sha(manifest),
-        'build_scope': 'clean hosted runner; packaging and import closure only',
+        'build_scope': 'fresh hosted workspace with verified dependency snapshots; packaging and import closure only',
+        'dependency_cache': cache.status,
         'Wine_booted': False, 'hardware_status': 'pending', 'status': 'built'})
     write_json(RESULTS / 'product-environment.json', {
         'source_sha': revision(),
@@ -139,12 +148,13 @@ def build(version):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--version', required=True)
+    parser.add_argument('--cache-mode', choices=('cold', 'reuse'), default='reuse')
     args = parser.parse_args()
     import re
     if not re.fullmatch(r'[0-9]{2}\.[0-9]{2}', args.version):
         parser.error('Version must be NN.NN')
     try:
-        build(args.version)
+        build(args.version, args.cache_mode)
     except Exception as exc:
         write_json(RESULTS / 'product-failure.json', {'source_sha': revision(), 'error': str(exc), 'status': 'failed'})
         raise

@@ -4,7 +4,7 @@
 
 ## Status and scope
 
-`Build PKG and release` is an **experimental clean-build workflow**, separate from the diagnostic matrix. Its first complete GitHub-hosted product build has not yet been demonstrated. It does not copy a developer build tree, run a self-hosted runner or use the home PS4. A missing prerequisite, compilation error, package error or inconsistent runtime fails the run and prevents publication.
+`Build PKG and release` is an **experimental product workflow** supporting cold builds and verified dependency snapshots, separate from the diagnostic matrix. Its first complete GitHub-hosted product build has not yet been demonstrated. It does not copy a developer build tree, run a self-hosted runner or use the home PS4. A missing prerequisite, compilation error, package error or inconsistent runtime fails the run and prevents publication.
 
 The first pilot may expose further assumptions in the historical recipes. Do not describe this workflow as a proven complete rebuild until the successful run and its artifacts have been inspected. The local validation covered workflow syntax, Python compilation and rejection tests for altered/escaping distribution inputs; it did not build or boot a new product.
 
@@ -13,12 +13,32 @@ The first pilot may expose further assumptions in the historical recipes. Do not
 Open **Actions → Build PKG and release → Run workflow**. The workflow must already exist on the default branch; build-only fixes can be tested from their pushed branch before merging:
 
 1. Select the branch to test, for example `ci/release-llvm-lit`, or `main` for the integrated recipe.
-2. Leave `publish` unchecked for the first build-only pilot.
+2. Leave `publish` unchecked for the first build-only pilot and keep `cache_mode=reuse`. Select `cold` when deliberately rebuilding all dependency blocks.
 3. Run the workflow. Download `product-evidence-*` even when the build fails. The last `product-*` phase and its log identify the next portability problem.
 4. On success, inspect `product-candidate-*`, its hashes and the complete runtime. Test the exact candidate on the emulator and/or console as appropriate; building is not boot validation.
 5. For a published candidate, first merge the tested fix through `dev` to `main`, then select `main` and run manually with `publish` checked. This makes a new clean build at that run's SHA; it does not promote a previously tested binary or carry over hardware acceptance.
 
 The actor and rerun actor of manual runs must both equal the repository owner. Other writers may still see GitHub's Run workflow button, but authorization fails before building. Manual build-only runs (`publish=false`) accept branch refs; publication and automatic builds require `refs/heads/main`. The authorization script, publisher job condition and publication helper keep that boundary explicit. This is a workflow guard, not a replacement for protecting edits to workflows or `main` itself. See [GitHub contexts](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts).
+
+## Product dependency caches
+
+`cache_mode=reuse` is the manual default and is also used by automatic main builds. `cold` bypasses all three Actions cache restores and rebuilds both dependency blocks; it can still populate verified caches for later runs. A fresh workspace is required in either mode. Caches are restored into isolated `.deps/product-cache/` bundles, not directly over an existing SDK, prefix, Wine source or runtime. The recipe fetches/verifies pinned sources and the SDK before installing any dependency snapshot.
+
+| Cache | Contents | Behavior |
+| --- | --- | --- |
+| Verified downloads | Explicit locked archives/assets, named by SHA-256 under `.deps/product-downloads` | Every consumed file is rehashed; save new completed downloads even after a later failure, preferring complete cache entries on restore |
+| Graphics | Allowlisted build/source/tool directories under `~/vk-h0`, including libc++, glslang, RADV, both Zink builds, loaders, MangoHud and vkcube | Skip the expensive graphics block only after validating the snapshot; recreate the Python venv each run |
+| Host Wine | Native build tree/tools, staged base PE files and host closure reports | Skip the three host build steps only after validating the snapshot; generate and test a new prefix every run |
+
+Each block has its own exact key binding source/SDK pins, recipes, ordered fork patch inputs where relevant, installed packages, compiler/tool hashes and versions, architecture/kernel, build environment and absolute workspace/home paths. The application's commit alone is not a cache key. Changing `build-host-wine-unix.py`, for example, invalidates Wine without invalidating graphics. Shared infrastructure/recipe changes invalidate both; graphics keys conservatively include native/platform inputs. Fresh Wine source file timestamps are normalized only after checking a clean pinned checkout, preventing a new checkout's timestamps from forcing recompilation of every cached object. Generated outputs retain their producer timestamps and modes.
+
+`product_cache.py` seals each completed block before proceeding to the next stage. After the product step, `always()` save steps retain newly sealed blocks even if prefix creation, console compilation or packaging subsequently failed. Failed/incomplete blocks are not saved. A hit is not uploaded again. Cache manifests record producer commit/run, input identity and a complete file/link inventory; payload and individual file hashes are checked before live restoration. Absolute/traversing archive paths, unexpected archive links, external symlinks, linked destination ancestors, changed payloads and overwrites of existing outputs are rejected. Explicit SDK/source symlinks are permitted only into pinned restored inputs. Restore moves verified staged files into place to avoid retaining a second full expanded copy.
+
+Only fixed dependency mounts are snapshotted. Git metadata, private notes, the graphics venv and the separately restored Vulkan/LLVM source inputs are excluded. Prefix producers, registries, user documents, console data, final PKGs, SSH keys and the rest of `.deps/` are not cache inputs. Prefix creation/fixture validation, PS4 adapters, final staging, packaging and distribution checks still execute for the current SHA. `build-provenance.json` includes block reuse/producer identities; caches never transfer Wine boot or hardware acceptance.
+
+Inspect `reports/ci/product-cache-inputs.json`, `product-cache-status.json`, `product-download-cache.json` and the `product-cache-restore-*` / `product-cache-seal-*` phases. They distinguish reused/rebuilt blocks and record restore times and newly sealed archive sizes. The first run normally populates caches; the following run on the same branch/environment can measure savings. New branches/main cannot necessarily read caches produced by a feature branch, and caches can be evicted. See [GitHub cache scope](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching). Use only trusted build triggers for snapshot publication; these checksums provide integrity checks, not signatures or trust in arbitrary PR artifacts.
+
+Local validation covers filesystem roundtrips, preserved modes/times, allowed SDK links, tamper/path/link rejection, cold behavior, source timestamp checks, independent keys and retaining a completed block after later failure. A read-only audit checked real prepared graphics output paths and link shapes without copying that workstation tree into a release cache. A hosted cold population and subsequent warm hit remain to be measured; no speedup or full product acceptance is asserted yet.
 
 ## Automatic releases from main
 

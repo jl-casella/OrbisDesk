@@ -4,7 +4,7 @@
 
 ## Estado y alcance
 
-`Build PKG and release` es un **workflow experimental de construcción limpia**, separado de la matriz de diagnósticos. Todavía no se demostró su primera construcción completa en GitHub. No copia un árbol compilado del desarrollador, usa un runner propio ni accede a la PS4 de casa. Una dependencia ausente, error de compilación, error de PKG o runtime inconsistente hace fallar la corrida e impide publicar.
+`Build PKG and release` es un **workflow experimental del producto** que admite builds en frío y snapshots verificados de dependencias, separado de la matriz de diagnósticos. Todavía no se demostró su primera construcción completa en GitHub. No copia un árbol compilado del desarrollador, usa un runner propio ni accede a la PS4 de casa. Una dependencia ausente, error de compilación, error de PKG o runtime inconsistente hace fallar la corrida e impide publicar.
 
 El primer piloto puede revelar más supuestos de las recetas históricas. No describir este workflow como reconstrucción completa demostrada hasta inspeccionar una corrida satisfactoria y sus artefactos. La validación local cubrió sintaxis de workflows, compilación de Python y tests que rechazan entradas de distribución alteradas o inseguras; no compiló ni arrancó un producto nuevo.
 
@@ -13,12 +13,32 @@ El primer piloto puede revelar más supuestos de las recetas históricas. No des
 Abrir **Actions → Build PKG and release → Run workflow**. El workflow ya debe existir en la rama predeterminada; los fixes de construcción pueden probarse desde su rama subida antes de integrarlos:
 
 1. Seleccionar la rama a probar, por ejemplo `ci/release-llvm-lit`, o `main` para la receta integrada.
-2. Dejar `publish` sin marcar en el primer piloto de construcción.
+2. Dejar `publish` sin marcar en el primer piloto de construcción y mantener `cache_mode=reuse`. Seleccionar `cold` para reconstruir deliberadamente todos los bloques de dependencias.
 3. Ejecutar. Descargar `product-evidence-*` incluso si falla. La última fase `product-*` y su log identifican el siguiente problema de portabilidad.
 4. Si termina bien, inspeccionar `product-candidate-*`, hashes y runtime completo. Probar ese candidato exacto en emulador y/o consola según corresponda; compilar no valida el arranque.
 5. Para publicar un candidato, integrar primero el fix probado pasando por `dev` hacia `main`, seleccionar `main` y ejecutar manualmente con `publish` marcado. Se hace una compilación limpia nueva en el SHA de esa corrida; no promociona el binario probado anteriormente ni hereda aceptación física.
 
 Tanto el actor como quien reejecuta una corrida manual deben coincidir con el owner. Otros usuarios con escritura pueden ver el botón Run workflow, pero la autorización falla antes de compilar. Las corridas manuales sin publicación (`publish=false`) aceptan referencias de ramas; publicar y compilar automáticamente exige `refs/heads/main`. El script de autorización, la condición del job de publicación y su auxiliar mantienen explícito ese límite. Es una comprobación del workflow, no reemplaza proteger cambios a los workflows o a main. Ver [contextos de GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts).
+
+## Cachés de dependencias del producto
+
+`cache_mode=reuse` es el valor manual predeterminado y también se usa en builds automáticas de main. `cold` omite las tres restauraciones de caché de Actions y reconstruye ambos bloques de dependencias; puede generar cachés verificadas para futuras corridas. Ambos modos requieren un workspace nuevo. Las cachés se restauran como paquetes aislados en `.deps/product-cache/`, no directamente sobre un SDK, prefijo, fuente Wine o runtime existente. La receta recupera/verifica las fuentes fijadas y el SDK antes de instalar cualquier snapshot de dependencias.
+
+| Caché | Contenido | Comportamiento |
+| --- | --- | --- |
+| Descargas verificadas | Archivos/recursos fijados explícitos, nombrados por SHA-256 en `.deps/product-downloads` | Se verifica el hash de cada archivo consumido; se guardan descargas nuevas completas aunque falle una etapa posterior, prefiriendo entradas completas al restaurar |
+| Gráficos | Directorios permitidos de compilación/fuentes/herramientas en `~/vk-h0`, incluidos libc++, glslang, RADV, ambos Zink, loaders, MangoHud y vkcube | Se omite el bloque gráfico costoso sólo tras validar el snapshot; el venv Python se recrea en cada corrida |
+| Wine anfitrión | Árbol de build/herramientas nativas, PE base preparados e informes del cierre anfitrión | Se omiten los tres pasos de build anfitrión sólo tras validar el snapshot; se genera y prueba un prefijo nuevo en cada corrida |
+
+Cada bloque tiene su clave exacta, vinculada a pins de fuentes/SDK, recetas, parches ordenados del fork cuando corresponda, paquetes instalados, hashes/versiones de compiladores/herramientas, arquitectura/kernel, entorno y rutas absolutas del workspace/home. El commit de la aplicación por sí solo no es una clave. Cambiar `build-host-wine-unix.py`, por ejemplo, invalida Wine sin invalidar gráficos. Cambios de infraestructura/recetas compartidas invalidan ambos; las claves gráficas incluyen conservadoramente entradas native/platform. Se normalizan las fechas de los archivos fuente Wine nuevos sólo tras comprobar el checkout limpio fijado, evitando que las fechas de otro checkout obliguen a recompilar todos los objetos cacheados. Las salidas generadas conservan fechas y permisos del productor.
+
+`product_cache.py` sella cada bloque terminado antes de continuar. Tras el paso del producto, los guardados con `always()` conservan bloques nuevos sellados aunque después fallen el prefijo, la compilación de consola o el empaquetado. No se guardan bloques fallidos/incompletos. Un hit no se vuelve a subir. Los manifiestos registran commit/corrida del productor, identidad de entradas e inventario completo de archivos/enlaces; se comprueban hashes del payload y de cada archivo antes de restaurar destinos. Se rechazan rutas absolutas/con escape, enlaces inesperados del archivo comprimido, symlinks externos, ancestros enlazados en el destino, payload alterado y sobrescrituras de salidas existentes. Sólo se permiten enlaces explícitos del SDK/fuentes hacia entradas fijadas restauradas. La restauración mueve los archivos verificados para evitar conservar otra copia expandida completa.
+
+Sólo se guardan ubicaciones fijas de dependencias. Se excluyen metadatos Git, notas privadas, el venv gráfico y las fuentes Vulkan/LLVM restauradas por separado. Productores de prefijo, registros, documentos, datos de consola, PKGs finales, claves SSH y el resto de `.deps/` quedan fuera de las entradas de caché. Crear el prefijo/validar su fixture, adaptadores PS4, staging final, empaquetado y controles de distribución siguen ejecutándose para el SHA actual. `build-provenance.json` incluye reutilización/productor de los bloques; las cachés no transfieren aceptación de arranque Wine o hardware.
+
+Revisar `reports/ci/product-cache-inputs.json`, `product-cache-status.json`, `product-download-cache.json` y las fases `product-cache-restore-*` / `product-cache-seal-*`. Distinguen bloques reutilizados/reconstruidos y registran tiempos de restauración y tamaños de archivos nuevos sellados. La primera corrida normalmente genera las cachés; otra con la misma rama/entorno permite medir el ahorro. Ramas nuevas/main no necesariamente pueden leer cachés producidas en una rama de feature, y las cachés pueden ser expulsadas. Ver [alcance de caché GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching). Publicar snapshots sólo desde disparadores de build confiables; estos hashes son controles de integridad, no firmas ni confianza en artefactos arbitrarios de PR.
+
+La validación local cubre guardado/restauración, permisos/fechas, enlaces permitidos al SDK, rechazo de alteraciones/rutas/enlaces, modo frío, control de fechas de fuentes, claves independientes y retención de un bloque terminado tras otro fallo. Una auditoría de sólo lectura comprobó rutas y enlaces de salidas gráficas reales preparadas, sin copiar ese árbol de la computadora a una caché de release. Falta medir la generación en frío y el hit posterior en GitHub; todavía no se afirma un ahorro ni aceptación del producto completo.
 
 ## Releases automáticas desde main
 
