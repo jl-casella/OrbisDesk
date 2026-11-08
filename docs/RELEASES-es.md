@@ -10,15 +10,15 @@ El primer piloto puede revelar más supuestos de las recetas históricas. No des
 
 ## Piloto manual
 
-Después de integrar esta implementación en `main`, abrir **Actions → Build PKG and release → Run workflow**:
+Abrir **Actions → Build PKG and release → Run workflow**. El workflow ya debe existir en la rama predeterminada; los fixes de construcción pueden probarse desde su rama subida antes de integrarlos:
 
-1. Seleccionar `main`.
+1. Seleccionar la rama a probar, por ejemplo `ci/release-llvm-lit`, o `main` para la receta integrada.
 2. Dejar `publish` sin marcar en el primer piloto de construcción.
 3. Ejecutar. Descargar `product-evidence-*` incluso si falla. La última fase `product-*` y su log identifican el siguiente problema de portabilidad.
 4. Si termina bien, inspeccionar `product-candidate-*`, hashes y runtime completo. Probar ese candidato exacto en emulador y/o consola según corresponda; compilar no valida el arranque.
-5. Para publicar un candidato, ejecutar manualmente con `publish` marcado. Se hace una compilación limpia nueva en el SHA de esa corrida; no promociona el binario probado anteriormente ni hereda aceptación física.
+5. Para publicar un candidato, integrar primero el fix probado pasando por `dev` hacia `main`, seleccionar `main` y ejecutar manualmente con `publish` marcado. Se hace una compilación limpia nueva en el SHA de esa corrida; no promociona el binario probado anteriormente ni hereda aceptación física.
 
-Tanto el actor como quien reejecuta una corrida manual deben coincidir con el owner. Otros usuarios con escritura pueden ver el botón Run workflow, pero la autorización falla antes de compilar. También se exige `refs/heads/main`. Es una comprobación del workflow, no reemplaza proteger cambios a los workflows o a main. Ver [contextos de GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts).
+Tanto el actor como quien reejecuta una corrida manual deben coincidir con el owner. Otros usuarios con escritura pueden ver el botón Run workflow, pero la autorización falla antes de compilar. Las corridas manuales sin publicación (`publish=false`) aceptan referencias de ramas; publicar y compilar automáticamente exige `refs/heads/main`. El script de autorización, la condición del job de publicación y su auxiliar mantienen explícito ese límite. Es una comprobación del workflow, no reemplaza proteger cambios a los workflows o a main. Ver [contextos de GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts).
 
 ## Releases automáticas desde main
 
@@ -60,7 +60,7 @@ El workflow admite seis horas para compilar desde cero. Es un límite, no una du
 
 La corrida `42503388231` en `7d8ccdd5a58679432f41c645c5eda6ea3574bba8` aprobó restauración de fuentes, descargas fijadas, preparación del entorno gráfico y LLVM-MinGW, y después falló en `product-setup-libcxx`. CMake no encontró `llvm/utils/llvm-lit/CMakeLists.txt`: la extracción parcial del producto incluía `llvm/utils/lit`, pero omitía el directorio separado `llvm/utils/llvm-lit`, requerido por la configuración CMake del runtime fijado. Es un fallo de preparación de fuentes, anterior al PKG o a probar el arranque de Wine.
 
-La extracción ahora incluye ambos directorios y compara componentes completos de ruta, excluyendo árboles ajenos con nombres parecidos. El wrapper también conserva toda la salida de libc++ en lugar de pasarla por `tail -15`; `product-setup-libcxx.log` incluirá los diagnósticos completos de configuración/build. Se mantiene la revisión/hash del archivo LLVM. El próximo piloto GitHub debe usar el fix integrado en `dev` y promovido a `main`, porque la release manual requiere `main`. Reejecutar el SHA anterior no prueba la corrección. Siguen pendientes la construcción completa, el empaquetado y la aceptación del arranque.
+La extracción ahora incluye ambos directorios y compara componentes completos de ruta, excluyendo árboles ajenos con nombres parecidos. El wrapper también conserva toda la salida de libc++ en lugar de pasarla por `tail -15`; `product-setup-libcxx.log` incluirá los diagnósticos completos de configuración/build. Se mantiene la revisión/hash del archivo LLVM. El próximo piloto GitHub de construcción puede seleccionar la rama subida del fix con `publish=false`; publicar sigue requiriendo promoverla pasando por `dev` hacia `main`. Reejecutar el SHA anterior no prueba la corrección. Siguen pendientes la construcción completa, el empaquetado y la aceptación del arranque.
 
 Una comprobación local acotada usó el archivo original con SHA-256 verificado `ae67086eb04bed7ca11ab880349b5f1ab6f50e1b88cda376eaf8a845b935762b`, fuentes recién extraídas, directorios de build aislados y el compilador/sysroot PS4 preparado. La selección anterior reprodujo el fallo de configuración por el directorio ausente (salida 1); agregar `llvm/utils/llvm-lit` permitió terminar la configuración/generación CMake (salida 0). Esto verifica únicamente la corrección de fuentes/configuración, no la compilación de libc++ ni del producto completo en GitHub.
 

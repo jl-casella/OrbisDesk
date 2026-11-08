@@ -10,15 +10,15 @@ The first pilot may expose further assumptions in the historical recipes. Do not
 
 ## Manual pilot
 
-After merging this implementation into `main`, open **Actions → Build PKG and release → Run workflow**:
+Open **Actions → Build PKG and release → Run workflow**. The workflow must already exist on the default branch; build-only fixes can be tested from their pushed branch before merging:
 
-1. Select `main`.
+1. Select the branch to test, for example `ci/release-llvm-lit`, or `main` for the integrated recipe.
 2. Leave `publish` unchecked for the first build-only pilot.
 3. Run the workflow. Download `product-evidence-*` even when the build fails. The last `product-*` phase and its log identify the next portability problem.
 4. On success, inspect `product-candidate-*`, its hashes and the complete runtime. Test the exact candidate on the emulator and/or console as appropriate; building is not boot validation.
-5. For a published candidate, run manually with `publish` checked. This makes a new clean build at that run's SHA; it does not promote a previously tested binary or carry over hardware acceptance.
+5. For a published candidate, first merge the tested fix through `dev` to `main`, then select `main` and run manually with `publish` checked. This makes a new clean build at that run's SHA; it does not promote a previously tested binary or carry over hardware acceptance.
 
-The actor and rerun actor of manual runs must both equal the repository owner. Other writers may still see GitHub's Run workflow button, but authorization fails before building. The workflow also requires `refs/heads/main`. This is a workflow guard, not a replacement for protecting edits to workflows or `main` itself. See [GitHub contexts](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts).
+The actor and rerun actor of manual runs must both equal the repository owner. Other writers may still see GitHub's Run workflow button, but authorization fails before building. Manual build-only runs (`publish=false`) accept branch refs; publication and automatic builds require `refs/heads/main`. The authorization script, publisher job condition and publication helper keep that boundary explicit. This is a workflow guard, not a replacement for protecting edits to workflows or `main` itself. See [GitHub contexts](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts).
 
 ## Automatic releases from main
 
@@ -60,7 +60,7 @@ The workflow allows six hours for the clean build. This is a limit, not a measur
 
 Run `42503388231` on `7d8ccdd5a58679432f41c645c5eda6ea3574bba8` passed source restoration, pinned downloads, graphics environment setup and LLVM-MinGW setup, then failed during `product-setup-libcxx`. CMake could not find `llvm/utils/llvm-lit/CMakeLists.txt`: the clean product's partial LLVM extraction included `llvm/utils/lit` but omitted the separate `llvm/utils/llvm-lit` directory required by the pinned runtime CMake configuration. This is a source preparation failure, before a PKG or Wine boot test.
 
-The extraction now includes both directories and matches complete path components, avoiding similarly named unrelated trees. The setup wrapper also retains full libc++ output instead of piping it through `tail -15`; `product-setup-libcxx.log` will contain the complete configure/build diagnostics. Keep the LLVM archive revision/hash unchanged. The next hosted pilot must use the fix merged into `dev` and promoted to `main`, since manual release runs require `main`. Rerunning the old SHA cannot test the correction. Full product build, packaging and boot acceptance remain pending.
+The extraction now includes both directories and matches complete path components, avoiding similarly named unrelated trees. The setup wrapper also retains full libc++ output instead of piping it through `tail -15`; `product-setup-libcxx.log` will contain the complete configure/build diagnostics. Keep the LLVM archive revision/hash unchanged. The next build-only hosted pilot can select the pushed fix branch with `publish=false`; publication still requires promotion through `dev` to `main`. Rerunning the old SHA cannot test the correction. Full product build, packaging and boot acceptance remain pending.
 
 A focused local check used the original archive with verified SHA-256 `ae67086eb04bed7ca11ab880349b5f1ab6f50e1b88cda376eaf8a845b935762b`, fresh extracted sources, isolated build directories and the prepared PS4 compiler/sysroot. The original selection reproduced the missing-directory configure failure (exit 1); adding `llvm/utils/llvm-lit` allowed CMake configuration/generation to finish (exit 0). This verifies the source/configure correction only, not compilation of libc++ or the full hosted product.
 
