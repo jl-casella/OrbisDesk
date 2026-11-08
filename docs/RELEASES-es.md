@@ -80,6 +80,12 @@ Una comprobación local acotada usó la fuente Wine fijada y un directorio tempo
 
 La evidencia de release ahora incluye también logs de configuración/compilación Wine nativa, logs/informes del cierre anfitrión y logs/JSON del productor de prefijo generado. No se agregan archivos comprimidos del prefijo ni contenido del usuario a la subida de evidencia. Hace falta una build/configuración nueva para aplicar la opción; reejecutar la revisión anterior del workflow o reutilizar su Makefile configurado no verifica el fix.
 
+## Alias de imports diferidos de Wine: corrida 42521647656
+
+La corrida `42521647656` en `52634fb50e231665afc9a765bd568badf3cf01d3` compiló los targets PE requeridos de Wine, incluidos los recursos USB antes ausentes. El cierre anfitrión compiló 156 módulos en seis tandas de make y después rechazó cuatro dependencias: `winspool.dll` desde `gdi32.dll` y `comdlg32.dll` en ambas arquitecturas. El informe las registra como imports diferidos derivados de fuentes. El `dlls/winspool.drv/Makefile.in` fijado declara `MODULE = winspool.drv` e `IMPORTLIB = winspool`: agregar `.dll` a todo alias sin extensión inventaba el nombre incorrecto.
+
+El cierre anfitrión ahora construye un mapa de alias por arquitectura desde las declaraciones `IMPORTLIB` de los targets PE configurados y resuelve cada import diferido de fuentes al nombre real del módulo. Los imports ausentes siguen llegando al control de rechazo existente; los alias conflictivos y las variables sin expandir fallan explícitamente. No se renombra ni parchea ningún PE. La comprobación local ejercitó el mapa con 1.490 targets configurados (478 alias), resolviendo `winspool` a `winspool.drv` en ambas arquitecturas, y probó casos malformados/ausentes/ambiguos. Es validación del resolutor, no otra construcción completa del cierre ni aceptación del producto en GitHub. La próxima build nueva de rama debe compilar el driver/dependencias agregados y continuar la preparación del prefijo.
+
 ## Instalación y flujo dev → main
 
 El PKG solo no alcanza: también necesita su runtime en `/data`. Seguir las instrucciones del candidato, respaldar registros/documentos/configuración/partidas y usar una actualización que preserve cambios del usuario si ya existe una instalación. El archivo es un runtime nuevo; reemplazar un prefijo instalado sin combinar puede perder estado. Actions no hace transferencias FTP ni instala en consola.

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Build actual PE dependencies for external prefix preparation, not PS4 code."""
 import argparse,hashlib,json,pathlib,re,struct,subprocess,time
+from wine_module_names import import_library_alias, register_alias, resolve_import_library
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 BUILD=ROOT/'.deps/wine/runtime/build'
 parser=argparse.ArgumentParser();parser.add_argument('--jobs',type=int,default=12);args=parser.parse_args()
@@ -10,6 +11,13 @@ makefile=(BUILD/'Makefile').read_text()
 targets={}
 for match in re.finditer(r'^((?:dlls|programs)/[^/ :]+/(i386|x86_64)-windows/([^/ :]+\.(?:dll|exe|sys|drv))):',makefile,re.M):
     targets[(match[2],match[3].lower())]=match[1]
+
+aliases={};definitions={}
+for (arch,name),target in targets.items():
+    directory=pathlib.Path(target).parent.parent
+    if directory not in definitions:
+        definitions[directory]=(ROOT/'.deps/wine/source'/directory/'Makefile.in').read_text().replace('\\\n',' ')
+    register_alias(aliases,arch,import_library_alias(definitions[directory]),name)
 def imports(path):
     data=path.read_bytes();pe=struct.unpack_from('<I',data,0x3c)[0]
     if data[:2]!=b'MZ' or data[pe:pe+4]!=b'PE\0\0':raise ValueError('Not PE: '+str(path))
@@ -56,9 +64,9 @@ while pending:
     for arch,name in current:
         path=BUILD/targets[(arch,name)];dependencies=imports(path)
         directory=path.parent.parent.relative_to(BUILD)
-        definition=(ROOT/'.deps/wine/source'/directory/'Makefile.in').read_text().replace('\\\n',' ')
+        definition=definitions[directory]
         delayed=re.search(r'^DELAYIMPORTS\s*=\s*(.*)$',definition,re.M)
-        source_delayed=sorted({module if '.' in module else module+'.dll' for module in delayed.group(1).split()}) if delayed else []
+        source_delayed=sorted({resolve_import_library(module,arch,aliases) for module in delayed.group(1).split()}) if delayed else []
         if any('$' in module for module in source_delayed):raise SystemExit('Unexpanded delayed import: '+str(directory))
         dependencies=sorted(set(dependencies)|set(source_delayed))
         done[(arch,name)]={'path':str(path.relative_to(ROOT)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'imports':dependencies,'source_delayed_imports':source_delayed}

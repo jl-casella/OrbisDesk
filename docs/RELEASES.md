@@ -80,6 +80,12 @@ A focused local check used the pinned Wine source and a fresh temporary build, e
 
 Release evidence now also includes native Wine configure/compiler logs, the host closure logs/reports and generated prefix-producer logs/report JSON. Prefix archives and user content are not added to the evidence upload. A fresh build/configuration is needed to apply the option; rerunning the old workflow revision or reusing its configured Makefile does not verify the fix.
 
+## Wine delayed-import aliases: run 42521647656
+
+Run `42521647656` on `52634fb50e231665afc9a765bd568badf3cf01d3` built the required Wine PE targets, including the previously missing USB resources. The host closure compiled 156 modules over six make batches, then rejected four dependencies: `winspool.dll` from `gdi32.dll` and `comdlg32.dll` on both architectures. The report records them as source-derived delayed imports. The pinned `dlls/winspool.drv/Makefile.in` declares `MODULE = winspool.drv` and `IMPORTLIB = winspool`: appending `.dll` to every extensionless alias invented the wrong dependency name.
+
+The host closure now builds an architecture-specific alias map from `IMPORTLIB` declarations belonging to configured PE targets, resolving each source delayed import to its actual module filename. Missing imports still reach the existing rejection check; conflicting aliases and unexpanded variables fail explicitly. No PE file is renamed or patched. Local checks exercised the alias map against 1,490 configured targets (478 aliases), resolving `winspool` to `winspool.drv` on both architectures, and tested malformed/missing/ambiguous cases. This is resolver validation, not a new complete closure build or hosted product acceptance. The next fresh branch build must compile the added driver/dependencies and continue prefix preparation.
+
 ## Installation and the dev → main flow
 
 A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.
