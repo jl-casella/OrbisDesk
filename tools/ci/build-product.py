@@ -3,13 +3,26 @@
 import argparse
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
 import tarfile
 from common import ROOT, RESULTS, phase, run, revision, sha, write_json
 from bootstrap import download
+
+
+LLVM_RUNTIME_SUBTREES = (
+    'runtimes', 'libcxx', 'libcxxabi', 'libunwind', 'libc', 'cmake',
+    'third-party', 'llvm/cmake', 'llvm/utils/lit', 'llvm/utils/llvm-lit',
+)
+
+
+def llvm_runtime_member(name):
+    """Select complete runtime dependencies by path components, not substrings."""
+    relative = PurePosixPath(name).parts[1:]
+    return any(relative[:len(parts)] == parts
+               for parts in (PurePosixPath(tree).parts for tree in LLVM_RUNTIME_SUBTREES))
 
 
 def step(name, command, env=None):
@@ -66,10 +79,7 @@ def build(version):
         (home / 'src').mkdir(parents=True, exist_ok=True)
         # All members are verified by tarfile's data filter; no workstation tree is copied.
         with tarfile.open(llvm) as source:
-            subtrees = ('runtimes', 'libcxx', 'libcxxabi', 'libunwind', 'libc', 'cmake', 'third-party')
-            members = [m for m in source.getmembers() if len(Path(m.name).parts) > 1 and
-                       (Path(m.name).parts[1] in subtrees or
-                        '/llvm/cmake' in m.name or '/llvm/utils/lit' in m.name)]
+            members = [m for m in source.getmembers() if llvm_runtime_member(m.name)]
             source.extractall(home / 'src', members=members, filter='data')
         write_json(RESULTS / 'product-downloads.json', {
             'assets': assets, 'locks': {p.name: sha(p) for p in ROOT.glob('*.lock.json')}})

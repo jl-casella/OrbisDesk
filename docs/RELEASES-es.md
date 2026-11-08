@@ -56,10 +56,18 @@ Los runtimes grandes se dividen en `.partNNN` ordenados por debajo del límite i
 
 El workflow admite seis horas para compilar desde cero. Es un límite, no una duración medida. Disco/memoria del runner, disponibilidad de archivos, configuración de fuentes, subproyectos gráficos y supuestos obsoletos pueden bloquear el primer piloto. Conservar los fallos reales y corregir la receta canónica; no restaurar un runtime local para ponerlo verde.
 
+## Primer piloto en GitHub: fuentes LLVM incompletas
+
+La corrida `42503388231` en `7d8ccdd5a58679432f41c645c5eda6ea3574bba8` aprobó restauración de fuentes, descargas fijadas, preparación del entorno gráfico y LLVM-MinGW, y después falló en `product-setup-libcxx`. CMake no encontró `llvm/utils/llvm-lit/CMakeLists.txt`: la extracción parcial del producto incluía `llvm/utils/lit`, pero omitía el directorio separado `llvm/utils/llvm-lit`, requerido por la configuración CMake del runtime fijado. Es un fallo de preparación de fuentes, anterior al PKG o a probar el arranque de Wine.
+
+La extracción ahora incluye ambos directorios y compara componentes completos de ruta, excluyendo árboles ajenos con nombres parecidos. El wrapper también conserva toda la salida de libc++ en lugar de pasarla por `tail -15`; `product-setup-libcxx.log` incluirá los diagnósticos completos de configuración/build. Se mantiene la revisión/hash del archivo LLVM. El próximo piloto GitHub debe usar el fix integrado en `dev` y promovido a `main`, porque la release manual requiere `main`. Reejecutar el SHA anterior no prueba la corrección. Siguen pendientes la construcción completa, el empaquetado y la aceptación del arranque.
+
+Una comprobación local acotada usó el archivo original con SHA-256 verificado `ae67086eb04bed7ca11ab880349b5f1ab6f50e1b88cda376eaf8a845b935762b`, fuentes recién extraídas, directorios de build aislados y el compilador/sysroot PS4 preparado. La selección anterior reprodujo el fallo de configuración por el directorio ausente (salida 1); agregar `llvm/utils/llvm-lit` permitió terminar la configuración/generación CMake (salida 0). Esto verifica únicamente la corrección de fuentes/configuración, no la compilación de libc++ ni del producto completo en GitHub.
+
 ## Instalación y flujo dev → main
 
 El PKG solo no alcanza: también necesita su runtime en `/data`. Seguir las instrucciones del candidato, respaldar registros/documentos/configuración/partidas y usar una actualización que preserve cambios del usuario si ya existe una instalación. El archivo es un runtime nuevo; reemplazar un prefijo instalado sin combinar puede perder estado. Actions no hace transferencias FTP ni instala en consola.
 
-Cuando funcione la construcción limpia, crear `dev` desde el main de ese momento. Los PRs diarios de features/fixes apuntan a `dev` y ejecutan checks rápidos. Con un conjunto coherente listo, abrir un PR `dev → main`, revisar/probar ese conjunto e integrar. Con releases automáticas habilitadas, ese push a main lo construye y publica. Mantener main protegida, no integrar dev automáticamente y conservar builds manuales para investigar. La rama **no** se creó con este cambio de workflow.
+`dev` ya fue creada desde main. Los PRs diarios de features/fixes apuntan a `dev` y ejecutan checks rápidos y la matriz diagnóstica completa, como describe [operación de CI](CI-es.md). Con un conjunto coherente listo, abrir un PR `dev → main`, revisar/probar ese conjunto e integrar. Con releases automáticas habilitadas, ese push a main lo construye y publica. Mantener main protegida, no integrar dev automáticamente y conservar builds manuales para investigar.
 
 Ver también [operación de CI](CI-es.md), [plan de CI](CI_PLAN-es.md), [estructura de dependencias](REPOSITORY_LAYOUT-es.md) y [guía del desarrollador](../AGENTS-es.md).

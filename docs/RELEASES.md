@@ -56,10 +56,18 @@ Large runtime archives are split into ordered `.partNNN` files below GitHub's pe
 
 The workflow allows six hours for the clean build. This is a limit, not a measured duration. Hosted-runner disk/memory, archive availability, source configuration, graphics subprojects and obsolete assumptions may be the first pilot's blockers. Preserve their real failure logs and fix the canonical recipe; do not restore a local runtime to turn the build green.
 
+## First hosted pilot: missing LLVM runtime source
+
+Run `42503388231` on `7d8ccdd5a58679432f41c645c5eda6ea3574bba8` passed source restoration, pinned downloads, graphics environment setup and LLVM-MinGW setup, then failed during `product-setup-libcxx`. CMake could not find `llvm/utils/llvm-lit/CMakeLists.txt`: the clean product's partial LLVM extraction included `llvm/utils/lit` but omitted the separate `llvm/utils/llvm-lit` directory required by the pinned runtime CMake configuration. This is a source preparation failure, before a PKG or Wine boot test.
+
+The extraction now includes both directories and matches complete path components, avoiding similarly named unrelated trees. The setup wrapper also retains full libc++ output instead of piping it through `tail -15`; `product-setup-libcxx.log` will contain the complete configure/build diagnostics. Keep the LLVM archive revision/hash unchanged. The next hosted pilot must use the fix merged into `dev` and promoted to `main`, since manual release runs require `main`. Rerunning the old SHA cannot test the correction. Full product build, packaging and boot acceptance remain pending.
+
+A focused local check used the original archive with verified SHA-256 `ae67086eb04bed7ca11ab880349b5f1ab6f50e1b88cda376eaf8a845b935762b`, fresh extracted sources, isolated build directories and the prepared PS4 compiler/sysroot. The original selection reproduced the missing-directory configure failure (exit 1); adding `llvm/utils/llvm-lit` allowed CMake configuration/generation to finish (exit 0). This verifies the source/configure correction only, not compilation of libc++ or the full hosted product.
+
 ## Installation and the dev → main flow
 
 A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.
 
-After the clean release build is working, create `dev` from the then-current main. Day-to-day feature/fix PRs target `dev` and run the quick checks. When a coherent group of changes is ready, open a `dev → main` PR, review/test that group, and merge. With automatic releases enabled, that main push builds and publishes the group. Keep main protected, do not automatically merge dev, and retain manual builds for investigations. The branch has **not** been created as part of this workflow change.
+`dev` has been created from main. Day-to-day feature/fix PRs target `dev` and run the quick checks plus the complete diagnostic matrix, as described in [CI operation](CI.md). When a coherent group of changes is ready, open a `dev → main` PR, review/test that group, and merge. With automatic releases enabled, that main push builds and publishes the group. Keep main protected, do not automatically merge dev, and retain manual builds for investigations.
 
 See also [CI operation](CI.md), [CI rollout plan](CI_PLAN.md), [dependency layout](REPOSITORY_LAYOUT.md) and the [developer guide](../AGENTS.md).

@@ -18,4 +18,4 @@ if [ ! -d $H/src/llvm-project-$LLVM.src/libcxx ]; then
   tar -xJf $H/src/llvm.tar.xz -C $H/src llvm-project-$LLVM.src/{runtimes,libcxx,libcxxabi,libunwind,libc,cmake,llvm/cmake,llvm/utils/lit,llvm/utils/llvm-lit,third-party}
 fi
 export PSB=$H OPENORBIS=$P/.deps/sdk/OpenOrbis/PS4Toolchain CLANG_VER=19 LLVM_LOCAL_SRC=/nonexistent
-$H/dolphin/toolchain/build-libcxx.sh 2>&1 | tail -15
+$H/dolphin/toolchain/build-libcxx.sh
