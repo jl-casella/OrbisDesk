@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Build the Linux fork and bind its binary to the exact source diff."""
 import argparse,hashlib,json,pathlib,subprocess,time
+from logged_process import run_logged
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser();parser.add_argument('--jobs',type=int,default=4)
 parser.add_argument('--reuse-configure',action='store_true')
@@ -27,9 +28,9 @@ if args.reuse_configure:
     if not (build/'build.ninja').is_file() or 'CMAKE_HOME_DIRECTORY:INTERNAL='+str(source) not in cache:
         raise SystemExit('No matching existing CMake configuration')
 else:
-    with (build/'configure.log').open('w') as log:subprocess.run(configure,stdout=log,stderr=subprocess.STDOUT,check=True)
+    run_logged(configure,build/'configure.log')
 command=[str(cmake),'--build',str(build),'--target','shadps4','--parallel',str(args.jobs)]
-with (build/'build.log').open('w') as log:subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True)
+run_logged(command,build/'build.log')
 if patch!=git('diff','HEAD','--binary') or commit!=git('rev-parse','HEAD').decode().strip():
     raise SystemExit('Source changed while building; no manifest issued')
 binary=build/'shadps4'

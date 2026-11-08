@@ -6,10 +6,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / 'reports/ci'
+sys.path.append(str(ROOT / 'tools'))
+from logged_process import run_logged
 
 
 def sha(path):
@@ -51,8 +54,4 @@ def phase(name):
 
 
 def run(command, log, timeout=2700, env=None):
-    log = Path(log)
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open('w') as stream:
-        subprocess.run(list(map(str, command)), cwd=ROOT, stdout=stream,
-                       stderr=subprocess.STDOUT, check=True, timeout=timeout, env=env)
+    return run_logged(command, log, cwd=ROOT, timeout=timeout, env=env)
