@@ -2,6 +2,7 @@ name: PR checks
 on:
   workflow_call:
   pull_request:
+    branches: [dev]
   workflow_dispatch:
 permissions:
   contents: read
@@ -9,6 +10,14 @@ concurrency:
   group: pr-checks-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  platform:
+    name: Platform matrix
+    if: github.event_name == 'pull_request'
+    needs: [metadata, host]
+    uses: ./.github/workflows/matrix-manual.yml
+    with:
+      profile: platform-v1
+      cache_mode: reuse
   metadata:
     runs-on: ubuntu-22.04
     timeout-minutes: 10

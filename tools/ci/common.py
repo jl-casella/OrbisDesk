@@ -54,4 +54,4 @@ def phase(name):
 
 
 def run(command, log, timeout=2700, env=None):
-    return run_logged(command, log, cwd=ROOT, timeout=timeout, env=env)
+    return run_logged(command, log, cwd=ROOT, timeout=timeout, env=env, process_group=os.name == 'posix')
