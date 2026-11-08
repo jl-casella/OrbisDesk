@@ -118,6 +118,12 @@ El workflow activa `--stop-on-startup-failure`: si el par inicial fork/oficial e
 
 Un intento local separado con Xvfb privado falló con `Failed to initialize SDL video subsystem: x11 not available` en el log interno, incluso preparando usuarios vacíos. Es evidencia local; no establece el fallo del runner GitHub. Recuperar los nuevos logs internos antes de cambiar el emulador o atribuir el timeout a Vulkan, Wine o al diálogo de migración.
 
+## Aserción de salida en GitHub: corrida 42490428616
+
+La corrida `42490428616` en `e109edfa3894ee1e48e6257500a8538035c42bba` completó los 31 casos en 41,399 segundos. Los 30 casos del fork coincidieron con el contrato, incluidas las cuatro sondas de servicios. Se reutilizó el binario exacto del fork (`reused=true`, duración del auxiliar 4,614 segundos). Los timeouts generales de arranque anteriores no se repitieron con los directorios de usuarios vacíos preparados.
+
+El único rechazo fue la comparación oficial: el resultado del invitado y la salida de referencia Windows coincidieron, seguidos por la aserción esperada `process.cpp:312 exit: Unreachable code!`, pero Linux lo terminó con `SIGTRAP` (código de subprocess `-5`) en lugar del timeout observado localmente. El contrato ahora permite explícitamente `blocker_exit_codes: [-5]` para ese caso, además del timeout existente. Ambas variantes siguen exigiendo la aserción exacta, marcadores correctos del invitado y salida de referencia. Otras señales, salida normal sin la terminación esperada, marcadores ausentes o salida alterada fallan. Sigue siendo un **bloqueo oficial esperado**, no compatibilidad oficial aprobada. El informe original suministrado permanece fallido; reevaluar sus logs archivados no es una nueva ejecución del emulador ni una corrida verde de Actions.
+
 ## Decidir la siguiente fase
 
 La validación de implementación usó WSL local preparado, no un runner en frío: pasaron checks de documentación/locks/marca, cuatro tests de rechazos del evaluador, referencias Windows nativas y pruebas del host con sanitizadores. La primera matriz completa registró 29 resultados esperados de 31 en unos 6,4 minutos, incluyendo el bloqueo esperado del oficial y los cuatro casos de servicios. Dos casos del fork agotaron el timeout al arrancar; una repetición acotada aprobó `pe-fourk-preferred`, pero volvió a agotar el tiempo en `pe-dll-symbol`. El informe completo original sigue fallido. Xvfb no estaba disponible localmente y esas corridas usaron WSLg; CI instala Xvfb. El piloto de GitHub debe determinar si ese fallo de arranque se reproduce allí.

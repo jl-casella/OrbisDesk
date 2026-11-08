@@ -89,6 +89,18 @@ class ContractTests(unittest.TestCase):
     def test_wrong_reference_is_never_a_pass(self):
         self.assertIn('windows-reference-output-differs', matrix.evaluate(self.case, self.text, 0, False, False))
 
+    def test_official_trap_requires_exact_signature_guest_and_reference(self):
+        case = dict(self.case, expected='blocked', blocker='process.cpp:312 exit: Unreachable code!',
+                    blocker_exit_codes=[-5])
+        text = self.text + case['blocker']
+        self.assertEqual(matrix.evaluate(case, text, -5, False), [])
+        self.assertTrue(matrix.evaluate(case, self.text, -5, False))
+        self.assertTrue(matrix.evaluate(case, case['blocker'], -5, False))
+        self.assertTrue(matrix.evaluate(case, text, -5, False, False))
+        for code in (0, 1, -11, -6, -9):
+            self.assertTrue(matrix.evaluate(case, text, code, False))
+        self.assertTrue(matrix.evaluate(self.case, text, -5, False))
+
     def test_service_assertion_cannot_be_skipped_or_duplicated(self):
         case = {'kind': 'services', 'case': 'ipc', 'assertions': ['scm-rights']}
         record = 'PWSERVICE {"case":"scm-rights","status":"passed"}\n'

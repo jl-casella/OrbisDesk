@@ -118,6 +118,12 @@ The workflow enables `--stop-on-startup-failure`: when the initial fork/official
 
 A separate local private-Xvfb attempt failed with `Failed to initialize SDL video subsystem: x11 not available` in the internal log, even after preparing empty user homes. That is local evidence only; it does not establish the GitHub runner's failure. Retrieve the new hosted internal logs before changing emulator behavior or attributing the timeout to Vulkan, Wine or the migration prompt.
 
+## Hosted exit assertion: run 42490428616
+
+Run `42490428616` at `e109edfa3894ee1e48e6257500a8538035c42bba` completed all 31 cases in 41.399 seconds. All 30 fork cases matched the contract, including the four service probes. The exact fork binary was reused (`reused=true`, helper duration 4.614 seconds). The previous startup-wide timeouts did not recur with the prepared empty homes.
+
+The sole rejection was the official comparison: its guest result and Windows reference output matched, followed by the expected `process.cpp:312 exit: Unreachable code!` assertion, but Linux terminated it with `SIGTRAP` (subprocess return code `-5`) instead of the locally observed timeout. The contract now explicitly allows `blocker_exit_codes: [-5]` for this case, as well as the existing timeout path. Both paths still require the exact assertion, successful guest markers and reference output. Other signals, normal exit without the expected termination, missing markers and altered output fail. This remains an expected **official blocker**, not an official compatibility pass. The supplied original report remains failed; reevaluating its archived logs is not a new emulator execution or a green Actions run.
+
 ## Deciding the next CI phase
 
 Implementation validation used a prepared local WSL environment, not a cold runner: documentation/lock/brand checks, four evaluator failure-path tests, native Windows references and sanitized host tests passed. The first full matrix recorded 29 expected outcomes out of 31 in about 6.4 minutes, including the expected official blocker and all four service cases. Two fork cases timed out during startup; a focused retry passed `pe-fourk-preferred` but still timed out on `pe-dll-symbol`. The original full report remains failed. Xvfb was unavailable locally, so these runs used WSLg; CI installs Xvfb. The GitHub pilot must establish whether that startup failure reproduces there.

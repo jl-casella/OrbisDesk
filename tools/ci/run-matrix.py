@@ -74,7 +74,10 @@ def evaluate(spec, text, exit_code, timed_out, reference_matches=True):
         if len(starts) != 1 or len(ends) != 1 or ends[0].get('status') != 'passed' or ends[0].get('code') != 0:
             errors.append('guest-result-contract')
         if spec['expected'] == 'blocked':
-            if not timed_out or spec['blocker'] not in text:
+            # The pinned official assertion traps on hosted Linux; under the
+            # local debugger it can remain alive until the case timeout.
+            termination_matches = timed_out or exit_code in spec.get('blocker_exit_codes', [])
+            if not termination_matches or spec['blocker'] not in text:
                 errors.append('official-blocker-signature-differs')
         elif timed_out or exit_code != spec['exit_code']:
             errors.append('process-exit-or-timeout')

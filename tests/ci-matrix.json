@@ -20,7 +20,8 @@
       "expected": "blocked",
       "exit_code": 0,
       "timeout_seconds": 60,
-      "blocker": "process.cpp:312 exit: Unreachable code!"
+      "blocker": "process.cpp:312 exit: Unreachable code!",
+      "blocker_exit_codes": [-5]
     },
     {
       "id": "console-bare",
