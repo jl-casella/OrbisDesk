@@ -17,7 +17,10 @@ sudo apt-get install -y --no-install-recommends \
   libvulkan1 mesa-vulkan-drivers libx11-dev libxext-dev libwayland-dev \
   libdecor-0-dev libxkbcommon-dev libglfw3-dev libgles2-mesa-dev libfuse2 \
   libasound2-dev libpulse-dev libopenal-dev libudev-dev libxcursor-dev \
-  libxi-dev libxss-dev libxtst-dev
+  libxi-dev libxss-dev libxtst-dev libxrandr-dev
+# SDL3's CheckX11 requires the RandR headers and library even under Xvfb.
+pkg-config --exists xrandr
+pkg-config --modversion xrandr
 python3 -m pip install --disable-pip-version-check --target .deps/linux-tools 'cmake==4.2.3'
 clang-19 --version
 df -h .
