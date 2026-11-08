@@ -17,6 +17,8 @@ def main():
     summary += f"Execution completed: **{report.get('execution_completed', False)}**; pending cases: **{len(report.get('pending_cases', []))}**.\n\n"
     if report.get('active_case'):
         summary += 'Interrupted while executing: `' + report['active_case'] + '`.\n\n'
+    if report.get('abort_reason'):
+        summary += 'Stopped early: ' + report['abort_reason'] + '. Remaining cases were not executed.\n\n'
     summary += 'Scope: own PE translator/loader and native service probes; **not Wine boot, a product release or PS4 acceptance**.\n\n'
     summary += '| Phase | Result | Seconds |\n| --- | --- | --- |\n'
     summary += '\n'.join(f"| {p['phase']} | {p['status']} | {p['duration_seconds']} |" for p in phases) + '\n\n'

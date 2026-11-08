@@ -164,7 +164,7 @@ jobs:
           key: shad-binary-v1-${{ steps.emulator-key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Execute diagnostic matrix
         timeout-minutes: 40
-        run: xvfb-run -a python3 tools/ci/run-matrix.py --profile "$CI_PROFILE"
+        run: xvfb-run -a python3 tools/ci/run-matrix.py --profile "$CI_PROFILE" --stop-on-startup-failure
       - name: Summarize actual outcomes
         if: always()
         run: python3 tools/ci/report.py
