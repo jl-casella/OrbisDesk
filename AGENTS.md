@@ -11,7 +11,7 @@ This is the entry point for an AI agent or a developer joining this repository. 
 3. Inspect the relevant builder, its input manifests, the output manifest and the latest run/transfer evidence **before** choosing a build ID or claiming a feature works. File timestamps and the highest number in a filename are not sufficient.
 4. Read `git status --short`, check for concurrent work, and preserve unrelated edits. Many builders share output directories; do not run conflicting builders concurrently.
 
-At the time this guide was prepared (2026-11-07), public state documentation records physical W284 validation, while hardware build/transfer scripts already recognize W287. This is a documentation/code distinction, not proof that W287 was installed or tested. Reconcile it with actual manifests and user feedback on each session.
+At the time this guide was last updated (2026-11-07), [current state](docs/CURRENT_STATE.md) records W288 as the latest uploaded build and W287 as the latest with physical evidence ([W285–W288](docs/HARDWARE_W285_W288.md)). Reconcile this with actual manifests, transfer evidence and user feedback on each session.
 
 ## 2. Project model and invariants
 
@@ -227,6 +227,8 @@ For UI/lifecycle changes, a useful focused physical sequence is: open the target
 
 | Topic | Primary navigation |
 | --- | --- |
+| PR checks, manual matrix timing, main gates and distribution rollout | [CI implementation plan](docs/CI_PLAN.md) |
+| Run the manual workflow, interpret timing artifacts and reproduce diagnostics | [CI operations](docs/CI.md) |
 | Build/dependency recovery and remaining clean-build gaps | [Layout](docs/REPOSITORY_LAYOUT.md), [dependency lock](dependencies.lock.json), [restore tool](tools/restore-dependencies.py) |
 | Guest processes, PE32 world, fixed-base games and shared-state limitations | [WoW64/guest investigation and results](docs/investigacion-wow64-en-explorer.md), [fixed-base investigation](docs/investigacion-gta-vc-base-0x400000.md) |
 | Native ABI, memory, TLS, signals, IPC and emulator services | [increments 01–25 in the index](docs/INDEX.md), [PS4 adapters](platform/ps4/), [platform reproduction](native/shad_platform_check.c) |

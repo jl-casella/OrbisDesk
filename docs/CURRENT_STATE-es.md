@@ -1,6 +1,26 @@
-# Punto de retoma: OrbisDesk, paquete limpio W284 (03.83), 2026-11-07
+# Punto de retoma: OrbisDesk W288 (03.87), 2026-11-07
 
 [English](CURRENT_STATE.md) | [Español](CURRENT_STATE-es.md)
+
+Última build subida: W288, `OrbisDesk.pkg` 03.87. Todavía no se probó en la consola. Detalle de W285–W288: [HARDWARE_W285_W288](HARDWARE_W285_W288-es.md).
+
+- **W285:** los streams de audio de un invitado salen del mezclador cuando se descarga (lista de huérfanos, sin liberarlos). Probada con NFS U2 cerrado desde el overlay; en esa corrida el juego liberó su propio stream.
+- **W286:** los logs de GPU de RADV van a `/data/orbisdesk/gpu`. Se borró de la consola la carpeta vieja `/data/orbis-win`.
+- **W287:** entrada GRÁFICOS en el overlay, por programa de 32 bits: DXVK o wined3d para D3D8/9, Vulkan u OpenGL para wined3d. MangoHud ahora se engancha a los juegos con wined3d (SuperMarioKart, confirmado en el log). El renderer guardado no se aplicó, porque wined3d quedó cargado entre corridas.
+- **W288:** wined3d lee el renderer del programa en cada `wined3d_create`. Próxima comprobación: SuperMarioKart con `gl` guardado debería loguear `PWD3D renderer=gl ... from the program`.
+- **Antes, el mismo 2026-11-07 (W273–W282, sin documentos propios):**
+  - línea de comandos y nombre de módulo por invitado durante la carga;
+  - arreglo de la espera de mensajes con timeout cero (Quake 3, NFS U2);
+  - afinidad de CPU real con `scePthreadSetaffinity` (6 núcleos del título); los cambios de afinidad del proceso se rechazan;
+  - NFS U2 fijado a un núcleo, sólo para los hilos que arrancan en su EXE;
+  - trazas de fallas x87 y frames de 32 bits en los volcados de cuelgue;
+  - los hilos únicos de winmm/dinput ya no pertenecen a un invitado;
+  - winmm saca un timer cuyo callback ya no está mapeado o falla (NFS U2 vuelve a tener música en el segundo arranque);
+  - wmvcore informa que falta winegstreamer en vez de cerrar el juego (GTA San Andreas).
+- **Steam:** S2 01.06 (descarga anónima de un depot, 8/8 archivos verificados) y S3 01.07 (login por QR, sesión guardada, biblioteca de 36 juegos) pasaron en la consola. Falta comprobar que S3 reabra sin QR. Ver [STEAM_S3](STEAM_S3-es.md).
+- **Juegos que el usuario informó funcionando ese día:** Quake 3, Max Payne 1 y 2, NFS Underground 2 (con música en el segundo arranque), NFS Most Wanted, GTA San Andreas, Worms 4, Call of Duty (carga un nivel). SuperMarioKart corre; se están comprobando su MangoHud y la elección de renderer.
+
+# Punto de retoma anterior: OrbisDesk, paquete limpio W284 (03.83), 2026-11-07
 
 Prueba física W284 descargada: modo root, imagen e interfaz activas durante unos 11 minutos, sin cierre fatal registrado. Captura del selector confirma OrbisDesk y versión 03.83 W284. Evidencia: `reports/wine-hardware-w284/physical/20261107T153807Z/`. Clasificación `presented`, sin código de salida; no es validación general de juegos.
 

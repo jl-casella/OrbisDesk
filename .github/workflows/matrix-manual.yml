@@ -1,0 +1,130 @@
+name: Manual platform matrix
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Full 31-case diagnostic contract or 27-case baseline subset'
+        type: choice
+        options: [platform-v1, platform-core]
+        default: platform-v1
+      cache_mode:
+        description: 'First pilot: cold. Reuse caches downloads only; builds still run.'
+        type: choice
+        options: [cold, reuse]
+        default: cold
+permissions:
+  contents: read
+concurrency:
+  group: manual-matrix-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  fixtures:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - name: MinGW prerequisites
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-i686
+      - name: Build exact fixture binaries
+        run: python3 tools/ci/bootstrap.py --fixtures
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: matrix-fixtures-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            out/*.exe
+            out/*.dll
+            out/ci-fixtures.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: fixture-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          path: reports/ci/
+  windows-reference:
+    needs: fixtures
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: matrix-fixtures-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out
+      - name: Run the same fixtures on native Windows
+        shell: pwsh
+        run: ./tools/ci/windows-reference.ps1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows-reference-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: error
+          path: reports/ci/windows-reference.json
+  matrix:
+    needs: [fixtures, windows-reference]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      CI_CACHE_MODE: ${{ inputs.cache_mode }}
+      CI_PROFILE: ${{ inputs.profile }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: matrix-fixtures-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: windows-reference-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/ci
+      - name: Install runner tools
+        timeout-minutes: 15
+        run: bash tools/ci/install-runner.sh
+      - name: Optional verified download cache
+        if: inputs.cache_mode == 'reuse'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/downloads/ci
+          key: matrix-downloads-${{ runner.os }}-${{ hashFiles('*.lock.json') }}
+      - name: Bootstrap and build from source
+        timeout-minutes: 45
+        run: python3 tools/ci/bootstrap.py
+      - name: Execute diagnostic matrix
+        timeout-minutes: 20
+        run: xvfb-run -a python3 tools/ci/run-matrix.py --profile "$CI_PROFILE"
+      - name: Summarize actual outcomes
+        if: always()
+        run: python3 tools/ci/report.py
+      - name: Evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: matrix-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          path: reports/ci/
+      - name: Successful full-profile diagnostics only
+        if: success() && inputs.profile == 'platform-v1'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: platform-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: error
+          path: out/ci-diagnostics/

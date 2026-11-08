@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from sdk_libc import derive_libc
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 def main():
@@ -95,17 +96,7 @@ def main():
     libc=None
     if not args.diagnose_remaining:
         original_lib=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain/lib/libc.a'
-        derived=output/'lib/libc.a';derived.parent.mkdir(parents=True,exist_ok=True)
-        shutil.copyfile(original_lib,derived)
-        # OpenOrbis lstat.lo calls fstatat.lo, which unconditionally returns
-        # ENOSYS. Removing only that member lets -lkernel supply its existing
-        # real lstat import. Never mutate the SDK or invent lstat semantics.
-        removed=['lstat.lo']
-        if args.boot: removed+=['socketpair.lo','sendmsg.lo','recvmsg.lo','poll.lo','sigaction.lo','sigprocmask.lo','pthread_sigmask.lo','fcntl.lo','readlink.lo','rename.lo']
-        subprocess.run(['ar','d',str(derived),*removed],check=True)
-        libc={'original_sha256':hashlib.sha256(original_lib.read_bytes()).hexdigest(),
-              'derived_sha256':hashlib.sha256(derived.read_bytes()).hexdigest(),
-              'removed_members':removed,'provider':'libkernel imports instead of SDK fallback stubs'}
+        libc=derive_libc(original_lib,output/'lib/libc.a',boot=args.boot)
     report={'schema_version':1,'wine_commit':manifest['wine_commit'],'overlay':manifest,'results':results,'libc':libc,
             'config_sha256':hashlib.sha256((work/'include/config.h').read_bytes()).hexdigest(),
             'environment':'PS4 cross-compile, not Wine startup','hardware_status':'pending'}

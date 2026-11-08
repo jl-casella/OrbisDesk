@@ -11,7 +11,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [AGENTS-es.md](../AGENTS-es.md) — OrbisDesk: guía para desarrollo asistido por IA
 - [README-es.md](../README-es.md) — OrbisDesk
 - [THIRD_PARTY-es.md](../THIRD_PARTY-es.md) — Licencias y procedencia
-- [CURRENT_STATE-es.md](CURRENT_STATE-es.md) — Punto de retoma: OrbisDesk, paquete limpio W284 (03.83), 2026-11-07
+- [CURRENT_STATE-es.md](CURRENT_STATE-es.md) — Punto de retoma: OrbisDesk W288 (03.87), 2026-11-07
 - [DOCUMENTATION_POLICY-es.md](DOCUMENTATION_POLICY-es.md) — Política de documentación
 - [REBRANDING_ORBISDESK-es.md](REBRANDING_ORBISDESK-es.md) — OrbisDesk: nombre y compatibilidad de actualización
 - [REPOSITORY_LAYOUT-es.md](REPOSITORY_LAYOUT-es.md) — Contenido del repositorio y reconstrucción de dependencias
@@ -33,6 +33,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [STEAM_S1-es.md](STEAM_S1-es.md) — S1: HTTPS nativo para el cliente de Steam (ORBS00001)
 - [STEAM_S2-es.md](STEAM_S2-es.md) — S2: descarga anónima de un depot de Steam
 - [STEAM_S3-es.md](STEAM_S3-es.md) — S3: login del usuario por QR y biblioteca
+- [STEAM_S4-es.md](STEAM_S4-es.md) — S4: instalar un juego de la biblioteca
 - [THIRD_PARTY_FONTS-es.md](THIRD_PARTY_FONTS-es.md) — FreeType y fuentes del runtime
 
 ## Incrementos de plataforma y Wine (históricos)
@@ -158,11 +159,13 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [HARDWARE_W197-es.md](HARDWARE_W197-es.md) — W196 y W197: cerrar un juego Unity sin cerrar la app
 - [HARDWARE_W228-es.md](HARDWARE_W228-es.md) — W228: modo ROOT y discos USB como unidades
 - [HARDWARE_W284-es.md](HARDWARE_W284-es.md) — OrbisDesk: paquete con nombre limpio (W284)
+- [HARDWARE_W285_W288-es.md](HARDWARE_W285_W288-es.md) — W285–W288: streams de audio de invitados, carpeta de logs de GPU, menú GRÁFICOS y MangoHud en wined3d
 - [HARDWARE_mando-hid-es.md](HARDWARE_mando-hid-es.md) — Mando como gamepad HID (stack HID de Wine dentro del proceso)
 - [HARDWARE_mando-juegos-analisis-es.md](HARDWARE_mando-juegos-analisis-es.md) — Mando para juegos después de W195: análisis (borrador, sin cambios de código)
 
 ## Borradores y planes (no son evidencia de aceptación)
 
+- [CI_PLAN-es.md](CI_PLAN-es.md) — Plan de CI: checks rápidos de PR, piloto manual de matriz y distribuciones
 - [HARDWARE_W168-escritorio-borrador-es.md](HARDWARE_W168-escritorio-borrador-es.md) — W168 (borrador): accesos directos en el escritorio
 - [HARDWARE_W172-fase7-borrador-es.md](HARDWARE_W172-fase7-borrador-es.md) — W172: Direct3D 10/11 en 32 bits con el dxgi de DXVK, y winecfg (fase 7)
 - [HARDWARE_W174-red-borrador-es.md](HARDWARE_W174-red-borrador-es.md) — W174: red para programas Windows (fase 8, borrador)
@@ -205,3 +208,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [HARDWARE_fase7-mando-plan-borrador-es.md](HARDWARE_fase7-mando-plan-borrador-es.md) — Fase 7, resto: mando de la PS4 por XInput y DirectInput, y joy.cpl (plan, borrador)
 - [HARDWARE_fase7-plan-borrador-es.md](HARDWARE_fase7-plan-borrador-es.md) — Fase 7 del plan PE32: dxgi de DXVK por programa y winecfg (plan, borrador)
 - [HARDWARE_temas-plan-borrador-es.md](HARDWARE_temas-plan-borrador-es.md) — Temas claro y oscuro en winecfg (plan, borrador)
+
+## Otras notas públicas
+
+- [CI-es.md](CI-es.md) — Ejecutar CI y medir la matriz de plataforma

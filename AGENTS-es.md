@@ -11,7 +11,7 @@ Este es el punto de entrada para una IA o una persona que empieza a trabajar en 
 3. Inspeccionar el builder, sus manifiestos de entrada, el manifiesto de salida y la última evidencia de ejecución/transferencia **antes** de elegir una build o afirmar compatibilidad. Las fechas de archivo y el número más alto no alcanzan.
 4. Leer `git status --short`, comprobar trabajo concurrente y preservar cambios ajenos. Muchos builders comparten directorios de salida; no ejecutarlos en paralelo si se pisan.
 
-Al preparar esta guía (2026-11-07), la documentación pública registraba validación física de W284, mientras los scripts de build/transferencia ya reconocían W287. Esa diferencia entre documentación y código no demuestra que W287 esté instalada o probada. Conciliarla con los manifiestos reales y el feedback del usuario en cada sesión.
+Al actualizar esta guía por última vez (2026-11-07), el [estado actual](docs/CURRENT_STATE-es.md) registra W288 como la última build subida y W287 como la última con evidencia física ([W285–W288](docs/HARDWARE_W285_W288-es.md)). Conciliarlo con los manifiestos reales, la evidencia de transferencia y el feedback del usuario en cada sesión.
 
 ## 2. Modelo del proyecto y reglas fundamentales
 
@@ -227,6 +227,8 @@ Secuencia física enfocada para UI/ciclo de vida: abrir la app afectada, interac
 
 | Tema | Navegación principal |
 | --- | --- |
+| Checks de PR, medición manual de matriz, gates de main y distribuciones | [Plan de implementación de CI](docs/CI_PLAN-es.md) |
+| Ejecutar el workflow manual, interpretar tiempos y reproducir diagnósticos | [Operación de CI](docs/CI-es.md) |
 | Recuperación de fuentes y límites de build limpia | [Estructura](docs/REPOSITORY_LAYOUT-es.md), [lock](dependencies.lock.json), [restaurador](tools/restore-dependencies.py) |
 | Invitados, mundo PE32, base fija y estado compartido | [Investigación y resultados WoW64](docs/investigacion-wow64-en-explorer-es.md), [base fija](docs/investigacion-gta-vc-base-0x400000-es.md) |
 | ABI nativa, memoria, TLS, señales, IPC y servicios del emulador | [Incrementos 01–25 en el índice](docs/INDEX-es.md), [adaptadores PS4](platform/ps4/), [reproducción de plataforma](native/shad_platform_check.c) |
