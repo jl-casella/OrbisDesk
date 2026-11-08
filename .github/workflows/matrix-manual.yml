@@ -100,13 +100,33 @@ jobs:
         run: bash tools/ci/install-runner.sh
       - name: Optional verified download cache
         if: inputs.cache_mode == 'reuse'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
-          path: .deps/downloads/ci
-          key: matrix-downloads-${{ runner.os }}-${{ hashFiles('*.lock.json') }}
+          path: |
+            .deps/downloads/ci/openorbis.tar.gz
+            .deps/downloads/ci/shadps4-linux.zip
+            .deps/downloads/ci/libc6.deb
+          key: matrix-downloads-v2-${{ runner.os }}-${{ hashFiles('artifacts.lock.json', 'linux-emulator.lock.json', 'linux-runtime.lock.json') }}-3-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            matrix-downloads-v2-${{ runner.os }}-${{ hashFiles('artifacts.lock.json', 'linux-emulator.lock.json', 'linux-runtime.lock.json') }}-3-
+            matrix-downloads-v2-${{ runner.os }}-${{ hashFiles('artifacts.lock.json', 'linux-emulator.lock.json', 'linux-runtime.lock.json') }}-2-
+            matrix-downloads-v2-${{ runner.os }}-${{ hashFiles('artifacts.lock.json', 'linux-emulator.lock.json', 'linux-runtime.lock.json') }}-1-
       - name: Prepare pinned sources and diagnostic inputs
         timeout-minutes: 20
         run: python3 tools/ci/bootstrap.py --prepare-only
+      - name: Verify completed downloads even if later preparation failed
+        id: download-check
+        if: always() && !cancelled()
+        run: python3 tools/ci/bootstrap.py --check-download-cache
+      - name: Save verified downloads before compilation
+        if: always() && !cancelled() && steps.download-check.outputs.ready == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            .deps/downloads/ci/openorbis.tar.gz
+            .deps/downloads/ci/shadps4-linux.zip
+            .deps/downloads/ci/libc6.deb
+          key: matrix-downloads-v2-${{ runner.os }}-${{ hashFiles('artifacts.lock.json', 'linux-emulator.lock.json', 'linux-runtime.lock.json') }}-${{ steps.download-check.outputs.count }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Fingerprint emulator sources and toolchain
         id: emulator-key
         run: python3 tools/ci/emulator_cache.py key
