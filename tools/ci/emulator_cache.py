@@ -9,8 +9,10 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from common import ROOT, RESULTS, phase, revision, run, sha, write_json
+from logged_process import print_log_tail
 
 BUNDLE = ROOT / '.deps/emulator-cache'
 INPUTS = RESULTS / 'emulator-inputs.json'
@@ -122,6 +124,21 @@ def validate_bundle(bundle, record):
     return manifest
 
 
+def progress(stop, destination):
+    while not stop.wait(60):
+        for name in ('build.log', 'configure.log'):
+            path = destination / name
+            if path.is_file():
+                try:
+                    with path.open('rb') as stream:
+                        stream.seek(max(0, path.stat().st_size - 8192))
+                        tail = stream.read().decode(errors='replace').splitlines()[-5:]
+                    print('Emulator progress (' + name + '):\n' + '\n'.join(tail), flush=True)
+                except OSError as exc:
+                    print('Progress log unavailable: ' + str(exc), flush=True)
+                break
+
+
 def build():
     start = time.monotonic()
     record = json.loads(INPUTS.read_text())
@@ -138,19 +155,33 @@ def build():
                 shutil.copyfile(BUNDLE / name, destination / name)
             (destination / 'shadps4').chmod(0o755)
     else:
+        print('Emulator cache miss: building with ccache; internal budget 80 minutes.', flush=True)
         env = dict(os.environ, CCACHE_DIR=str(ROOT / '.deps/ccache'), CCACHE_BASEDIR=str(ROOT),
                    CCACHE_COMPILERCHECK='content')
         # Do not inherit relaxed hashing policies from a developer environment.
         env.pop('CCACHE_SLOPPINESS', None)
         output('attempted_build', 'true')
-        run(['ccache', '--max-size', '2G'], RESULTS / 'ccache-config.log', env=env)
-        run(['ccache', '--zero-stats'], RESULTS / 'ccache-reset.log', env=env)
+        run(['ccache', '--max-size', '2G'], RESULTS / 'ccache-config.log', env=env, timeout=30)
+        run(['ccache', '--zero-stats'], RESULTS / 'ccache-reset.log', env=env, timeout=30)
+        stop = threading.Event()
+        watcher = threading.Thread(target=progress, args=(stop, destination), daemon=True)
+        watcher.start()
         try:
             with phase('emulator-build'):
                 run([sys.executable, ROOT / 'tools/build-shad-linux.py', '--jobs', '2', '--ccache'],
-                    RESULTS / 'emulator-build-driver.log', timeout=3600, env=env)
+                    RESULTS / 'emulator-build-driver.log', timeout=4800, env=env)
+        except BaseException as exc:
+            write_json(RESULTS / 'emulator-build-failure.json', {
+                'source_sha': revision(), 'error_type': type(exc).__name__, 'error': str(exc),
+                'internal_timeout_seconds': 4800, 'binary_cache_reused': False,
+                'available_logs': [name for name in ('configure.log', 'build.log') if (destination / name).is_file()]})
+            for name in ('configure.log', 'build.log'):
+                print_log_tail(destination / name)
+            raise
         finally:
-            run(['ccache', '--show-stats'], RESULTS / 'ccache-stats.log', env=env)
+            stop.set()
+            watcher.join(timeout=5)
+            run(['ccache', '--show-stats'], RESULTS / 'ccache-stats.log', env=env, timeout=30)
         if source_identity() != record['inputs']['source']:
             raise ValueError('Fork sources changed during cached build')
         BUNDLE.mkdir(parents=True, exist_ok=True)

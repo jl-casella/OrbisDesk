@@ -75,7 +75,7 @@ jobs:
   matrix:
     needs: [fixtures, windows-reference]
     runs-on: ubuntu-22.04
-    timeout-minutes: 150
+    timeout-minutes: 200
     env:
       CI_CACHE_MODE: ${{ inputs.cache_mode }}
       CI_PROFILE: ${{ inputs.profile }}
@@ -128,7 +128,7 @@ jobs:
             shad-ccache-v1-${{ steps.emulator-key.outputs.toolchain_key }}-
       - name: Verify cached emulator or build from source
         id: emulator
-        timeout-minutes: 60
+        timeout-minutes: 90
         run: python3 tools/ci/emulator_cache.py build
       - name: Save compiler cache, including partial builds
         if: always() && !cancelled() && steps.emulator.outputs.attempted_build == 'true'
