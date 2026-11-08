@@ -32,7 +32,7 @@ Son mediciones locales de WSL o informes históricos, no benchmarks de runners d
 | Campaña histórica GUI/texto, cuatro ejecuciones | Unos 5 minutos de reloj | Wine/runtime preparados; separada de la matriz de plataforma |
 | Compilación incremental reciente del emulador | Unos 2 minutos | No mide compilador/submódulos/build desde cero |
 
-Objetivos iniciales: checks rápidos de PR en 2–5 minutos con preparación incluida; piloto manual con timeout exterior de 90 minutos, presupuesto de 45 minutos para preparación/build y 20 minutos para pruebas, con timeouts por caso. Son límites para ajustar después del piloto, no tiempos prometidos. Instalaciones/descargas también necesitan reintentos y tiempos máximos finitos.
+Objetivo inicial para checks rápidos de PR: 2–5 minutos con preparación incluida. Los presupuestos manuales originales eran 90 minutos globales, 45 para preparación/build y 20 para pruebas. Una corrida de rama en GitHub midió después 41 min 30 s para compilar el emulador y alcanzó el límite de pruebas de 20 minutos. La [guía de CI](CI-es.md) actual usa por eso reutilización verificada del emulador/ccache y presupuestos de 150 minutos globales, 20 para preparación, 60 para compilación y 40 para pruebas; no cambian los límites por caso. Son límites, no tiempos prometidos. Instalaciones/descargas también necesitan reintentos y tiempos máximos finitos.
 
 ## PR 1 — checks rápidos en pull requests
 

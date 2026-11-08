@@ -22,8 +22,9 @@ def main():
         if not re.fullmatch(r'[a-f0-9]{40}', pin['sha']):
             raise SystemExit('Unpinned action: ' + name)
     for workflow in (ROOT / '.github/workflows').glob('*.yml'):
-        for action, commit in re.findall(r'uses:\s*actions/([\w-]+)@([^\s]+)', workflow.read_text()):
-            if action not in actions or commit != actions[action]['sha']:
+        for action, commit in re.findall(r'uses:\s*actions/([\w/-]+)@([^\s]+)', workflow.read_text()):
+            base = action.split('/')[0]
+            if base not in actions or commit != actions[base]['sha']:
                 raise SystemExit('Action differs from lock: ' + action + ' in ' + workflow.name)
     print('JSON locks, source revisions and ordered patch hashes verified')
 

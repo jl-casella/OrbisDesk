@@ -8,10 +8,10 @@ on:
         options: [platform-v1, platform-core]
         default: platform-v1
       cache_mode:
-        description: 'First pilot: cold. Reuse caches downloads only; builds still run.'
+        description: 'Reuse verified emulator/ccache/downloads, or cold to bypass all restores'
         type: choice
         options: [cold, reuse]
-        default: cold
+        default: reuse
 permissions:
   contents: read
 concurrency:
@@ -75,7 +75,7 @@ jobs:
   matrix:
     needs: [fixtures, windows-reference]
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       CI_CACHE_MODE: ${{ inputs.cache_mode }}
       CI_PROFILE: ${{ inputs.profile }}
@@ -104,11 +104,46 @@ jobs:
         with:
           path: .deps/downloads/ci
           key: matrix-downloads-${{ runner.os }}-${{ hashFiles('*.lock.json') }}
-      - name: Bootstrap and build from source
-        timeout-minutes: 45
-        run: python3 tools/ci/bootstrap.py
-      - name: Execute diagnostic matrix
+      - name: Prepare pinned sources and diagnostic inputs
         timeout-minutes: 20
+        run: python3 tools/ci/bootstrap.py --prepare-only
+      - name: Fingerprint emulator sources and toolchain
+        id: emulator-key
+        run: python3 tools/ci/emulator_cache.py key
+      - name: Restore exact emulator build
+        if: inputs.cache_mode == 'reuse'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/emulator-cache
+          key: shad-binary-v1-${{ steps.emulator-key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: shad-binary-v1-${{ steps.emulator-key.outputs.key }}-
+      - name: Restore compiler cache
+        if: inputs.cache_mode == 'reuse'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/ccache
+          key: shad-ccache-v1-${{ steps.emulator-key.outputs.toolchain_key }}-${{ steps.emulator-key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            shad-ccache-v1-${{ steps.emulator-key.outputs.toolchain_key }}-${{ steps.emulator-key.outputs.key }}-
+            shad-ccache-v1-${{ steps.emulator-key.outputs.toolchain_key }}-
+      - name: Verify cached emulator or build from source
+        id: emulator
+        timeout-minutes: 60
+        run: python3 tools/ci/emulator_cache.py build
+      - name: Save compiler cache, including partial builds
+        if: always() && !cancelled() && steps.emulator.outputs.attempted_build == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/ccache
+          key: shad-ccache-v1-${{ steps.emulator-key.outputs.toolchain_key }}-${{ steps.emulator-key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save verified emulator build before tests
+        if: success() && steps.emulator.outputs.built == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .deps/emulator-cache
+          key: shad-binary-v1-${{ steps.emulator-key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Execute diagnostic matrix
+        timeout-minutes: 40
         run: xvfb-run -a python3 tools/ci/run-matrix.py --profile "$CI_PROFILE"
       - name: Summarize actual outcomes
         if: always()

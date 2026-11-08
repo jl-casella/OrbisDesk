@@ -6,6 +6,7 @@ from logged_process import run_logged
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser();parser.add_argument('--jobs',type=int,default=4)
 parser.add_argument('--reuse-configure',action='store_true')
+parser.add_argument('--ccache',action='store_true',help='Use ccache for C/C++ compilation')
 parser.add_argument('--source-cache',action='store_true');args=parser.parse_args()
 source=ROOT/'.deps/shadPS4-fork';build=ROOT/'build/shadPS4-linux';build.mkdir(parents=True,exist_ok=True)
 cmake=ROOT/'.deps/linux-tools/cmake/data/bin/cmake'
@@ -17,6 +18,8 @@ if not ninja:raise SystemExit('Missing Ninja; run tools/ci/install-runner.sh')
 ninja_version=subprocess.check_output([str(ninja),'--version'],text=True).strip()
 if tuple(map(int,ninja_version.split('.')[:2]))<(1,11):
     raise SystemExit('Ninja 1.11+ is required for C++ dependency scanning; run tools/ci/install-runner.sh')
+launcher=shutil.which('ccache') if args.ccache else None
+if args.ccache and not launcher:raise SystemExit('Missing ccache')
 def git(*args):return subprocess.check_output(['git','-c','core.autocrlf=true','-c','diff.ignoreSubmodules=all','-C',str(source),*args])
 commit=git('rev-parse','HEAD').decode().strip();patch=git('diff','HEAD','--binary')
 if args.source_cache:
@@ -32,6 +35,8 @@ configure=[str(cmake),'-S',str(source),'-B',str(build),'-G','Ninja',
            '-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES='+str(ROOT/'tools/shad-linux-toolchain.cmake'),
            '-DORBIS_USE_SOURCE_CACHE='+('ON' if args.source_cache else 'OFF'),
            '-DENABLE_DISCORD_RPC=OFF','-DENABLE_UPDATER=OFF','-DENABLE_TESTS=OFF']
+if launcher:
+    configure+=['-DCMAKE_C_COMPILER_LAUNCHER='+launcher,'-DCMAKE_CXX_COMPILER_LAUNCHER='+launcher]
 start=time.monotonic()
 if args.reuse_configure:
     cache=(build/'CMakeCache.txt').read_text()
@@ -42,6 +47,10 @@ if args.reuse_configure:
     for name,value in (('CMAKE_MAKE_PROGRAM',ninja),('CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS',scanner)):
         if name+':FILEPATH='+str(value) not in cache.splitlines():
             raise SystemExit('Cached '+name+' differs; rerun without --reuse-configure')
+    for name in ('CMAKE_C_COMPILER_LAUNCHER','CMAKE_CXX_COMPILER_LAUNCHER'):
+        values=[line.split('=',1)[1] for line in cache.splitlines() if line.startswith(name+':')]
+        if (values[0] if values else None)!=launcher:
+            raise SystemExit('Cached compiler launcher differs; rerun without --reuse-configure')
 else:
     run_logged(configure,build/'configure.log')
 command=[str(cmake),'--build',str(build),'--target','shadps4','--parallel',str(args.jobs)]
@@ -56,5 +65,6 @@ manifest={'schema_version':1,'commit':commit,'source_dirty':bool(patch),
           'compiler':subprocess.check_output(['clang++-19','--version'],text=True).splitlines()[0],
           'dependency_scanner':scanner,'dependency_scanner_version':subprocess.check_output([scanner,'--version'],text=True).strip(),
           'ninja':str(ninja),'ninja_version':ninja_version,
+          'ccache_launcher':launcher,
           'submodules':git('submodule','status','--recursive').decode().splitlines()}
 (build/'build-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n');print(json.dumps(manifest))

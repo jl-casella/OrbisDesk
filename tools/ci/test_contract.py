@@ -3,6 +3,10 @@ import importlib.util
 from pathlib import Path
 import sys
 import unittest
+import json
+import tempfile
+from unittest.mock import patch
+import common
 
 sys.path.insert(0, str(Path(__file__).parent))
 spec = importlib.util.spec_from_file_location('matrix', Path(__file__).with_name('run-matrix.py'))
@@ -11,6 +15,23 @@ spec.loader.exec_module(matrix)
 
 
 class ContractTests(unittest.TestCase):
+    def test_interrupted_run_keeps_checkpoint_and_never_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = {'cases': [], 'contract_passed': False, 'complete_profile': False}
+            cases = [{'id': name, 'timeout_seconds': 60} for name in ('first', 'interrupted')]
+            result = {'id': 'first', 'outcome_as_expected': True}
+            with patch.object(matrix, 'RESULTS', Path(directory)), patch.object(common, 'RESULTS', Path(directory)), \
+                    patch.object(matrix, 'execute', side_effect=[result, KeyboardInterrupt]), \
+                    self.assertRaises(KeyboardInterrupt):
+                matrix.execute_cases(cases, report, {}, {}, {})
+            saved = json.loads((Path(directory) / 'matrix-report.json').read_text())
+            self.assertEqual(saved['cases'], [result])
+            self.assertEqual(saved['active_case'], 'interrupted')
+            self.assertEqual(saved['pending_cases'], ['interrupted'])
+            self.assertFalse(saved['contract_passed'])
+            self.assertFalse(saved['execution_completed'])
+            self.assertFalse(saved['complete_profile'])
+
     def setUp(self):
         self.case = {'kind': 'baseline', 'case': 'files', 'expected': 'passed', 'exit_code': 0}
         self.text = 'PWPS4 {"event":"start","case":"files","status":"running","code":0}\n' + \

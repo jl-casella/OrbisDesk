@@ -14,6 +14,9 @@ def main():
     write_json(RESULTS / 'phase-timings.json', phases)
     summary = '# Platform matrix\n\n'
     summary += f"Profile: **{report.get('profile', 'unavailable')}**; contract passed: **{report['contract_passed']}**.\n\n"
+    summary += f"Execution completed: **{report.get('execution_completed', False)}**; pending cases: **{len(report.get('pending_cases', []))}**.\n\n"
+    if report.get('active_case'):
+        summary += 'Interrupted while executing: `' + report['active_case'] + '`.\n\n'
     summary += 'Scope: own PE translator/loader and native service probes; **not Wine boot, a product release or PS4 acceptance**.\n\n'
     summary += '| Phase | Result | Seconds |\n| --- | --- | --- |\n'
     summary += '\n'.join(f"| {p['phase']} | {p['status']} | {p['duration_seconds']} |" for p in phases) + '\n\n'

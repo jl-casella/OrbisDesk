@@ -38,7 +38,9 @@ def download(spec, name):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--fixtures', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--fixtures', action='store_true')
+    mode.add_argument('--prepare-only', action='store_true', help='Prepare inputs/diagnostics before restoring the emulator cache')
     args = parser.parse_args()
     RESULTS.mkdir(parents=True, exist_ok=True)
     if args.fixtures:
@@ -92,9 +94,10 @@ def main():
         run([sys.executable, ROOT / 'tools/build.py', '--diagnostics-only',
              '--cc', 'clang-19', '--ld', 'ld.lld-19'], RESULTS / 'diagnostic-build.log')
     run([sys.executable, ROOT / 'tools/ci/build-services.py'], RESULTS / 'services-build-driver.log')
-    with phase('emulator-build'):
-        run([sys.executable, ROOT / 'tools/build-shad-linux.py', '--jobs', '2'],
-            RESULTS / 'emulator-build-driver.log')
+    if not args.prepare_only:
+        with phase('emulator-build'):
+            run([sys.executable, ROOT / 'tools/build-shad-linux.py', '--jobs', '2'],
+                RESULTS / 'emulator-build-driver.log', timeout=3600)
     write_json(RESULTS / 'environment.json', {
         'source_sha': revision(), 'cache_mode': os.environ.get('CI_CACHE_MODE', 'local'),
         'locks': {p.name: sha(p) for p in ROOT.glob('*.lock.json')},

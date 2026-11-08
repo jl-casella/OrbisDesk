@@ -125,6 +125,23 @@ def execute(spec, fixtures, references, emulator):
         return result
 
 
+def execute_cases(cases, report, fixtures, references, emulator):
+    report.update(selected_case_count=len(cases), pending_cases=[case['id'] for case in cases],
+                  case_timeout_budget_seconds=sum(case['timeout_seconds'] for case in cases),
+                  execution_completed=False, contract_passed=False)
+    write_json(RESULTS / 'matrix-report.json', report)
+    with phase('matrix-execution') as timing:
+        for case in cases:
+            report['active_case'] = case['id']
+            write_json(RESULTS / 'matrix-report.json', report)
+            report['cases'].append(execute(case, fixtures, references, emulator))
+            report['pending_cases'].remove(case['id'])
+            report['active_case'] = None
+            write_json(RESULTS / 'matrix-report.json', report)
+        timing['failed'] = any(not case['outcome_as_expected'] for case in report['cases'])
+    report['execution_completed'] = True
+
+
 def main():
     global RESULTS
     parser = argparse.ArgumentParser()
@@ -140,7 +157,9 @@ def main():
     report = {'schema_version': 1, 'source_sha': revision(), 'profile': args.profile,
               'scope': 'Own PE translator/loader and native services, not Wine boot or product validation',
               'Wine_booted': False, 'hardware_status': 'pending', 'contract_passed': False,
-              'complete_profile': not bool(args.case), 'cases': [], 'setup_error': None}
+              'complete_profile': False, 'execution_completed': False, 'cases': [], 'setup_error': None,
+              'selected_case_count': None, 'pending_cases': [], 'active_case': None}
+    write_json(RESULTS / 'matrix-report.json', report)
     try:
         fixtures = json.loads((ROOT / 'out/ci-fixtures.json').read_text())
         references = json.loads((ROOT / 'reports/ci/windows-reference.json').read_text(encoding='utf-8-sig'))
@@ -169,6 +188,9 @@ def main():
                       locks={p.name: sha(p) for p in ROOT.glob('*.lock.json')},
                       fixture_manifest_sha256=sha(ROOT / 'out/ci-fixtures.json'),
                       checkout_dirty=bool(subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain'])))
+        cache_report = RESULTS / 'emulator-cache.json'
+        if cache_report.exists():
+            report['emulator_cache'] = json.loads(cache_report.read_text())
         cases = json.loads(contract_path.read_text())['cases']
         if len(cases) != 31 or len({case['id'] for case in cases}) != 31:
             raise ValueError('platform-v1 must contain exactly 31 distinct top-level cases')
@@ -179,10 +201,8 @@ def main():
             if set(args.case) - {c['id'] for c in cases}:
                 raise ValueError('Unknown case selector')
             cases = [case for case in cases if case['id'] in args.case]
-        with phase('matrix-execution') as timing:
-            for case in cases:
-                report['cases'].append(execute(case, fixtures, references, emulator))
-            timing['failed'] = any(not case['outcome_as_expected'] for case in report['cases'])
+        execute_cases(cases, report, fixtures, references, emulator)
+        report['complete_profile'] = not bool(args.case) and len(report['cases']) == expected_count
         report['contract_passed'] = (not args.case and len(report['cases']) == expected_count and
                                      all(case['outcome_as_expected'] for case in report['cases']))
     except Exception as exc:
