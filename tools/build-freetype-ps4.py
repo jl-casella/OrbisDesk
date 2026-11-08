@@ -9,7 +9,11 @@ work=ROOT/'build/freetype-ps4';work.mkdir(parents=True,exist_ok=True)
 sdk=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
 lock=json.loads((ROOT/'fork.lock.json').read_text())
 commit=subprocess.check_output(['git','-C',str(ROOT/'.deps/shadPS4-fork'),'rev-parse','HEAD'],text=True).strip()
-if commit!=lock['commit']:raise SystemExit('FreeType parent is not the pinned fork revision')
+if commit!=lock['commit']:
+    # Replaying the locked patches can change commit metadata, not the source tree.
+    expected=json.loads((ROOT/'dependencies.lock.json').read_text())['shadps4_fork']['expected_head_tree']
+    actual=subprocess.check_output(['git','-C',str(ROOT/'.deps/shadPS4-fork'),'rev-parse','HEAD^{tree}'],text=True).strip()
+    if actual!=expected:raise SystemExit('FreeType parent tree is not the pinned fork tree')
 source_commit=subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()
 gitlink=subprocess.check_output(['git','-C',str(ROOT/'.deps/shadPS4-fork'),'ls-tree','HEAD','externals/freetype'],text=True).split()[2]
 if source_commit!=gitlink:raise SystemExit('FreeType submodule differs from the pinned gitlink')

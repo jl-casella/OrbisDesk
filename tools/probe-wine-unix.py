@@ -3,6 +3,7 @@
 """Reproduce unpatched Wine Unix-side build against actual OpenOrbis headers.
 Never use host headers/libraries to conceal an unavailable PS4 interface.
 """
+import argparse
 import hashlib
 import json
 import os
@@ -12,6 +13,9 @@ import subprocess
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+parser=argparse.ArgumentParser()
+parser.add_argument('--configure-only',action='store_true',help='Generate the real cross Makefile without the expected unpatched ntdll compile probe')
+args=parser.parse_args()
 source = ROOT / '.deps/wine/source'
 work = ROOT / '.deps/wine/ps4-unix'
 sdk = ROOT / '.deps/sdk/OpenOrbis/PS4Toolchain'
@@ -43,7 +47,7 @@ with (work/'configure.log').open('w') as log:
     result = subprocess.run(command, cwd=work, stdout=log, stderr=subprocess.STDOUT,
                             env=dict(os.environ, LC_ALL='C', TZ='UTC'))
 stage = 'configure'
-if not result.returncode:
+if not result.returncode and not args.configure_only:
     stage = 'compile-ntdll'
     with (work/'make-ntdll.log').open('w') as log:
         result = subprocess.run(['make', '-j8', 'dlls/ntdll/ntdll.so'], cwd=work, stdout=log, stderr=subprocess.STDOUT)

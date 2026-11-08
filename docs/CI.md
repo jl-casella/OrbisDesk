@@ -14,7 +14,7 @@ The workflows are:
 | `Manual platform matrix` | Manual only | Produce fixtures, run the same binaries on Windows, prepare Linux dependencies, build and run the diagnostic contract |
 | `Collect matrix timings` | Completion of the manual workflow | Read final job and step timings from GitHub; upload `timings.json` |
 
-No workflow publishes a release, builds the complete Wine desktop, accesses FTP or changes branch protection. A successful matrix uploads a diagnostic bundle only. Product distributions remain later phases of the plan.
+These diagnostic workflows do not publish releases, build the complete Wine desktop, access FTP or change branch protection. A successful matrix uploads a diagnostic bundle only. The separate experimental [product release workflow](RELEASES.md) attempts the clean full build; its first successful hosted pilot is still pending.
 
 ## First measured run
 
@@ -41,6 +41,10 @@ Evidence under ignored `reports/ci/` includes:
 - `windows-reference.json`: native reference exit codes, output bytes and fixture identity.
 - `timings.jsonl` and `phase-timings.json`: internal preparation/build/execution durations.
 - `environment.json` and build logs: installed packages, lock hashes and preparation details when setup reaches those stages.
+
+The evidence artifact also preserves `build/shadPS4-linux/configure.log`, `build.log`, `CMakeCache.txt` and `CMakeFiles/CMakeConfigureLog.yaml` when present. A failed builder prints the last 64 KiB of its log through both capture layers into the Actions step output, while the complete logs remain in the artifact. Missing files from stages not reached are not successes.
+
+The first hosted pilot, run `42429594632`, attempt 1 at source `12eae3a4db4cbf46ec15914449c597743ec6a0a3` on 2026-11-07 (Argentina time), failed in CMake configuration of the fork. Source restoration, SDK/official extraction, diagnostic ELF and service ELF builds completed; matrix execution did not start. About three minutes refers to the bootstrap step, not execution of the 31 cases. Its original artifact omitted the CMake configure log, so the underlying configuration error could not be determined from that evidence. The subsequent logging change fixes that evidence gap; it does not claim to fix the still-unknown configuration error. Start a **new manual run at updated main** after merging it; rerunning the old SHA retains the old workflow.
 
 The collector's separate `timings.json` includes all final jobs and steps. Wall time spans run start to the last completed job; summed job time includes parallel work and therefore differs. Queue time is reported separately. The collector reads GitHub metadata and never downloads or executes artifacts from the tested run.
 

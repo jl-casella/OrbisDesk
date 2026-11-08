@@ -229,6 +229,7 @@ For UI/lifecycle changes, a useful focused physical sequence is: open the target
 | --- | --- |
 | PR checks, manual matrix timing, main gates and distribution rollout | [CI implementation plan](docs/CI_PLAN.md) |
 | Run the manual workflow, interpret timing artifacts and reproduce diagnostics | [CI operations](docs/CI.md) |
+| Clean product build pilot, owner-only dispatch, releases and future dev/main flow | [Release operations](docs/RELEASES.md) |
 | Build/dependency recovery and remaining clean-build gaps | [Layout](docs/REPOSITORY_LAYOUT.md), [dependency lock](dependencies.lock.json), [restore tool](tools/restore-dependencies.py) |
 | Guest processes, PE32 world, fixed-base games and shared-state limitations | [WoW64/guest investigation and results](docs/investigacion-wow64-en-explorer.md), [fixed-base investigation](docs/investigacion-gta-vc-base-0x400000.md) |
 | Native ABI, memory, TLS, signals, IPC and emulator services | [increments 01–25 in the index](docs/INDEX.md), [PS4 adapters](platform/ps4/), [platform reproduction](native/shad_platform_check.c) |

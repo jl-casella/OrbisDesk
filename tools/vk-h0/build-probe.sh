@@ -3,8 +3,9 @@
 # linked as upstream/DolphinPS4/toolchain/ps4-love-style.cmake links it (whole-archive RADV,
 # malloc/mmap/clock/pthread_once wraps, init_array and .data.* link script fix), with our SDK.
 set -euo pipefail
+ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
-P=/mnt/c/Users/JoseCasella/DEV/Codex/PS4
+P=${ORBISDESK_ROOT}
 OO=$P/.deps/sdk/OpenOrbis/PS4Toolchain
 D=$H/dolphin
 S=$H/sysroot

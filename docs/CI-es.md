@@ -14,7 +14,7 @@ Los workflows son:
 | `Manual platform matrix` | Sólo manual | Producir fixtures, ejecutar los mismos binarios en Windows, preparar dependencias Linux, compilar y ejecutar el contrato de diagnóstico |
 | `Collect matrix timings` | Finalización del workflow manual | Leer tiempos finales de jobs y pasos desde GitHub; subir `timings.json` |
 
-Ningún workflow publica releases, compila el escritorio Wine completo, accede por FTP ni cambia protecciones de ramas. Una matriz satisfactoria sube únicamente un paquete de diagnósticos. Las distribuciones del producto siguen siendo fases posteriores del plan.
+Estos workflows de diagnóstico no publican releases, compilan el escritorio Wine completo, acceden por FTP ni cambian protecciones de ramas. Una matriz satisfactoria sube únicamente un paquete de diagnósticos. El [workflow experimental de release](RELEASES-es.md) separado intenta la construcción completa limpia; su primer piloto satisfactorio en GitHub sigue pendiente.
 
 ## Primera corrida medida
 
@@ -41,6 +41,10 @@ La evidencia en el directorio ignorado `reports/ci/` incluye:
 - `windows-reference.json`: códigos de salida nativos, bytes de referencia e identidad de fixtures.
 - `timings.jsonl` y `phase-timings.json`: duración interna de preparación, construcción y ejecución.
 - `environment.json` y logs de construcción: paquetes instalados, hashes de locks y preparación cuando se alcanzan esas etapas.
+
+El artefacto también conserva `build/shadPS4-linux/configure.log`, `build.log`, `CMakeCache.txt` y `CMakeFiles/CMakeConfigureLog.yaml` cuando existen. Un builder fallido imprime los últimos 64 KiB de su log a través de ambas capturas hasta la salida del paso en Actions; los logs completos quedan en el artefacto. La ausencia de archivos de etapas no alcanzadas no implica éxito.
+
+El primer piloto en GitHub, corrida `42429594632`, intento 1 en `12eae3a4db4cbf46ec15914449c597743ec6a0a3` del 2026-11-07 (hora argentina), falló al configurar el fork con CMake. Terminaron la restauración de fuentes, extracción SDK/oficial y construcción de ELF de diagnóstico y servicios; la matriz no comenzó. Los aproximadamente tres minutos corresponden al paso de preparación, no a ejecutar los 31 casos. El artefacto original omitía el log de configuración de CMake y por eso no permite determinar su causa. El cambio posterior corrige esa falta de evidencia; no afirma resolver el error de configuración todavía desconocido. Después de integrarlo, iniciar una **corrida manual nueva en main actualizado**; reejecutar el SHA anterior conserva el workflow viejo.
 
 El `timings.json` separado del recolector incluye todos los jobs y pasos finales. El tiempo total va desde el inicio de la corrida hasta el último job terminado; la suma de tiempos de jobs incluye trabajo paralelo y por eso difiere. El tiempo en cola se informa aparte. El recolector lee metadatos de GitHub y nunca descarga ni ejecuta artefactos de la corrida probada.
 

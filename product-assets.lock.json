@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "downloads": {
+    "llvm-source": {
+      "path": ".deps/downloads/ci/llvm-project-21.1.6.src.tar.xz",
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.6/llvm-project-21.1.6.src.tar.xz",
+      "sha256": "ae67086eb04bed7ca11ab880349b5f1ab6f50e1b88cda376eaf8a845b935762b"
+    },
+    "dxvk": {
+      "path": ".deps/downloads/dxvk-2.7.1/dxvk-2.7.1.tar.gz",
+      "url": "https://github.com/doitsujin/dxvk/releases/download/v2.7.1/dxvk-2.7.1.tar.gz",
+      "sha256": "d85ce7c79f57ecd765aaa1b9e7007cb875e6fde9f6d331df799bce73d513ce87"
+    },
+    "vlc": {
+      "path": ".deps/downloads/vlc-3.0.24-win64/vlc-3.0.24-win64.7z",
+      "url": "https://download.videolan.org/pub/videolan/vlc/3.0.24/win64/vlc-3.0.24-win64.7z",
+      "sha256": "1ed59c09152e78aff84663fa76efab26057716576db74332858810e5ef54ae1f"
+    },
+    "wallpaper": {
+      "path": ".deps/wallpaper-cc0/green-hill.jpg",
+      "url": "https://www.goodfreephotos.com/albums/united-states/wisconsin/southern-wisconsin/green-hill-landscape-under-sky-and-clouds.jpg",
+      "sha256": "e64b14db34019282c0bc03bd3a470b2669560f38c174632e3b6acff3a4e8c605"
+    },
+    "gecko-x86_64": {
+      "path": ".deps/downloads/wine-gecko-2.47.4-x86_64/wine-gecko-2.47.4-x86_64.tar.xz",
+      "url": "https://dl.winehq.org/wine/wine-gecko/2.47.4/wine-gecko-2.47.4-x86_64.tar.xz",
+      "sha256": "fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814"
+    },
+    "gecko-x86": {
+      "path": ".deps/downloads/wine-gecko-2.47.4-x86/wine-gecko-2.47.4-x86.tar.xz",
+      "url": "https://dl.winehq.org/wine/wine-gecko/2.47.4/wine-gecko-2.47.4-x86.tar.xz",
+      "sha256": "2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6"
+    },
+    "registry-vk": {
+      "path": "~/.cache/wine/vk-1.4.357.xml",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.357/registry/vk.xml",
+      "sha256": "264d0d7350e37d70c82407fb430d085040fc01a9a961d43dec8c2d6ed1dfd183"
+    },
+    "registry-video": {
+      "path": "~/.cache/wine/video-1.4.357.xml",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.357/registry/video.xml",
+      "sha256": "d018b914014c06605e367a3b929670511e6f6de2f225c405a8b5e2d912408b76"
+    }
+  }
+}

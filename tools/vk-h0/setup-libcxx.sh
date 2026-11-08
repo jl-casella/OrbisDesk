@@ -2,8 +2,9 @@
 # H0 step 1: the DolphinPS4 toolchain recipe (upstream/DolphinPS4/toolchain) on our OpenOrbis
 # SDK and clang 19: libc-overlay and libc++/libc++abi 21.1.6 into ~/vk-h0/sysroot.
 set -euo pipefail
+ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
-P=/mnt/c/Users/JoseCasella/DEV/Codex/PS4
+P=${ORBISDESK_ROOT}
 mkdir -p $H/src
 # CR-free copy of the DolphinPS4 tree (scripts are CRLF on Windows)
 rm -rf $H/dolphin && mkdir -p $H/dolphin

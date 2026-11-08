@@ -6,13 +6,14 @@
 # Zink draws through vulkan-1.dll, that is winevulkan and RADV (W071-W075). The source is
 # the same official tarball as RADV's, unpatched, extracted separately.
 set -euo pipefail
+ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
 SRC=$H/src/mesa-win
 build=$H/build/mesa-zink
 export PATH="$H/mesa-venv/bin:$H/host-tools/bin:$PATH"
 if [ ! -f $SRC/VERSION ]; then
   mkdir -p $SRC
-  tar -xJf /mnt/c/Users/JoseCasella/DEV/Codex/PS4/.deps/vk/mesa-26.0.8.tar.xz -C $SRC --strip-components=1
+  tar -xJf ${ORBISDESK_ROOT}/.deps/vk/mesa-26.0.8.tar.xz -C $SRC --strip-components=1
 fi
 cross=$build-cross.ini
 cat > $cross <<INI
@@ -42,8 +43,8 @@ if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ]; then
     -Dexpat=disabled -Dlibunwind=disabled -Dvalgrind=disabled -Dvideo-codecs= -Dbuild-tests=false \
     -Dtools= -Dgallium-va=disabled -Dgallium-rusticl=false 2>&1 | tail -15
 fi
-python3 /mnt/c/Users/JoseCasella/DEV/Codex/PS4/tools/vk-h0/patch-mesa-zink.py $SRC
-ninja -C $build src/gallium/targets/libgl-gdi/opengl32.dll src/gallium/targets/wgl/libgallium_wgl.dll > $build.log 2>&1 || true
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-zink.py $SRC
+ninja -C $build src/gallium/targets/libgl-gdi/opengl32.dll src/gallium/targets/wgl/libgallium_wgl.dll > $build.log 2>&1
 grep -E "^FAILED" $build.log | wc -l
 grep -oE "[^ ]+:[0-9]+:[0-9]+: error: .*" $build.log | sort -u | head -30
 ls -la $build/src/gallium/targets/libgl-gdi/opengl32.dll $build/src/gallium/targets/wgl/libgallium_wgl.dll 2>&1
