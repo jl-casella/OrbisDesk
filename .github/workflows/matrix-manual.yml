@@ -1,5 +1,15 @@
 name: Manual platform matrix
 on:
+  workflow_call:
+    inputs:
+      profile:
+        description: 'Diagnostic contract profile'
+        type: string
+        default: platform-v1
+      cache_mode:
+        description: 'Verified cache reuse or cold preparation'
+        type: string
+        default: reuse
   workflow_dispatch:
     inputs:
       profile:

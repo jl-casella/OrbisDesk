@@ -10,11 +10,15 @@ The workflows are:
 
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
-| `PR checks` | Pull request or manual | Documentation, layout, locks, Python checks and sanitized host VM/parser tests |
-| `Manual platform matrix` | Manual only | Produce fixtures, run the same binaries on Windows, prepare Linux dependencies, build and run the diagnostic contract |
-| `Collect matrix timings` | Completion of the manual workflow | Read final job and step timings from GitHub; upload `timings.json` |
+| `PR checks` | Pull request or manual | Documentation, layout, locks, Python checks and sanitized host VM/parser tests; every PR also runs the full platform matrix after those checks pass |
+| `Manual platform matrix` | Manual or reusable workflow call | Produce fixtures, run the same binaries on Windows, prepare Linux dependencies, build and run the diagnostic contract |
+| `Collect matrix timings` | Completion of the manual matrix or PR checks | Read final job and step timings from GitHub; upload `timings.json` |
 
 These diagnostic workflows do not publish releases, build the complete Wine desktop, access FTP or change branch protection. A successful matrix uploads a diagnostic bundle only. The separate experimental [product release workflow](RELEASES.md) attempts the clean full build; its first successful hosted pilot is still pending.
+
+The PR job `Platform matrix` calls the same matrix workflow with `profile=platform-v1` and `cache_mode=reuse`, testing the PR merge SHA with fresh diagnostic profiles. It runs on every PR, including documentation changes, after `metadata` and `host` succeed; failure prevents a successful PR workflow. Manual PR-check runs and the product-release caller retain their existing quick checks; use the separate manual matrix to run diagnostics on demand. Making a check mandatory for merging still requires repository branch protection/ruleset configuration; this change does not alter those settings. Cancelling a superseded PR run also cancels its called matrix. No secrets are passed to the reusable workflow; checkout credentials are not persisted.
+
+The successful hosted pilot [42492292470](https://github.com/jl-casella/OrbisDesk/actions/runs/42492292470) on `10f0e0ddce5f8ee1db2f4a4b00342a01d06518b8` completed in 333 seconds: 30 fork passes plus the exact expected official blocker, 52.206 seconds of matrix execution and verified emulator binary reuse in 5.421 seconds. Source preparation took 116.347 seconds. This is a warm-cache observation, not a cold-build or duration guarantee for future PRs; PR cache visibility can differ from branch runs.
 
 ## First measured run
 
