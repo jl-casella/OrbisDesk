@@ -55,8 +55,9 @@ def build(version, cache_mode='reuse'):
     RESULTS.mkdir(parents=True, exist_ok=True)
     cache = ProductCache(cache_mode)
     deps = json.loads((ROOT / 'dependencies.lock.json').read_text())
-    # Steam is a separate product and not a dependency of this release recipe.
-    names = [n for n in deps['repositories'] if n not in ('mangojuice', 'playden-ps5')]
+    # The Steam client lives inside the title since alpha-1 (tools/build-steam-hosted.py), so Playden's
+    # sources and curl patch are inputs; MangoJuice stays a reference only.
+    names = [n for n in deps['repositories'] if n != 'mangojuice']
     command = [sys.executable, ROOT / 'tools/restore-dependencies.py', '--fetch']
     for name in names:
         command += ['--only', name]
@@ -134,6 +135,10 @@ def build(version, cache_mode='reuse'):
                  'build-wfm', 'build-dos-runtime', 'build-games', 'make-icons', 'make-start-menu', 'make-app-icon'):
         python(name, *(['--pinball'] if name == 'build-games' else []))
     step('product-assets', [sys.executable, ROOT / 'tools/ci/product-fixtures.py'])
+    # The Steam client inside the title: its TLS/HTTP libraries, then the hosted object, checked against
+    # the bootstrap ELF link-wine-boot made (pinned downloads: product-assets.lock.json, steam-*)
+    python('build-steam-deps', '--target', 'ps4')
+    python('build-steam-hosted')
     # W292: the extra desktop wallpapers build-wine-hardware stages (generated, no download)
     python('make-wallpaper-set')
     python('build-wine-hardware', '--app-version', version)

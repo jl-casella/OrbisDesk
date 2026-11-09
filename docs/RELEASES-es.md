@@ -64,6 +64,8 @@ La receta usa Ubuntu 22.04, Python 3.12, las versiones de toolchain comprobadas 
 
 La conversión histórica del fondo con System.Drawing en Windows se reemplaza por una conversión Pillow RGB/recorte/bicúbica registrada en la receta limpia; usa la misma foto CC0 fijada, pero puede cambiar el hash BMP. Se mantienen `ORBW00002` y el Content ID existente. El ID interno de build del builder/runtime (W288 al principio, W302 desde el merge del alpha-1) nombra `out/wine-hardware-wNNN` y se conserva como identidad de receta/evidencia; la receta limpia busca ese único manifest en lugar de suponer un ID. La procedencia de release registra el SHA real y la versión SFO, que también completa `C:orbisicensesSOURCE.txt`. Las construcciones locales usan la versión por defecto del builder (04.01) salvo que se indique `--app-version`.
 
+El cliente de Steam dentro del título (alpha-1) se construye en la misma corrida: Playden se restaura en su commit fijado, las bibliotecas y archivos de Steam salen de las entradas `steam-*` de [product-assets.lock.json](../product-assets.lock.json) (URL y SHA-256), y después de `link-wine-boot.py` corren `build-steam-deps.py --target ps4` y `build-steam-hosted.py`. En un workspace limpio el objeto se verifica contra `build/wine-boot/bootstrap.elf`, porque todavía no existe un ELF de hardware anterior.
+
 El candidato contiene:
 
 - `OrbisDesk.pkg` y su `OrbisDesk-runtime.tar.gz` nuevo y correspondiente (contenido dentro de `data/`).
