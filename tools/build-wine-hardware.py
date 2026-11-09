@@ -14,6 +14,8 @@ EBOOT_BASE=0x1100000000
 ROOT=pathlib.Path(__file__).resolve().parents[1];sdk=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
 parser=argparse.ArgumentParser()
 parser.add_argument('--app-version',default='04.01',help='SFO and boot-selector version (NN.NN)')
+parser.add_argument('--allow-build-paths',action='store_true',
+                    help='development builds only: ship even if binaries still hold the build PC\'s paths (recorded in the manifest)')
 parser.add_argument('--mangohud',choices=('enabled','disabled'),default='enabled',
                     help='load the MangoHud layer (default enabled; disabled is a diagnostic control)')
 args=parser.parse_args()
@@ -214,6 +216,19 @@ with tarfile.open(package/'prefix.tar.gz') as archive:
         elif not member.issym():raise SystemExit('Unexpected prefix entry')
 for folder in ('wine-home','wine/lib/wine/i386-windows','wine/lib/wine/x86_64-windows','wine/lib/wine/x86_64-unix','wine/share/wine/nls'):
     (data/folder).mkdir(parents=True,exist_ok=True)
+# alpha-1: the prefix was made on the build PC as its user (W048); Wine runs as "orbis" (native/wine_boot.c).
+# The registry's profile paths are rewritten to C:\users\orbis below (system.reg, user.reg, userdef.reg)
+# and the host profile's folder is not shipped (W048's mirror makes the same tree for orbis).
+host_profiles=[p for p in (prefix/'drive_c/users').iterdir() if p.is_dir() and p.name not in ('Public','orbis')]
+if len(host_profiles)!=1:raise SystemExit('prefix: expected one host user profile, found '+str([p.name for p in host_profiles]))
+HOST_PROFILE_REG='C:\\\\users\\\\'+host_profiles[0].name   # as written in a .reg file (C:\\users\\<name>)
+def orbis_profile(text,name):
+    """The host profile's registry paths as C:\\users\\orbis; the name must be there (a prefix change shows)."""
+    if HOST_PROFILE_REG not in text:raise SystemExit(name+': expected '+HOST_PROFILE_REG)
+    text=text.replace(HOST_PROFILE_REG+'\\\\','C:\\\\users\\\\orbis\\\\').replace(HOST_PROFILE_REG+'"','C:\\\\users\\\\orbis"')
+    if HOST_PROFILE_REG.lower() in text.lower():raise SystemExit(name+': host profile path left after rewrite')
+    return text
+userdef_reg=prefix/'userdef.reg';userdef_reg.write_text(orbis_profile(userdef_reg.read_text(),'userdef.reg'))
 shutil.copyfile(ROOT/'out/console32-bare.exe',data/'console32.exe')
 runtime=json.loads((ROOT/'out/wine/wine-runtime-manifest.json').read_text())
 def copy_verified(source,target,digest):
@@ -773,6 +788,7 @@ system_text+=dshow_reg.read_text()
 for old,new in (('"ComputerName"="JCASELLA"','"ComputerName"="ORBISDESK"'),('"Hostname"="jcasella"','"Hostname"="orbisdesk"')):
     if old not in system_text:raise SystemExit('system.reg: expected '+old)
     system_text=system_text.replace(old,new)
+system_text=orbis_profile(system_text,'system.reg')
 system_reg.write_text(system_text)
 # W226: the same registry as a file Wine never rewrites; the launcher appends the keys the console's
 # system.reg lacks before Wine starts (native/wine_hardware.c merge_system_reg). W225's keys were lost
@@ -862,19 +878,21 @@ text=text[:theme]+text[theme:end].replace('"ThemeActive"="1"','"ThemeActive"="0"
 for old,new in (('"LOGONSERVER"="\\\\\\\\JCASELLA"','"LOGONSERVER"="\\\\\\\\ORBISDESK"'),('"USERDOMAIN"="JCASELLA"','"USERDOMAIN"="ORBISDESK"')):
     if old not in text:raise SystemExit('user.reg: expected '+old)
     text=text.replace(old,new)
+text=orbis_profile(text,'user.reg')
 user_reg.write_text(text)
 # W048: Wine runs on hardware as user "orbis" (native/wine_boot.c), but the prefix was made
 # on the host for another user, so C:\users\orbis (the user's Start menu, AppData) did
 # not exist. The host profile is directories only; the same tree is made for orbis.
-profiles=[p for p in (prefix/'drive_c/users').iterdir() if p.is_dir() and p.name not in ('Public','orbis')]
-if len(profiles)!=1:raise SystemExit('prefix: expected one host user profile, found '+str([p.name for p in profiles]))
+profiles=host_profiles
 for folder in sorted(p for p in profiles[0].rglob('*') if p.is_dir()):
     (prefix/'drive_c/users/orbis'/folder.relative_to(profiles[0])).mkdir(parents=True,exist_ok=True)
-# A rebuild can retain the MangoHud config generated below. It is overwritten
-# deterministically, so permit only that file; still reject other profile data.
+# A runtime left by a build before alpha-1 can hold the MangoHud config that went there (now in orbis'
+# profile, below); permit only that file; still reject other profile data.
 generated_config=profiles[0]/'AppData/Roaming/MangoHud/MangoHud.conf'
 if any(p.is_file() and p!=generated_config for p in profiles[0].rglob('*')):
     raise SystemExit('prefix: host profile has files; copy them too')
+# alpha-1: the host profile is not shipped (the registry names C:\users\orbis, above)
+shutil.rmtree(profiles[0])
 # W045: Start menu folders and shortcuts (tools/make-start-menu.py) in the common Start menu.
 start_menu=json.loads((ROOT/'out/start-menu/manifest.json').read_text())
 for name,e in start_menu['shortcuts'].items():
@@ -924,9 +942,9 @@ seamonkey_profile.mkdir(parents=True,exist_ok=True)
 icons=json.loads((ROOT/'out/icons/manifest.json').read_text())['icons']
 (prefix/'drive_c/orbis/icons').mkdir(exist_ok=True)
 for name,digest in icons.items():copy_verified(ROOT/'out/icons'/name,prefix/'drive_c/orbis/icons'/name,digest)
-# W092: %APPDATA% is the host profile's (W091: C:\users\jose\AppData\Roaming), not orbis'
-if profiles[0].name!='jose':raise SystemExit('prefix: host profile is not jose; update tools/make-start-menu.py')
-mangohud_conf=prefix/'drive_c/users'/profiles[0].name/'AppData/Roaming/MangoHud/MangoHud.conf'
+# W092: %APPDATA% follows the registry's shell folders; since alpha-1 they name C:\users\orbis (above),
+# as tools/make-start-menu.py's "MangoHud Config" shortcut does
+mangohud_conf=prefix/'drive_c/users/orbis/AppData/Roaming/MangoHud/MangoHud.conf'
 mangohud_conf.parent.mkdir(parents=True,exist_ok=True)
 mangohud_conf.write_text('# MangoHud settings (OrbisDesk). Save and restart OrbisDesk to apply.\n'
                          '# Options: https://github.com/flightlessmango/MangoHud#hud-configuration\n'
@@ -962,6 +980,19 @@ for folder in (data/'wine/lib/wine/x86_64-windows',prefix/'drive_c/windows/syste
         stripped['modules']+=1;stripped['bytes_before']+=before;stripped['bytes_after']+=module.stat().st_size
 print(json.dumps({'stripped_modules':stripped['modules'],'mib_before':stripped['bytes_before']>>20,
                   'mib_after':stripped['bytes_after']>>20,'kept':len(stripped['kept'])}))
+# alpha-1: nothing of the build PC in what ships. Its checkout and home paths (compilers' __FILE__ and debug
+# strings: -ffile-prefix-map in the builders) and its user's profile, in the runtime and the ELF.
+build_identity=sorted({str(ROOT),str(ROOT).replace('/','\\'),str(pathlib.Path.home())}-{'','/','\\'})
+build_identity_utf16=[s.encode('utf-16-le') for s in build_identity]
+identity_hits=[]
+for path in [app/'eboot.bin',*(p for p in data.rglob('*') if p.is_file())]:
+    blob=path.read_bytes()
+    if any(s.encode() in blob for s in build_identity) or any(s in blob for s in build_identity_utf16):
+        identity_hits.append(str(path.relative_to(work)))
+if (prefix/'drive_c/users'/host_profiles[0].name).exists():identity_hits.append('host profile folder')
+if identity_hits and not args.allow_build_paths:
+    raise SystemExit('build PC paths in %d shipped files (first: %s); rebuild them with -ffile-prefix-map, '
+                     'or --allow-build-paths for a development build'%(len(identity_hits),', '.join(identity_hits[:5])))
 content='IV0000-ORBW00002_00-ORBISWINW0010000'
 pkg=package_app(ROOT,app,out,'OrbisDesk','ORBW00002',content,version=args.app_version,filename='OrbisDesk.pkg')
 manifest={'build':'W302','app_version':args.app_version,'title_id':'ORBW00002','package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),
@@ -979,6 +1010,7 @@ manifest={'build':'W302','app_version':args.app_version,'title_id':'ORBW00002','
 manifest['expected_result']='reports/increment25-windows-reference/text-result.txt'
 manifest['program']='C:\\windows\\explorer.exe /desktop=shell,1280x720'
 manifest['licenses']={'folder':'wine-prefix/drive_c/orbis/licenses','files':manifest_licenses,'source_commit':head,'source_dirty':dirty}
+manifest['build_identity']={'files_with_build_paths':len(identity_hits),'allowed':args.allow_build_paths,'sample':identity_hits[:20]}
 manifest['runs_until_closed']=True
 # W170: the console keeps /data/wine-prefix between builds and the upload only adds files, so a
 # file a build stops shipping stays. W168's shortcut in the common Desktop showed File Manager

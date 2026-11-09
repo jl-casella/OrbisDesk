@@ -34,8 +34,8 @@ GRAPHICS=[('glxgears',ORBIS+'glxgears.exe','OpenGL gears through Zink and Vulkan
           ('vkcube',ORBIS+'vkcube.exe','Vulkan cube (Vulkan-Tools)','',ORBIS+'icons\\vkcube.ico'),
           ('vkspin',ORBIS+'vkspin64.exe','Vulkan spinning triangle','',ORBIS+'icons\\vkspin64.ico'),
           ('MangoHud Config',SYS+'notepad.exe','Edit the MangoHud overlay settings',
-           # W092: %APPDATA% is the prefix's host profile (W091: C:\users\jose\AppData\Roaming)
-           'C:\\users\\jose\\AppData\\Roaming\\MangoHud\\MangoHud.conf',ORBIS+'icons\\mangohud.ico')]
+           # W092: %APPDATA% follows the registry's shell folders, C:\users\orbis since alpha-1 (build-wine-hardware.py)
+           'C:\\users\\orbis\\AppData\\Roaming\\MangoHud\\MangoHud.conf',ORBIS+'icons\\mangohud.ico')]
 # W177 (phase 9): Programs/Internet. SeaMonkey 2.53 is the browser (the user's choice; it replaced
 # Pale Moon, W177-W215, whose shortcuts build-wine-hardware.py deletes on the console). It is not in
 # the package: the shortcut expects the user's own copy in C:\Program Files\SeaMonkey and passes a
