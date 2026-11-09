@@ -166,9 +166,30 @@ The manifest also records excluded W261 names already present in the native-prod
 
 Focused local tests compile real PE32/PE64 fixture DLLs, execute the actual W261 staging loop against a private populated-prefix fixture, and reject corrupted, wrong-architecture, bad-manifest and explicitly excluded cases. This validates the overlap policy, not native wineboot or PS4 execution of that test prefix. Retry the branch workflow with `cache_mode=reuse`, publication disabled. The graphics fingerprint is unchanged; the stagers are Wine snapshot inputs, so Wine's fingerprint changes conservatively and its block must rebuild.
 
+## First-start install
+
+Since alpha-1 (branch `feature/embedded-runtime`, not yet tested on the console), `build-wine-hardware.py` packs the runtime into `OrbisDesk.pkg` as `/app0/runtime`, about 1.1 GB, with two lists of the same content:
+- `install.json` for people and CI;
+- `install.txt` for the launcher.
+
+Each list gives every file with its SHA-256 and size, plus the directories, the obsolete files and the console-owned `user.reg` keys ([console_state.py](../tools/console_state.py)).
+
+On the first start of each build, after the NORMAL/ROOT choice and before Wine, [native/hw_install.h](../native/hw_install.h) brings `/data` up to the list with the rules [upload-hardware.py](../tools/upload-hardware.py) applies over FTP:
+- **Files:** a file is copied only when it is missing or different, through a temporary file whose SHA-256 is checked before it replaces the old one.
+- **`user.reg`:** merged, never replaced; the shared ledger keeps the user's deletions.
+- **Obsolete files:** deleted.
+- **Old profile:** the profile folders of the build PC's user move to `C:\users\orbis`.
+- **Everything else** (documents, saves, Steam games, `/data/orbisdesk`) is not touched.
+
+The list is recorded in `/data/orbisdesk/runtime-installed.txt` only when everything succeeded. The next start of the same build skips the install; a failed install shows `INSTALL FAILED` with the reason and runs again on the next start. `PWINSTALL` lines in the run log give the plan, counts and time.
+
+The release candidate is then the package alone, plus manifests, licences and checksums. Two options remain for development builds:
+- `--runtime-outside-package` keeps the 35 MB package and the FTP-uploaded runtime;
+- `upload-hardware.py --pkg-only` uploads an embedded package without the runtime.
+
 ## Installation and the dev → main flow
 
-A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.
+A package built with `--runtime-outside-package` is insufficient alone: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. That archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. An embedded-runtime package installs itself as described above. No FTP upload or console installation occurs in Actions.
 
 `dev` has been created from main. Day-to-day feature/fix PRs target `dev` and run the quick checks plus the complete diagnostic matrix, as described in [CI operation](CI.md). When a coherent group of changes is ready, open a `dev → main` PR, review/test that group, and merge. With automatic releases enabled, that main push builds and publishes the group. Keep main protected, do not automatically merge dev, and retain manual builds for investigations.
 

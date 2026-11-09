@@ -87,6 +87,12 @@ No se encontró `/home/jose`, direcciones de correo ni otros datos personales en
 
 Cambiar sólo `MangoHud.conf` a `orbis` rompería la configuración de MangoHud. Una mudanza real necesita, todo junto: reescribir `C:\\users\\jose` como `C:\\users\\orbis` en el `user.reg` y el `system.reg` que se stagean (en `build-wine-hardware.py`, después de copiar el árbol del perfil del host), escribir `MangoHud.conf` bajo `orbis`, cambiar `tools/make-start-menu.py`, y mover una vez en la consola, antes de que arranque Wine, lo que el usuario ya guardó en `C:\users\jose` (partidas guardadas en `AppData`, Documentos) a `C:\users\orbis`. `upload-hardware.py` reemplaza `user.reg` en cada subida, así que la parte del registro es segura, pero los archivos del usuario no. La extracción del primer arranque del runtime embebido es el lugar natural para esa mudanza única. Recomendación: hacerlo en esa tarea, no como un parche aparte.
 
+**Estado (2026-11-09, rama `feature/embedded-runtime`).** Hecho en el builder, todavía sin compilar ni probar en la consola:
+- `build-wine-hardware.py` reescribe las rutas del perfil del host a `C:\users\orbis` en `system.reg`, `user.reg` y `userdef.reg`, ya no empaqueta la carpeta del perfil del host y escribe `MangoHud.conf` en `orbis`; `make-start-menu.py` apunta ahí.
+- Se niega a empaquetar si la ruta del checkout o del home aparece en el ELF o en algún archivo del runtime. `--allow-build-paths` es la excepción registrada para builds de desarrollo.
+- El instalador del primer arranque ([RELEASES](RELEASES-es.md#instalación-en-el-primer-arranque)) mueve lo que el usuario guardó en Desktop, Documents, Downloads, Favorites, Music, Pictures y Videos del perfil viejo a `C:\users\orbis` sin pisar nada.
+- Los flags `-ffile-prefix-map` se agregan a los builders por separado. Una nueva auditoría del 2026-11-09 encontró además cadenas `/home/jose/vk-h0` de las recetas gráficas; los mismos flags las cubren.
+
 ## 5. Fuente correspondiente por release
 
 Mecanismo propuesto: un tag de Git por versión (`orbisdesk-04.00` para el alpha-1) en el repositorio público y, en la misma página del release que `OrbisDesk.pkg`, un archivo `orbisdesk-04.00-third-party-sources` con su lista de SHA-256. Ofrecer la fuente desde el mismo lugar que el binario cumple la GPL-2 §3 y la GPL-3 §6(d) sin oferta escrita; `SOURCE.txt` además ofrece las fuentes a pedido durante tres años, lo que cubre a quien consiga el paquete por otro lado.

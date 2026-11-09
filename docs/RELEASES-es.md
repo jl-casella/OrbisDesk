@@ -166,9 +166,30 @@ El manifiesto también registra nombres excluidos de W261 que ya estén en el pr
 
 Las pruebas locales acotadas compilan DLL propias PE32/PE64 reales, ejecutan el bucle W261 real con un prefijo privado de prueba poblado y rechazan corrupción, arquitectura incorrecta, manifiestos alterados y exclusiones explícitas. Validan la política de solapamiento, no wineboot ni ejecución PS4 de ese prefijo de prueba. Repetir el workflow de rama con `cache_mode=reuse`, sin publicar. La huella de gráficos no cambia; los stagers son entradas de la instantánea Wine, por lo que su huella cambia conservadoramente y ese bloque debe reconstruirse.
 
+## Instalación en el primer arranque
+
+Desde el alpha-1 (rama `feature/embedded-runtime`, todavía sin probar en la consola), `build-wine-hardware.py` mete el runtime dentro de `OrbisDesk.pkg` como `/app0/runtime`, unos 1,1 GB, con dos listas del mismo contenido:
+- `install.json`, para personas y CI;
+- `install.txt`, para el launcher.
+
+Cada lista trae cada archivo con su SHA-256 y tamaño, más los directorios, los archivos obsoletos y las claves de `user.reg` que conserva la consola ([console_state.py](../tools/console_state.py)).
+
+En el primer arranque de cada build, después de elegir NORMAL/ROOT y antes de Wine, [native/hw_install.h](../native/hw_install.h) pone `/data` al día con esa lista, con las mismas reglas que aplica [upload-hardware.py](../tools/upload-hardware.py) por FTP:
+- **Archivos:** sólo se copia un archivo si falta o es distinto. La copia pasa por un temporal, y se verifica su SHA-256 antes de reemplazar al viejo.
+- **`user.reg`:** se combina, nunca se reemplaza; el registro compartido conserva lo que el usuario borró.
+- **Obsoletos:** se borran.
+- **Perfil viejo:** las carpetas del perfil del usuario de la PC de build pasan a `C:\users\orbis`.
+- **Todo lo demás** (documentos, partidas, juegos de Steam, `/data/orbisdesk`) no se toca.
+
+La lista se guarda en `/data/orbisdesk/runtime-installed.txt` sólo si todo salió bien. El siguiente arranque de la misma build no reinstala; si la instalación falla, muestra `INSTALL FAILED` con el motivo y se reintenta en el próximo arranque. Las líneas `PWINSTALL` del log muestran el plan, los conteos y el tiempo.
+
+El candidato de release pasa a ser sólo el paquete, más manifests, licencias y checksums. Para builds de desarrollo quedan dos opciones:
+- `--runtime-outside-package` mantiene el paquete de 35 MB y el runtime subido por FTP;
+- `upload-hardware.py --pkg-only` sube un paquete con el runtime adentro, sin subir el runtime aparte.
+
 ## Instalación y flujo dev → main
 
-El PKG solo no alcanza: también necesita su runtime en `/data`. Seguir las instrucciones del candidato, respaldar registros/documentos/configuración/partidas y usar una actualización que preserve cambios del usuario si ya existe una instalación. El archivo es un runtime nuevo; reemplazar un prefijo instalado sin combinar puede perder estado. Actions no hace transferencias FTP ni instala en consola.
+Un paquete hecho con `--runtime-outside-package` no alcanza solo: también necesita su runtime en `/data`. Seguir las instrucciones del candidato, respaldar registros/documentos/configuración/partidas y usar una actualización que preserve cambios del usuario si ya existe una instalación. Ese archivo es un runtime nuevo; reemplazar un prefijo instalado sin combinar puede perder estado. Un paquete con el runtime adentro se instala solo, como se describe arriba. Actions no hace transferencias FTP ni instala en consola.
 
 `dev` ya fue creada desde main. Los PRs diarios de features/fixes apuntan a `dev` y ejecutan checks rápidos y la matriz diagnóstica completa, como describe [operación de CI](CI-es.md). Con un conjunto coherente listo, abrir un PR `dev → main`, revisar/probar ese conjunto e integrar. Con releases automáticas habilitadas, ese push a main lo construye y publica. Mantener main protegida, no integrar dev automáticamente y conservar builds manuales para investigar.
 

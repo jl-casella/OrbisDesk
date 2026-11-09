@@ -87,6 +87,12 @@ No `/home/jose`, e-mail address or other personal data was found in the runtime.
 
 Changing only `MangoHud.conf` to `orbis` would break MangoHud's configuration. A real move needs, together: rewriting `C:\\users\\jose` to `C:\\users\\orbis` in the staged `user.reg` and `system.reg` (in `build-wine-hardware.py`, after the copy of the host profile tree), writing `MangoHud.conf` under `orbis`, changing `tools/make-start-menu.py`, and moving on the console whatever users already saved under `C:\users\jose` (game saves in `AppData`, Documents) into `C:\users\orbis` once, before Wine starts. `upload-hardware.py` replaces `user.reg` on each upload, so the registry part is safe, but the user files are not. The embedded-runtime first-start extraction is the natural place for that one-time move. Recommendation: do it in that task, not as a separate patch.
 
+**Status (2026-11-09, branch `feature/embedded-runtime`).** Done in the builder, not yet built or tested on the console:
+- `build-wine-hardware.py` rewrites the host profile's registry paths to `C:\users\orbis` in `system.reg`, `user.reg` and `userdef.reg`, no longer ships the host profile folder, and writes `MangoHud.conf` under `orbis`; `make-start-menu.py` points there.
+- It refuses to package while the checkout or home path appears in the ELF or any runtime file. `--allow-build-paths` is the recorded opt-out for development builds.
+- The first-start installer ([RELEASES](RELEASES.md#first-start-install)) moves what the user saved in the old profile's Desktop, Documents, Downloads, Favorites, Music, Pictures and Videos to `C:\users\orbis` without replacing anything.
+- The `-ffile-prefix-map` flags are added to the builders separately. A re-audit on 2026-11-09 also found `/home/jose/vk-h0` strings from the graphics recipes; the same flags cover them.
+
 ## 5. Corresponding source per release
 
 Proposed mechanism: a Git tag per version (`orbisdesk-04.00` for alpha-1) on the public repository, and on the same release page as `OrbisDesk.pkg`, an archive `orbisdesk-04.00-third-party-sources` with a SHA-256 list. Offering the source from the same place as the binary satisfies GPL-2 §3 and GPL-3 §6(d) without a written offer; `SOURCE.txt` also offers the sources on request for three years, which covers anyone who got the package elsewhere.
