@@ -79,7 +79,8 @@ text=substitute(text,'''        pw_audio_mix_store(accumulator, grain, PW_WINE_A
 ''','''        pw_audio_mix_store(accumulator, grain, PW_WINE_AUDIO_GRAIN);
         {
             static unsigned int grains;
-            if (!(++grains % 1000))
+            extern int pw_trace_enabled( void );  /* alpha-1: traces only (platform/ps4/pw_trace.h) */
+            if (!(++grains % 1000) && pw_trace_enabled())
                 for (stream = streams; stream; stream = stream->next)
                     fprintf(stderr, "PWAUDIO mixer grain=%u stream=%p playing=%d held=%u written=%llu\\n", grains,
                             stream, (int)stream->playing, (unsigned)stream->mix.held,

@@ -29,6 +29,11 @@
 #define PW_SINK_TIMING 0
 #endif
 enum {OUT_WIDTH=1280,OUT_HEIGHT=720,OUT_BUFFERS=2,MAX_DUMPS=PW_SINK_MAX_DUMPS};
+/* alpha-1 (pw_trace.h): without traces no BMP dumps (each a synchronous multi-MB write, and the CPU path hashed
+ * every frame while dumps were left), no periodic frame lines, no show() timing. The first 8 frame_presented
+ * lines stay: they are the run's "presented" evidence (tools/fetch-hardware.py). */
+#include "pw_trace.h"
+#define DUMP_LIMIT (pw_trace_on()?MAX_DUMPS:0)
 enum {FORMAT_A8R8G8B8_SRGB=(int)0x80000000,TILING_LINEAR=1,USER_MAIN=255,FLIP_VSYNC=1};
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int handle=-1,failed;
@@ -201,6 +206,7 @@ static int cursor_origin(uint32_t left,uint32_t top,uint32_t scale_w,uint32_t sc
 static void show_stats(const char *path,uint64_t start)
 {
     static uint64_t total,worst,count;
+    if(!pw_trace_on()) return;
     uint64_t spent=sceKernelGetProcessTime()-start;
     total+=spent;if(spent>worst) worst=spent;
     if(++count%300) return;
@@ -213,7 +219,7 @@ static void dump_output(const uint32_t *target)
 {
     dump_wanted=0;
     uint64_t hash=frame_hash((const uint8_t *)target,OUT_WIDTH,OUT_HEIGHT,pitch*4);
-    if(dumps<MAX_DUMPS && hash!=last_dump_hash) {
+    if(dumps<DUMP_LIMIT && hash!=last_dump_hash) {
         dump((const uint8_t *)target,OUT_WIDTH,OUT_HEIGHT,pitch*4);++dumps;last_dump_hash=hash;
         fprintf(stderr,"PWSINK dump frame=%llu layers=%u\n",(unsigned long long)frames,layer_count);
     }
@@ -391,8 +397,8 @@ int pw_wine_present(const void *pixels,unsigned int width,unsigned int height,un
     pthread_mutex_lock(&lock);
     ++frames;
     /* hashing reads every byte: only for frames that are logged or may be dumped */
-    int logged=frames<=8 || !(frames%64);
-    uint64_t hash=logged || dumps<MAX_DUMPS?frame_hash(bgra,width,height,stride):0;
+    int logged=frames<=8 || (!(frames%64) && pw_trace_on());
+    uint64_t hash=logged || dumps<DUMP_LIMIT?frame_hash(bgra,width,height,stride):0;
     if(logged) {
 #if PW_SINK_TIMING
         fprintf(stderr,"PWBOOT frame_presented n=%llu size=%ux%u hash=%016llx t_ms=%llu\n",(unsigned long long)frames,
@@ -402,7 +408,7 @@ int pw_wine_present(const void *pixels,unsigned int width,unsigned int height,un
                 width,height,(unsigned long long)hash);
 #endif
     }
-    if(dumps<MAX_DUMPS && hash!=last_dump_hash) {dump(bgra,width,height,stride);++dumps;last_dump_hash=hash;}
+    if(dumps<DUMP_LIMIT && hash!=last_dump_hash) {dump(bgra,width,height,stride);++dumps;last_dump_hash=hash;}
     if(handle<0 && !failed && open_video()) failed=1;
 #ifdef PW_SINK_EXTERNAL_INPUT
     frame_handed();  /* W236 */
@@ -508,8 +514,8 @@ int pw_wine_present_layers(const struct pw_wine_layer *stack,unsigned int count,
     if(!gpu || handle<0) {pthread_mutex_unlock(&lock);return -1;}
     ++frames;
     /* the output buffer is dumped only for logged frames (a BMP write costs ~100 ms) */
-    if(frames<=8 || !(frames%64)) {
-        if(dumps<MAX_DUMPS) dump_wanted=1;
+    if(frames<=8 || (!(frames%64) && pw_trace_on())) {
+        if(dumps<DUMP_LIMIT) dump_wanted=1;
 #if PW_SINK_TIMING
         fprintf(stderr,"PWBOOT frame_presented n=%llu size=%ux%u layers=%u t_ms=%llu\n",(unsigned long long)frames,
                 width,height,count,(unsigned long long)(sceKernelGetProcessTime()/1000));

@@ -23,6 +23,7 @@
 #include <strings.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include "pw_trace.h"  /* alpha-1: the first input events and stick reports, traces only */
 #include <sys/time.h>
 #include <orbis/libkernel.h>
 #include <orbis/Pad.h>
@@ -119,7 +120,7 @@ static void push(uint32_t type,uint32_t code,uint32_t down,const char *source)
     pthread_mutex_lock(&lock);
     if(count<QUEUE) {queue[(head+count++)%QUEUE]=(struct PwWineInput){type,code,cursor_x,cursor_y,down};}
     pthread_mutex_unlock(&lock);
-    if(type!=2 && logged<48) {++logged;fprintf(stderr,"PWBOOT input_event source=%s type=%u code=%u down=%u at=%d,%d\n",
+    if(type!=2 && logged<48 && pw_trace_on()) {++logged;fprintf(stderr,"PWBOOT input_event source=%s type=%u code=%u down=%u at=%d,%d\n",
                                                source,type,code,down,cursor_x,cursor_y);}
 }
 /* Wheel (W038): ps5drv type 4 carries the signed delta in y, in WHEEL_DELTA (120) units,
@@ -130,7 +131,7 @@ static void push_wheel(int delta,const char *source)
     if(count<QUEUE) {queue[(head+count++)%QUEUE]=(struct PwWineInput){4,0,cursor_x,delta,0};}
     pthread_mutex_unlock(&lock);
     unsigned *wheel_logged=source[0]=='p'?&pad_wheel_logged:&mouse_wheel_logged;
-    if(*wheel_logged<16) {++*wheel_logged;fprintf(stderr,"PWBOOT input_event source=%s type=4 delta=%d at=%d,%d\n",source,delta,cursor_x,cursor_y);}
+    if(*wheel_logged<16 && pw_trace_on()) {++*wheel_logged;fprintf(stderr,"PWBOOT input_event source=%s type=4 delta=%d at=%d,%d\n",source,delta,cursor_x,cursor_y);}
 }
 /* W248: relative motion (ps5drv type 5: x and y the delta), for mouse look; the first few are logged */
 static void push_relative(int dx,int dy)
@@ -139,7 +140,7 @@ static void push_relative(int dx,int dy)
     pthread_mutex_lock(&lock);
     if(count<QUEUE) {queue[(head+count++)%QUEUE]=(struct PwWineInput){5,0,dx,dy,0};}
     pthread_mutex_unlock(&lock);
-    if(relative_logged<8) {++relative_logged;fprintf(stderr,"PWPAD rstick mouse dx=%d dy=%d\n",dx,dy);}
+    if(relative_logged<8 && pw_trace_on()) {++relative_logged;fprintf(stderr,"PWPAD rstick mouse dx=%d dy=%d\n",dx,dy);}
 }
 static int move_by(double dx,double dy)
 {
@@ -466,7 +467,7 @@ static int poll_controller(unsigned reads,uint32_t *previous,int *moved)
     /* W042: in W041 the right stick never left the dead zone on y; record any movement of
      * either axis, with the first 16 bytes of the report, to see where it lands */
     static int stick_logged;
-    if((abs(ry)>DEADZONE || abs((int)data.rightStick.x-128)>DEADZONE) && stick_logged<8) {
+    if((abs(ry)>DEADZONE || abs((int)data.rightStick.x-128)>DEADZONE) && stick_logged<8 && pw_trace_on()) {
         const uint8_t *raw=(const uint8_t *)&data;++stick_logged;
         fprintf(stderr,"PWBOOT right_stick x=%u y=%u raw=",data.rightStick.x,data.rightStick.y);
         for(int i=0;i<16;i++) fprintf(stderr,"%02x",raw[i]);

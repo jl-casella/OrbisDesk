@@ -10,6 +10,15 @@
 #include <string.h>
 #include <orbis/libkernel.h>
 #include <unistd.h>
+#include "pw_trace.h"
+
+/* the trace switch (pw_trace.h): on unless the hardware launcher (native/wine_hardware.c) turns it off from
+ * ORBIS_RELEASE and /data/orbisdesk/trace.txt before Wine starts */
+int pw_trace_level=1;
+/* the same answer for Wine's Unix side (ntdll, win32u, wineserver, the audio driver) in this ELF, which declares it
+ * at the trace (tools/build-win32u-ps4.py and others): called only where a line is about to be written */
+int pw_trace_enabled(void);
+int pw_trace_enabled(void) {return pw_trace_level>0;}
 
 long pw_wine_sysconf(int name)
 {
@@ -41,7 +50,7 @@ static void *tryfixed_hint(void *address,size_t bytes,int protection,const char 
     static unsigned count;
     void *mapped=mmap(address,bytes,protection,MAP_PRIVATE|MAP_ANON,-1,0);
     int saved=errno;
-    if(count++<8 || !(count%1000)) {
+    if(pw_trace_on() && (count++<8 || !(count%1000))) {  /* alpha-1: a known retry storm (W203), traces only */
         OrbisKernelVirtualQueryInfo info;memset(&info,0,sizeof(info));
         int query=sceKernelVirtualQuery(address,0,&info,sizeof(info));
         char text[256];

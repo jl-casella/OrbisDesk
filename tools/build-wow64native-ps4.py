@@ -298,6 +298,7 @@ adaptations.append(adapt(WINE/'dlls/wow64/syscall.c',syscall_c,[
  *           load_64bit_module
  */''','''/* OrbisDesk B1 (pe32-en-explorer-plan.md P4): 32-bit guests of a 64-bit process (explorer) */
 BOOL pw_wow64_world = FALSE;
+static BOOL pw_traced( void );  /* alpha-1: the trace switch, below */
 /* wow64win's callback table: the PEB's is 64-bit user32's there, so each 32-bit thread gets it in this
  * TEB slot of wow64's reserved range, which the PE ntdll's KiUserCallbackDispatcher reads */
 #define PW_WOW64_TLS_CALLBACKS 18
@@ -347,7 +348,8 @@ static void pw_wow64_fatal( NTSTATUS status )
     if (pw_wow64_world)
     {
         NtCurrentTeb()->TlsSlots[PW_WOW64_TLS_CALLBACKS] = pw_callback_table;  /* OrbisDesk B1 */
-        ERR( "PWWOW wow64 thread_init thread=%04lx\\n", HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ) );  /* W236 */
+        if (pw_traced())  /* alpha-1 */
+            ERR( "PWWOW wow64 thread_init thread=%04lx\\n", HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ) );  /* W236 */
     }'''),
     # W236 (W235 run-0003.log: 207 nested c0000005 at wow64+0x11ACD): an exception whose 32-bit context has no
     # stack (esp 0) cannot reach 32-bit code; in the world it ends that thread instead of faulting again.
@@ -457,6 +459,26 @@ static char *pw_put_hex( char *p, char *end, ULONG value )
     while (n && p < end - 1) *p++ = digits[--n];
     *p = 0;
     return p;
+}
+
+/* alpha-1: OrbisDesk's trace switch (platform/ps4/pw_trace.h) as the launcher hands it to Wine, PW_TRACE=0|1;
+ * unset counts as on, as before the switch. Read once. */
+static BOOL pw_traced( void )
+{
+    static LONG traced = -1;
+
+    if (traced < 0)
+    {
+        WCHAR buffer[4] = {0};
+        UNICODE_STRING name, value;
+
+        RtlInitUnicodeString( &name, L"PW_TRACE" );
+        value.Buffer = buffer;
+        value.Length = 0;
+        value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
+        traced = RtlQueryEnvironmentVariable_U( NULL, &name, &value ) || buffer[0] != '0';
+    }
+    return traced;
 }
 
 static BOOL pw_wait_budget( LONG tid )
@@ -569,7 +591,10 @@ static void pw_wait_note( UINT num, const UINT *args, LONGLONG took, NTSTATUS st
  */'''),
     ('''    status = wow64_syscall( args, table->ServiceTable[id] );
     free_temp_data();
-    return status;''','''    {
+    return status;''','''    /* alpha-1: two clock reads around every 32-bit system call, for W272's wait lines: traces only */
+    if (!pw_traced()) status = wow64_syscall( args, table->ServiceTable[id] );
+    else
+    {
         LARGE_INTEGER pw_start, pw_end;  /* OrbisDesk W272 */
 
         NtQueryPerformanceCounter( &pw_start, NULL );

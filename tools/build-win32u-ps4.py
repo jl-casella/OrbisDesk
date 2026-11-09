@@ -541,7 +541,8 @@ revise('dlls/win32u/ps5drv.c','''            send_mouse( window_at( cursor.x, cu
        '''            send_mouse( window_at( cursor.x, cursor.y ), MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, cursor.x, cursor.y );
             {
                 static UINT pointer_moves;
-                if (++pointer_moves % 50 == 1)
+                extern int pw_trace_enabled( void );  /* alpha-1: traces only (platform/ps4/pw_trace.h) */
+                if (++pointer_moves % 50 == 1 && pw_trace_enabled())
                     fprintf( stderr, "PWBOOT pointer_move n=%u tid=%04x at=%d,%d\\n", pointer_moves,
                              (UINT)GetCurrentThreadId(), (int)cursor.x, (int)cursor.y );
             }''','Pointer move count.')
@@ -650,7 +651,8 @@ revise('dlls/win32u/ps5drv.c','''            OffsetRect( &target, window->visibl
             flush_pixels += (unsigned long long)(target.right - target.left) * (target.bottom - target.top);
             if (!(flushes % 100))
             {
-                fprintf( stderr, "PWBOOT flush_stats n=%u avg_us=%llu max_us=%llu avg_px=%llu over_ms=%llu\\n", flushes,
+                extern int pw_trace_enabled( void );  /* alpha-1: traces only (platform/ps4/pw_trace.h) */
+                if (pw_trace_enabled()) fprintf( stderr, "PWBOOT flush_stats n=%u avg_us=%llu max_us=%llu avg_px=%llu over_ms=%llu\\n", flushes,
                          flush_us / 100, flush_max, flush_pixels / 100, (start - flush_start) / 1000 );
                 flush_us = flush_max = flush_pixels = 0;
                 flush_start = start;
@@ -777,6 +779,8 @@ static void pw_vk_show_frame( HWND hwnd, VkSwapchainKHR host_swapchain )
             draw_count++;
             if (++shown <= 5 || !(shown % 60))
             {
+                extern int pw_trace_enabled( void );  /* alpha-1: the first 5 always, then every 60th with traces */
+                if (shown <= 5 || pw_trace_enabled())
                 ERR( "PWVK show_frame n=%u hwnd=%p %ux%u pitch=%u format=%d client=%s path=gpu_layer us=%lld\\n", shown, hwnd,
                      width, height, pitch, format, wine_dbgstr_rect( &client ),
                      frequency.QuadPart ? draw_ticks * 1000000 / frequency.QuadPart / draw_count : -1 );
@@ -813,6 +817,8 @@ static void pw_vk_show_frame( HWND hwnd, VkSwapchainKHR host_swapchain )
     draw_count++;
     if (++shown <= 5 || !(shown % 60))
     {
+        extern int pw_trace_enabled( void );  /* alpha-1: the first 5 always, then every 60th with traces */
+        if (shown <= 5 || pw_trace_enabled())
         ERR( "PWVK show_frame n=%u hwnd=%p %ux%u pitch=%u format=%d client=%s drawn=%d gdi_us=%lld\\n", shown, hwnd,
              width, height, pitch, format, wine_dbgstr_rect( &rect ), drawn,
              frequency.QuadPart ? draw_ticks * 1000000 / frequency.QuadPart / draw_count : -1 );
@@ -1717,21 +1723,24 @@ static inline BOOL pw32_traced(void)
     return have_procs32 && NtCurrentTeb()->WowTebOffset;
 }
 
+/* alpha-1: begin and end lines only with OrbisDesk's trace switch (platform/ps4/pw_trace.h); a failed call logs */
+extern int pw_trace_enabled( void );
+
 static VkResult pw32_vkCreateInstance( const VkInstanceCreateInfo *info, const VkAllocationCallbacks *allocator,
                                        VkInstance *instance )
 {
-    BOOL traced = pw32_traced();
+    BOOL world = pw32_traced(), traced = world && pw_trace_enabled();
     VkResult res;
 
     if (traced) ERR( "PWVK32 begin vkCreateInstance\\n" );
     res = win32u_vkCreateInstance( info, allocator, instance );
-    if (traced) ERR( "PWVK32 end vkCreateInstance res=%d\\n", res );
+    if (traced || (world && res)) ERR( "PWVK32 end vkCreateInstance res=%d\\n", res );
     return res;
 }
 
 static void pw32_vkDestroyInstance( VkInstance instance, const VkAllocationCallbacks *allocator )
 {
-    BOOL traced = pw32_traced();
+    BOOL world = pw32_traced(), traced = world && pw_trace_enabled();
 
     if (traced) ERR( "PWVK32 begin vkDestroyInstance %p\\n", instance );
     win32u_vkDestroyInstance( instance, allocator );
@@ -1741,19 +1750,19 @@ static void pw32_vkDestroyInstance( VkInstance instance, const VkAllocationCallb
 static VkResult pw32_vkCreateDevice( VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
                                      const VkAllocationCallbacks *allocator, VkDevice *device )
 {
-    BOOL traced = pw32_traced();
+    BOOL world = pw32_traced(), traced = world && pw_trace_enabled();
     VkResult res;
 
     if (traced) ERR( "PWVK32 begin vkCreateDevice queues=%u extensions=%u\\n", info->queueCreateInfoCount,
                      info->enabledExtensionCount );
     res = win32u_vkCreateDevice( physical_device, info, allocator, device );
-    if (traced) ERR( "PWVK32 end vkCreateDevice res=%d device=%p\\n", res, res ? NULL : *device );
+    if (traced || (world && res)) ERR( "PWVK32 end vkCreateDevice res=%d device=%p\\n", res, res ? NULL : *device );
     return res;
 }
 
 static void pw32_vkDestroyDevice( VkDevice device, const VkAllocationCallbacks *allocator )
 {
-    BOOL traced = pw32_traced();
+    BOOL world = pw32_traced(), traced = world && pw_trace_enabled();
 
     if (traced) ERR( "PWVK32 begin vkDestroyDevice %p\\n", device );
     win32u_vkDestroyDevice( device, allocator );
@@ -1763,18 +1772,18 @@ static void pw32_vkDestroyDevice( VkDevice device, const VkAllocationCallbacks *
 static VkResult pw32_vkCreateWin32SurfaceKHR( VkInstance instance, const VkWin32SurfaceCreateInfoKHR *info,
                                               const VkAllocationCallbacks *allocator, VkSurfaceKHR *surface )
 {
-    BOOL traced = pw32_traced();
+    BOOL world = pw32_traced(), traced = world && pw_trace_enabled();
     VkResult res;
 
     if (traced) ERR( "PWVK32 begin vkCreateWin32SurfaceKHR hwnd=%p\\n", info->hwnd );
     res = win32u_vkCreateWin32SurfaceKHR( instance, info, allocator, surface );
-    if (traced) ERR( "PWVK32 end vkCreateWin32SurfaceKHR res=%d\\n", res );
+    if (traced || (world && res)) ERR( "PWVK32 end vkCreateWin32SurfaceKHR res=%d\\n", res );
     return res;
 }
 
 static void pw32_vkDestroySurfaceKHR( VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks *allocator )
 {
-    BOOL traced = pw32_traced();
+    BOOL world = pw32_traced(), traced = world && pw_trace_enabled();
 
     if (traced) ERR( "PWVK32 begin vkDestroySurfaceKHR\\n" );
     win32u_vkDestroySurfaceKHR( instance, surface, allocator );
@@ -1784,19 +1793,19 @@ static void pw32_vkDestroySurfaceKHR( VkInstance instance, VkSurfaceKHR surface,
 static VkResult pw32_vkCreateSwapchainKHR( VkDevice device, const VkSwapchainCreateInfoKHR *info,
                                            const VkAllocationCallbacks *allocator, VkSwapchainKHR *swapchain )
 {
-    BOOL traced = pw32_traced();
+    BOOL world = pw32_traced(), traced = world && pw_trace_enabled();
     VkResult res;
 
     if (traced) ERR( "PWVK32 begin vkCreateSwapchainKHR %ux%u images=%u old=%s\\n", info->imageExtent.width,
                      info->imageExtent.height, info->minImageCount, info->oldSwapchain ? "yes" : "no" );
     res = win32u_vkCreateSwapchainKHR( device, info, allocator, swapchain );
-    if (traced) ERR( "PWVK32 end vkCreateSwapchainKHR res=%d\\n", res );
+    if (traced || (world && res)) ERR( "PWVK32 end vkCreateSwapchainKHR res=%d\\n", res );
     return res;
 }
 
 static void pw32_vkDestroySwapchainKHR( VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks *allocator )
 {
-    BOOL traced = pw32_traced();
+    BOOL world = pw32_traced(), traced = world && pw_trace_enabled();
 
     if (traced) ERR( "PWVK32 begin vkDestroySwapchainKHR\\n" );
     win32u_vkDestroySwapchainKHR( device, swapchain, allocator );
@@ -1806,13 +1815,13 @@ static void pw32_vkDestroySwapchainKHR( VkDevice device, VkSwapchainKHR swapchai
 static VkResult pw32_vkAllocateMemory( VkDevice device, const VkMemoryAllocateInfo *info,
                                        const VkAllocationCallbacks *allocator, VkDeviceMemory *memory )
 {
-    BOOL traced = pw32_traced() && info->allocationSize >= 0x1000000;
+    BOOL world = pw32_traced(), traced = world && pw_trace_enabled() && info->allocationSize >= 0x1000000;
     VkResult res;
 
     if (traced) ERR( "PWVK32 begin vkAllocateMemory %#llx type=%u\\n", (unsigned long long)info->allocationSize,
                      info->memoryTypeIndex );
     res = win32u_vkAllocateMemory( device, info, allocator, memory );
-    if (traced || (res && pw32_traced()))
+    if (traced || (res && world))
         ERR( "PWVK32 end vkAllocateMemory %#llx res=%d\\n", (unsigned long long)info->allocationSize, res );
     return res;
 }
@@ -2161,8 +2170,9 @@ static void pw_msgwait_note( DWORD count, DWORD timeout, DWORD wake_mask, DWORD 
     const char *woke = ret == WAIT_TIMEOUT ? "timeout" : ret == count - 1 ? "queue" : ret < count - 1 ? "handle" :
                        ret == STATUS_USER_APC ? "apc" : "other";
     unsigned int i;
+    extern int pw_trace_enabled( void );  /* alpha-1: traces only (platform/ps4/pw_trace.h) */
 
-    if (InterlockedIncrement( &pw_msgwait_lines ) > 3000) return;
+    if (!pw_trace_enabled() || InterlockedIncrement( &pw_msgwait_lines ) > 3000) return;
     for (i = 0; i < ARRAY_SIZE(pw_msgwait_tids); i++)
     {
         LONG owner = InterlockedCompareExchange( &pw_msgwait_tids[i], tid, 0 );
@@ -2237,8 +2247,9 @@ revise('dlls/win32u/message.c','''    do ret = NtWaitForMultipleObjects( count, 
         if (NtCurrentTeb()->WowTebOffset && pw_loops > 1)
         {
             static LONG lines;
+            extern int pw_trace_enabled( void );  /* alpha-1: traces only (platform/ps4/pw_trace.h) */
             NtQueryPerformanceCounter( &pw_end, NULL );
-            if (pw_end.QuadPart - pw_start.QuadPart > 1000000 && InterlockedIncrement( &lines ) <= 300)
+            if (pw_end.QuadPart - pw_start.QuadPart > 1000000 && pw_trace_enabled() && InterlockedIncrement( &lines ) <= 300)
                 ERR( "PWWAIT msgloop thread=%04x asked_ms=%d loops=%u first_ms=%d took_ms=%d ret=%#x\\n",
                      (int)GetCurrentThreadId(), timeout == INFINITE ? -1 : (int)timeout, pw_loops,
                      (int)((pw_first.QuadPart - pw_start.QuadPart) / 10000),
@@ -2259,10 +2270,11 @@ static void pw32_vk_slow( const char *what, const LARGE_INTEGER *start, VkResult
     static LONG lines;
     LARGE_INTEGER end;
     LONGLONG ms;
+    extern int pw_trace_enabled( void );  /* alpha-1: traces only (platform/ps4/pw_trace.h) */
 
     NtQueryPerformanceCounter( &end, NULL );
     ms = (end.QuadPart - start->QuadPart) / 10000;
-    if (ms < 100 || InterlockedIncrement( &lines ) > 600) return;
+    if (ms < 100 || !pw_trace_enabled() || InterlockedIncrement( &lines ) > 600) return;
     ERR( "PWWAIT vk thread=%04x %s took_ms=%d timeout_ms=%d res=%d\\n", (int)GetCurrentThreadId(), what, (int)ms,
          timeout == UINT64_MAX ? -1 : (int)min( timeout / 1000000, 0x7fffffff ), res );
 }
@@ -2315,6 +2327,119 @@ revise('dlls/win32u/vulkan.c','''    .p_vkAcquireNextImage2KHR = win32u_vkAcquir
     .p_vkAcquireNextImageKHR = pw32_vkAcquireNextImageKHR,  /* W272 */''','Acquire goes through the W272 timer.')
 revise('dlls/win32u/vulkan.c','''    .p_vkQueuePresentKHR = win32u_vkQueuePresentKHR,''','''    .p_vkQueuePresentKHR = pw32_vkQueuePresentKHR,  /* W272 */''',
        'Present goes through the W272 timer.')
+# W290 (user: after changing the visual style the text looks smaller until OrbisDesk restarts):
+# uxtheme applies the style's INI fonts ("MenuFont = Tahoma, 8") with lfHeight = the point size,
+# positive and not converted, to the volatile key only (no SPIF_UPDATEINIFILE). set_font_entry kept a
+# positive height, which reads back as an 8-pixel cell; load_entry, reading the same stored value at
+# the next start, takes a positive height as points. set_font_entry now converts it the same way.
+revise('dlls/win32u/sysparams.c','''    if (font.lfHeight < 0) font.lfHeight = map_from_system_dpi( font.lfHeight );
+
+    if (!save_entry( &entry->hdr, &font, sizeof(font), REG_BINARY, flags )) return FALSE;''','''    /* OrbisDesk W290: a positive height is points, as load_entry reads it from the registry; uxtheme
+     * applies a visual style's fonts that way, and they were an 8-pixel cell until the next start */
+    if (font.lfHeight > 0) font.lfHeight = -muldiv( font.lfHeight, USER_DEFAULT_SCREEN_DPI, 72 );
+    else if (font.lfHeight < 0) font.lfHeight = map_from_system_dpi( font.lfHeight );
+
+    if (!save_entry( &entry->hdr, &font, sizeof(font), REG_BINARY, flags )) return FALSE;''','A positive system font height set at run time is points, as when loaded (W290).')
+# W292 (user: change the desktop wallpaper): ps5drv loaded its wallpaper layer once, from
+# WINE_PS5_WALLPAPER. update_desktop_wallpaper (every SPI_SETDESKWALLPAPER, and explorer's at start)
+# now hands the registry's Wallpaper to ps5drv, which swaps the layer while running.
+revise('dlls/win32u/ps5drv.c','''    fprintf( stderr, "PWBOOT wallpaper_loaded %dx%d bpp=%d\\n", width, abs( height ), bpp );
+}
+''','''    fprintf( stderr, "PWBOOT wallpaper_loaded %dx%d bpp=%d\\n", width, abs( height ), bpp );
+}
+
+/* OrbisDesk W292: the wallpaper chosen while running (sysparams.c update_desktop_wallpaper: every
+ * SPI_SETDESKWALLPAPER, and explorer's at start with the registry's value); a DOS path, empty for
+ * none. A file that does not load keeps the current wallpaper. */
+static char wallpaper_path[4096];
+
+void ps5_set_wallpaper( const WCHAR *dos_path )
+{
+    char *unix_path = NULL;
+    UINT32 *old;
+    RECT all;
+
+    if (!screen) return;  /* not the PS4 display driver */
+    if (dos_path && *dos_path && (ntdll_get_unix_file_name( dos_path, &unix_path, FILE_OPEN ) || !unix_path))
+    {
+        fprintf( stderr, "PWBOOT wallpaper_failed path %s\\n", debugstr_w(dos_path) );
+        free( unix_path );
+        return;
+    }
+    pthread_mutex_lock( &screen_lock );
+    if (!strcmp( wallpaper_path, unix_path ? unix_path : "" ))
+    {
+        pthread_mutex_unlock( &screen_lock );
+        free( unix_path );
+        return;
+    }
+    old = background;
+    background = NULL;
+    if (unix_path) load_background( unix_path );
+    if (unix_path && !background)
+    {
+        background = old;  /* load_background logged why */
+        old = NULL;
+    }
+    else snprintf( wallpaper_path, sizeof(wallpaper_path), "%s", unix_path ? unix_path : "" );
+    free_pixels( old );
+    SetRect( &all, 0, 0, screen_width, screen_height );
+    compose_rect( &all );   /* CPU composition; returns at once while the GPU stacks the layers */
+    present_screen();
+    pthread_mutex_unlock( &screen_lock );
+    fprintf( stderr, "PWBOOT wallpaper_set %s unix=%s\\n", debugstr_w(dos_path), wallpaper_path[0] ? wallpaper_path : "(none)" );
+    free( unix_path );
+}
+''','Wallpaper layer replaced while running (W292).')
+revise('dlls/win32u/ps5drv.c','''    load_background( getenv( "WINE_PS5_WALLPAPER" ));
+#ifdef __ORBIS__''','''    load_background( getenv( "WINE_PS5_WALLPAPER" ));
+    if (background) snprintf( wallpaper_path, sizeof(wallpaper_path), "%s", getenv( "WINE_PS5_WALLPAPER" ));  /* W292 */
+#ifdef __ORBIS__''','The boot wallpaper is the current one (W292).')
+revise('dlls/win32u/sysparams.c','''static BOOL update_desktop_wallpaper(void)
+{
+    /* FIXME: move implementation from user32 */
+    entry_DESKWALLPAPER.hdr.loaded = entry_DESKPATTERN.hdr.loaded = FALSE;
+    return TRUE;
+}''','''extern void ps5_set_wallpaper( const WCHAR *dos_path );  /* ps5drv.c (W292) */
+
+static BOOL update_desktop_wallpaper(void)
+{
+    WCHAR path[MAX_PATH];
+
+    /* FIXME: move implementation from user32 */
+    entry_DESKWALLPAPER.hdr.loaded = entry_DESKPATTERN.hdr.loaded = FALSE;
+    /* OrbisDesk W292: ps5drv draws the wallpaper itself, as a layer under every window */
+    if (get_entry( &entry_DESKWALLPAPER, ARRAY_SIZE(path), path )) ps5_set_wallpaper( path );
+    return TRUE;
+}''','SPI_SETDESKWALLPAPER reaches ps5drv\'s wallpaper layer (W292).')
+# W293 (W292: no feedback between a click on a program and its window, seconds for a 32-bit game): a top-level window
+# shown for the first time ends the overlay's "app starting" pointer (native/hw_overlay.c, through the sink), unless it
+# is a menu, the desktop, a tooltip, the taskbar or a tool window.
+revise('dlls/win32u/ps5drv.c','''static void ps5_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,''','''/* W293: a top-level window just shown ends the "app starting" pointer (the sink, native/hw_overlay.c); not a menu,
+ * the desktop, a tooltip, the taskbar or a tool window. Called outside the screen lock. */
+extern void pw_wine_window_shown( HWND hwnd, const char *class_name );
+static void report_shown( HWND hwnd )
+{
+    static const char *const skip[] = {"#32768", "#32769", "tooltips_class32", "Shell_TrayWnd", "Progman", "WorkerW"};
+    WCHAR buffer[64];
+    UNICODE_STRING name = {0, sizeof(buffer), buffer};
+    char class_name[64];
+    INT i, len;
+
+    if (NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_TOOLWINDOW) return;
+    if ((len = NtUserGetClassName( hwnd, FALSE, &name )) <= 0) return;
+    for (i = 0; i < len && i < (INT)sizeof(class_name) - 1; i++) class_name[i] = buffer[i] < 0x80 ? buffer[i] : '?';
+    class_name[i] = 0;
+    for (i = 0; i < ARRAY_SIZE(skip); i++) if (!strcmp( class_name, skip[i] )) return;
+    pw_wine_window_shown( hwnd, class_name );
+}
+
+static void ps5_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,''',
+       'A window shown ends the app starting pointer (W293).')
+revise('dlls/win32u/ps5drv.c','''    if (repaint) NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
+}''','''    if (repaint) NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
+    if (repaint) report_shown( hwnd );  /* W293 */
+}''','A window shown ends the app starting pointer (W293).')
 target=overlay/'dlls/win32u/freetype.c'
 target.write_text(target.read_text().replace('dlclose(ft_handle);','/* Static FreeType: no dynamic library handle to close. */'))
 makefile=(UNIX/'Makefile').read_text().splitlines()
