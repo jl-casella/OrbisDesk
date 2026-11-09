@@ -62,36 +62,46 @@ def assemble():
     shutil.copyfile(RESULTS / 'product-build.json', output / 'build-provenance.json')
     shutil.copyfile(ROOT / 'THIRD_PARTY.md', output / 'THIRD_PARTY.md')
     shutil.copytree(ROOT / 'LICENSES', output / 'LICENSES')
-    # Only the producer's fresh runtime is archived, never /data from a console.
-    archive = output / 'OrbisDesk-runtime.tar.gz'
-    with tarfile.open(archive, 'w:gz', dereference=False) as tar:
-        tar.add(runtime, arcname='data', recursive=True)
-    # GitHub limits individual release assets to 2 GiB. Split without buffering GiBs.
-    if archive.stat().st_size > 1900 * 1024 * 1024:
-        with archive.open('rb') as stream:
-            number = 0
-            while True:
-                data = stream.read(1024 * 1024)
-                if not data:
-                    break
-                with (output / (archive.name + f'.part{number:03}')).open('wb') as part:
-                    part.write(data)
-                    remaining = 1899 * 1024 * 1024
-                    while remaining:
-                        chunk = stream.read(min(1024 * 1024, remaining))
-                        if not chunk:
-                            break
-                        part.write(chunk)
-                        remaining -= len(chunk)
-                number += 1
-        archive.unlink()
-    (output / 'INSTALL.txt').write_text(
-        'Install OrbisDesk.pkg with your existing homebrew package installer.\n'
-        'Extract OrbisDesk-runtime.tar.gz to a new staging directory, then transfer the data/ contents to /data.\n'
-        'For split archives first concatenate OrbisDesk-runtime.tar.gz.part* in lexical order.\n'
-        'Back up existing registries, documents, settings and saves before replacing runtime files.\n'
-        'This archive is a fresh runtime, not a merge-aware updater. No FTP deployment is automatic.\n'
-        'Experimental build: package/import checks only; desktop smoke and physical acceptance are pending.\n')
+    # alpha-1: a package that carries the runtime installs it on its first start (native/hw_install.h);
+    # the release is then the package alone. Older recipes ship the runtime as an archive.
+    if product.get('runtime_embedded', {}).get('embedded'):
+        (output / 'INSTALL.txt').write_text(
+            'Install OrbisDesk.pkg with your existing homebrew package installer and start it.\n'
+            'The first start of each version installs the runtime into /data (about 1.1 GB; it shows its progress).\n'
+            'Documents, saves, Steam games and your settings stay; files earlier versions shipped are replaced.\n'
+            'If it reports INSTALL FAILED, free the space it names (or report the screen), then start again.\n'
+            'Experimental build: package/import checks only; desktop smoke and physical acceptance are pending.\n')
+    else:
+        # Only the producer's fresh runtime is archived, never /data from a console.
+        archive = output / 'OrbisDesk-runtime.tar.gz'
+        with tarfile.open(archive, 'w:gz', dereference=False) as tar:
+            tar.add(runtime, arcname='data', recursive=True)
+        # GitHub limits individual release assets to 2 GiB. Split without buffering GiBs.
+        if archive.stat().st_size > 1900 * 1024 * 1024:
+            with archive.open('rb') as stream:
+                number = 0
+                while True:
+                    data = stream.read(1024 * 1024)
+                    if not data:
+                        break
+                    with (output / (archive.name + f'.part{number:03}')).open('wb') as part:
+                        part.write(data)
+                        remaining = 1899 * 1024 * 1024
+                        while remaining:
+                            chunk = stream.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                break
+                            part.write(chunk)
+                            remaining -= len(chunk)
+                    number += 1
+            archive.unlink()
+        (output / 'INSTALL.txt').write_text(
+            'Install OrbisDesk.pkg with your existing homebrew package installer.\n'
+            'Extract OrbisDesk-runtime.tar.gz to a new staging directory, then transfer the data/ contents to /data.\n'
+            'For split archives first concatenate OrbisDesk-runtime.tar.gz.part* in lexical order.\n'
+            'Back up existing registries, documents, settings and saves before replacing runtime files.\n'
+            'This archive is a fresh runtime, not a merge-aware updater. No FTP deployment is automatic.\n'
+            'Experimental build: package/import checks only; desktop smoke and physical acceptance are pending.\n')
     # Licenses are a single upload asset; never accidentally publish arbitrary tree files.
     with tarfile.open(output / 'LICENSES.tar.gz', 'w:gz') as tar:
         tar.add(output / 'LICENSES', arcname='LICENSES')

@@ -31,11 +31,11 @@
 #include <limits.h>
 #include <pthread.h>
 /* W001 and W002 sources and evidence: reports/wine-hardware-w00N/release-w00N. */
-#define HW_BUILD "W302"
+#define HW_BUILD "W303"
 #ifndef HW_VERSION
-#define HW_VERSION "04.01"
+#define HW_VERSION "04.02"
 #endif
-#define HW_DIR "/data/orbisdesk/w302"
+#define HW_DIR "/data/orbisdesk/w303"
 #define HW_EXE "C:\\windows\\explorer.exe"
 #define HW_RESULT "text-result.txt"
 #ifndef PW_MANGOHUD_LAYER_ENABLED
@@ -996,6 +996,7 @@ static void merge_system_reg(void)
     free(out);free(table);free(build);free(live);
 }
 
+#include "hw_install.h"  /* alpha-1: the first-run installer (uses note, read_whole and the loading screen) */
 int main(void)
 {
     pw_brand_prepare_state();
@@ -1043,6 +1044,13 @@ int main(void)
         int moved=sceKernelRename(result,archived);
         note(HW_BUILD " result_archived rc=0x%08x to=%s\n",(unsigned)moved,archived);
         if(moved){panel("RESULT ARCHIVE FAILED","READ THE FTP LOG");for(;;)sceKernelUsleep(1000000);}
+    }
+    /* alpha-1: the runtime the package carries, into /data on the first start of a build (native/hw_install.h).
+     * Before the jailbreak: GoldHEN's escape from the sandbox takes /app0 away (W303's Root start found no
+     * /app0/runtime, errno 2); the sandbox writes /data as Wine does there. */
+    {
+        char detail[96]={0};
+        if(hw_install_runtime(detail,sizeof(detail))) {panel("INSTALL FAILED",detail);for(;;)sceKernelUsleep(1000000);}
     }
     if(boot_root) pw_hw_jailbreak();  /* phase 10: Root on the loading screen */
     merge_system_reg();

@@ -10,6 +10,8 @@ loading not supported"), so every module importing it failed to load with
 ERROR_DLL_INIT_FAILED: iphlpapi, and through it MangoHud's layer."""
 import hashlib,json,pathlib,shlex,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 SOURCE=ROOT/'.deps/wine/source';UNIX=ROOT/'.deps/wine/ps4-unix';work=ROOT/'build/unixlibs-ps4'
 # A unit is a Wine source compiled with its own recipe, or (recipe, platform source): a file of
 # platform/ps4 compiled with that Wine recipe's flags and include paths.
@@ -52,7 +54,7 @@ def recipe(target):
         line=makefile[index];parts.append(line.rstrip().removesuffix('\\'))
         if not line.rstrip().endswith('\\'):break
         index+=1
-    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2')
+    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2 '+PREFIX_MAP)
 report={'schema_version':1,'wine_commit':commit,'results':[],'libraries':{}}
 for lib,units in LIBS.items():
     objects=[]

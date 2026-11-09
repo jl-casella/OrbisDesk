@@ -7,8 +7,10 @@ W119, phase 2 of the PE32 plan. The DLLs are built as PE32 in the pinned host Wi
 tree; modules the sealed prefix already has in syswow64 are left out. Nothing is patched.
 Output: out/wine-i386/i386-windows/*.dll and manifest.json; tools/build-wine-hardware.py
 copies them to C:\\windows\\syswow64 and wine/lib/wine/i386-windows.
+W261 extras may overlay populated prefixes only after exact source/PE identity checks.
 """
 import hashlib,json,pathlib,re,struct,subprocess,tarfile
+from wine_staging import verify_module_copy
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build';out=ROOT/'out/wine-i386'
 (out/'i386-windows').mkdir(parents=True,exist_ok=True);(out/'x86_64-windows').mkdir(parents=True,exist_ok=True)
@@ -54,7 +56,10 @@ W261_I386=(
     'd3dcompiler_42.dll', 'd3dcompiler_43.dll', 'd3dcompiler_46.dll', 'd3dim.dll', 'd3dim700.dll', 'd3drm.dll',
     'd3dx10_33.dll', 'd3dx10_34.dll', 'd3dx10_35.dll', 'd3dx10_36.dll', 'd3dx10_37.dll', 'd3dx10_38.dll',
     'd3dx10_39.dll', 'd3dx10_40.dll', 'd3dx10_41.dll', 'd3dx10_42.dll', 'd3dx10_43.dll', 'd3dx11_42.dll',
-    'd3dx11_43.dll', 'davclnt.dll', 'dbgeng.dll', 'dciman32.dll', 'dcomp.dll', 'ddrawex.dll', 'dhcpcsvc6.dll',
+    'd3dx11_43.dll',
+    # W303: D3DX9, all versions (Alan Wake's American Nightmare imports d3dx9_43; W302 reported it missing)
+    'd3dx9_24.dll', 'd3dx9_25.dll', 'd3dx9_26.dll', 'd3dx9_27.dll', 'd3dx9_28.dll', 'd3dx9_29.dll', 'd3dx9_30.dll', 'd3dx9_31.dll', 'd3dx9_32.dll', 'd3dx9_33.dll', 'd3dx9_34.dll', 'd3dx9_35.dll', 'd3dx9_36.dll', 'd3dx9_37.dll', 'd3dx9_38.dll', 'd3dx9_39.dll', 'd3dx9_40.dll', 'd3dx9_41.dll', 'd3dx9_42.dll', 'd3dx9_43.dll',
+    'davclnt.dll', 'dbgeng.dll', 'dciman32.dll', 'dcomp.dll', 'ddrawex.dll', 'dhcpcsvc6.dll',
     'dhtmled.ocx', 'diasymreader.dll', 'directmanipulation.dll', 'dispex.dll', 'dmusic32.dll', 'dplay.dll',
     'dpnaddr.dll', 'dpnet.dll', 'dpnhupnp.dll', 'dpnlobby.dll', 'dpvoice.dll', 'dpwsockx.dll', 'drmclien.dll',
     'dsdmo.dll', 'dsquery.dll', 'dsrole.dll', 'dssenh.dll', 'dsuiext.dll', 'dx8vb.dll', 'dxcore.dll', 'dxdiagn.dll',
@@ -102,10 +107,15 @@ W261_I386=(
     'xactengine3_6.dll', 'xactengine3_7.dll', 'xapofx1_1.dll', 'xapofx1_2.dll', 'xapofx1_3.dll', 'xapofx1_4.dll',
     'xapofx1_5.dll', 'xaudio2_0.dll', 'xaudio2_1.dll', 'xaudio2_2.dll', 'xaudio2_3.dll', 'xaudio2_4.dll',
     'xaudio2_5.dll', 'xaudio2_6.dll', 'xaudio2_7.dll', 'xaudio2_8.dll', 'xaudio2_9.dll', 'xinputuap.dll',
-    'xmllite.dll', 'xolehlp.dll', 'xpssvcs.dll',)
+    'xmllite.dll', 'xolehlp.dll', 'xpssvcs.dll',
+    # W303: imported (delay-loaded) by msi, itss, inetcomm, wmp, wmphoto and others above. Earlier sealed prefixes
+    # had them from a host tree that had built every module; a prefix made from the closure alone does not.
+    'urlmon.dll', 'windowscodecs.dll', 'wininet.dll', 'wintrust.dll',
+    # W303: the 32-bit Gecko (xul.dll) imports it; earlier sealed prefixes had it in syswow64
+    'userenv.dll',)
 W261_X64=(
     'acledit.dll', 'aclui.dll', 'activeds.dll', 'actxprxy.dll', 'adsldp.dll', 'adsldpc.dll', 'amsi.dll',
-    'amstream.dll', 'apphelp.dll', 'atl.dll', 'atl110.dll', 'atl80.dll', 'atl90.dll', 'atlthunk.dll', 'atmlib.dll',
+    'amstream.dll', 'apphelp.dll', 'atl.dll', 'atl100.dll', 'atl110.dll', 'atl80.dll', 'atl90.dll', 'atlthunk.dll', 'atmlib.dll',
     'authz.dll', 'avicap32.dll', 'bcryptprimitives.dll', 'bluetoothapis.dll', 'browseui.dll', 'cdosys.dll',
     'chakra.dll', 'cldapi.dll', 'colorcnv.dll', 'comcat.dll', 'comsvcs.dll', 'concrt140.dll', 'connect.dll',
     'credui.dll', 'crtdll.dll', 'cryptdlg.dll', 'cryptdll.dll', 'cryptext.dll', 'cryptxml.dll', 'ctl3d32.dll',
@@ -115,6 +125,8 @@ W261_X64=(
     'd3dcompiler_46.dll', 'd3dim.dll', 'd3dim700.dll', 'd3drm.dll', 'd3dx10_33.dll', 'd3dx10_34.dll',
     'd3dx10_35.dll', 'd3dx10_36.dll', 'd3dx10_37.dll', 'd3dx10_38.dll', 'd3dx10_39.dll', 'd3dx10_40.dll',
     'd3dx10_41.dll', 'd3dx10_42.dll', 'd3dx10_43.dll', 'd3dx11_42.dll', 'd3dx11_43.dll', 'd3dxof.dll',
+    # W303: D3DX9, all versions (as for 32-bit programs)
+    'd3dx9_24.dll', 'd3dx9_25.dll', 'd3dx9_26.dll', 'd3dx9_27.dll', 'd3dx9_28.dll', 'd3dx9_29.dll', 'd3dx9_30.dll', 'd3dx9_31.dll', 'd3dx9_32.dll', 'd3dx9_33.dll', 'd3dx9_34.dll', 'd3dx9_35.dll', 'd3dx9_36.dll', 'd3dx9_37.dll', 'd3dx9_38.dll', 'd3dx9_39.dll', 'd3dx9_40.dll', 'd3dx9_41.dll', 'd3dx9_42.dll', 'd3dx9_43.dll',
     'davclnt.dll', 'dbgeng.dll', 'dciman32.dll', 'dcomp.dll', 'ddraw.dll', 'ddrawex.dll', 'dhcpcsvc6.dll',
     'dhtmled.ocx', 'diasymreader.dll', 'directmanipulation.dll', 'dispex.dll', 'dmusic32.dll', 'dplay.dll',
     'dplayx.dll', 'dpnaddr.dll', 'dpnet.dll', 'dpnhupnp.dll', 'dpnlobby.dll', 'dpvoice.dll', 'dpwsockx.dll',
@@ -274,8 +286,9 @@ def imports(path):
             at+=entry_size
     return sorted(names)
 with tarfile.open(ROOT/'reports/increment15/prefix-package/prefix.tar.gz') as archive:
+    # W303: directly in syswow64, as below (not syswow64/Speech/Engines/TTS/msttsengine.dll and the like)
     present={pathlib.PurePosixPath(m.name).name.lower() for m in archive
-             if m.isfile() and '/syswow64/' in m.name}
+             if m.isfile() and pathlib.PurePosixPath(m.name).parent.as_posix().lower()=='prefix/drive_c/windows/syswow64'}
 # W260: the i386 msvfw32.dll (avifil32's import) is tools/stage-dshow-i386.py's (W225), which refuses a module
 # already staged elsewhere
 present.add('msvfw32.dll')
@@ -381,7 +394,8 @@ class W261Registrar:
         self.at=i;return word
     def peek(self):return self.text[self.at:self.at+2]
     def run(self,emit):
-        roots={'HKCR':'HKCR','HKEY_CLASSES_ROOT':'HKCR','HKLM':'HKLM','HKEY_LOCAL_MACHINE':'HKLM'}
+        roots={'HKCR':'HKCR','HKEY_CLASSES_ROOT':'HKCR','HKLM':'HKLM','HKEY_LOCAL_MACHINE':'HKLM',
+               'HKCU':'HKCU','HKEY_CURRENT_USER':'HKCU'}
         word=self.word()
         while word:
             if word.upper() not in roots:raise SystemExit('Unsupported root key: '+word)
@@ -426,11 +440,25 @@ def w261_reg_data(data):
     return 'hex:'+','.join('%02x'%b for b in value)
 with tarfile.open(ROOT/'reports/increment15/prefix-package/prefix.tar.gz') as archive:
     w261_sealed={'i386-windows':set(),'x86_64-windows':set()};w261_sealed_keys=set()
+    w261_existing={'i386-windows':{},'x86_64-windows':{}};w261_user=[]
+    requested={'i386-windows':set(W261_I386),'x86_64-windows':set(W261_X64)}
     for member in archive:
         if not member.isfile():continue
         name=pathlib.PurePosixPath(member.name).name
-        if '/syswow64/' in member.name:w261_sealed['i386-windows'].add(name.lower())
-        elif '/system32/' in member.name:w261_sealed['x86_64-windows'].add(name.lower())
+        # W303: only modules directly in syswow64/system32 resolve imports (and are the ones verified below); a
+        # prefix made by a host Wine with every dependency also has e.g. syswow64/Speech/Engines/TTS/msttsengine.dll
+        parent=pathlib.PurePosixPath(member.name).parent.as_posix().lower()
+        if parent=='prefix/drive_c/windows/syswow64':w261_sealed['i386-windows'].add(name.lower())
+        elif parent=='prefix/drive_c/windows/system32':w261_sealed['x86_64-windows'].add(name.lower())
+        for arch,windows in (('i386-windows','syswow64'),('x86_64-windows','system32')):
+            if pathlib.PurePosixPath(member.name).parent.as_posix().lower()!='prefix/drive_c/windows/'+windows:continue
+            if name.lower() not in requested[arch]:continue
+            if name.lower() in w261_existing[arch]:raise SystemExit('Duplicate prefix module: '+member.name)
+            source=next((p for p in (BUILD/'dlls'/name.lower().rsplit('.',1)[0]/arch/name.lower(),
+                                    BUILD/'dlls'/name.lower()/arch/name.lower()) if p.is_file()),None)
+            if source is None:raise SystemExit('No configured build output for '+member.name)
+            w261_existing[arch][name.lower()]=[verify_module_copy(
+                arch,name.lower(),source,archive.extractfile(member).read(),'prefix:'+member.name)]
         if name=='system.reg':
             sealed_text=archive.extractfile(member).read().decode('utf-8','replace')
             w261_sealed_keys={m.group(1).lower() for m in re.finditer(r'^\[(.*)\](?: \d+)?$',sealed_text,re.M)}
@@ -452,11 +480,22 @@ for arch,names,view in (('i386-windows',W261_I386,w261_sealed['i386-windows']|pr
     folder=out/'w261'/arch;folder.mkdir(parents=True,exist_ok=True)
     for old in folder.iterdir():old.unlink()
     listed=set(names);view=view|W261_OTHERS[arch];w261[arch]={}
-    clash=sorted(listed&(view|w261_left))
-    if clash:raise SystemExit('W261 '+arch+': listed and also in the view or left out: '+', '.join(clash))
+    clash=sorted(listed&(w261_left|W261_OTHERS[arch]))
+    if clash:raise SystemExit('W261 '+arch+': listed and also explicitly assigned elsewhere or left out: '+', '.join(clash))
+    providers=[(out,staged if arch=='i386-windows' else staged64)]
+    if arch=='x86_64-windows':
+        providers += [(ROOT/pathlib.Path(path).parent,json.loads((ROOT/path).read_text())['modules'])
+                      for path in ('out/wine-pe64/manifest.json','out/wine-gui/manifest.json','out/wine-programs/manifest.json')]
     for name in names:
         source=next((p for p in (BUILD/'dlls'/name.rsplit('.',1)[0]/arch/name,BUILD/'dlls'/name/arch/name) if p.is_file()),None)
         if not source:raise SystemExit('Not built: dlls/%s/%s/%s'%(name.rsplit('.',1)[0],arch,name))
+        for directory,modules in providers:
+            if name not in modules:continue
+            entry=modules[name];path=directory/entry['path']
+            w261_existing[arch].setdefault(name,[]).append(verify_module_copy(
+                arch,name,source,path.read_bytes(),str(path.relative_to(ROOT)),entry['sha256']))
+        if name in view and name not in w261_existing[arch]:
+            raise SystemExit('W261 '+arch+': overlap has no verified provider: '+name)
         for imported in imports(source):
             if imported in view or imported in listed or re.match(r'^(api|ext)-ms-',imported):continue
             w261_problems.append('%s %s imports %s (%s)'%(arch,name,imported,'left out' if imported in w261_left else 'not in the view'))
@@ -471,10 +510,34 @@ for arch,names,view in (('i386-windows',W261_I386,w261_sealed['i386-windows']|pr
         source=folder/name if name in listed else locate(name,arch)
         texts=w261_registry_scripts(source)
         for text in texts:
+            # W303: HKCU (urlmon's Internet Settings) belongs to user.reg, which the sealed prefix's registration of the
+            # module's other view already wrote; checked against it below, never written to system.reg
             W261Registrar(text,{'MODULE':'C:\\windows\\system32\\'+name,'SystemRoot':'C:\\windows'}).run(
-                lambda key,value_name,data:w261_emit(w261_views(arch,key),value_name,data))
+                lambda key,value_name,data:w261_user.append((name,key[1:],value_name,data)) if key[0]=='HKCU' else
+                    w261_emit(w261_views(arch,key),value_name,data))
         if texts:w261_registered.setdefault(arch,[]).append(name)
 if w261_problems:raise SystemExit('W261 lists are incomplete:\n  '+'\n  '.join(w261_problems))
+with tarfile.open(ROOT/'reports/increment15/prefix-package/prefix.tar.gz') as archive:
+    sealed_user=archive.extractfile('prefix/user.reg').read().decode('utf-8','replace').lower()
+# What the sealed user.reg lacks (a prefix made from the closure alone did not register urlmon there) goes to
+# user.reg.add, which tools/build-wine-hardware.py appends to the shipped user.reg, as system.reg.add to system.reg.
+user_values={};user_order=[]
+for module,key,value_name,data in w261_user:
+    path='\\\\'.join(w261_escape(part) for part in key)
+    if path not in user_values:user_values[path]={};user_order.append(path)
+    if value_name is not None:user_values[path][value_name]=data
+sealed_blocks={}
+for chunk in sealed_user.split('\n[')[1:]:
+    head,_,body=chunk.partition('\n');sealed_blocks[head.rsplit(']',1)[0]]=body.split('\n[',1)[0]
+user_text='';user_keys=0
+for path in user_order:
+    body=sealed_blocks.get(path.lower())
+    lines=[('@' if n=='' else '"'+w261_escape(n)+'"')+'='+w261_reg_data(d) for n,d in user_values[path].items()
+           if body is None or ('@=' if n=='' else '"'+w261_escape(n).lower()+'"=') not in body]
+    # a key with nothing to add: kept when it is there, or implied by a deeper key (Wine saves only those)
+    if not lines and (body is not None or any(p.lower().startswith(path.lower()+'\\\\') for p in user_order+list(sealed_blocks))):continue
+    user_text+='\n['+path+'] 1793390636\n#time=1dd68a9cb52bf36\n'+''.join(line+'\n' for line in lines);user_keys+=1
+(out/'user.reg.add').write_text(user_text)
 w261_text='';w261_keys=0;w261_kept=0
 for key,name in w261_order:
     if name is not None:continue
@@ -496,7 +559,10 @@ manifest={'schema_version':1,'modules_x64':staged64,'wine_commit':wine_commit,'t
           'builder_sha256':sha(pathlib.Path(__file__)),
           # W261: syswow64/system32 only (tools/build-wine-hardware.py), their registration, what is left out
           'w261':w261,'w261_left_out':W261_LEFT_OUT,'w261_registered':w261_registered,
-          'registry':{'path':'system.reg.add','sha256':sha(out/'system.reg.add'),'keys':w261_keys,'sealed_values_kept':w261_kept}}
+          'w261_verified_overlays':w261_existing,
+          'w261_left_out_present_in_prefix':{arch:sorted(names&w261_left) for arch,names in w261_sealed.items()},
+          'registry':{'path':'system.reg.add','sha256':sha(out/'system.reg.add'),'keys':w261_keys,'sealed_values_kept':w261_kept},
+          'user_registry':{'path':'user.reg.add','sha256':sha(out/'user.reg.add'),'keys':user_keys}}
 (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
 print(json.dumps({'w261':{arch:len(m) for arch,m in w261.items()},'w261_registry_keys':w261_keys,
                   'w261_bytes':{arch:sum((out/e['path']).stat().st_size for e in m.values()) for arch,m in w261.items()}}))

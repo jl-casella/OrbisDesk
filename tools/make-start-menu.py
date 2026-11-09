@@ -34,8 +34,8 @@ GRAPHICS=[('glxgears',ORBIS+'glxgears.exe','OpenGL gears through Zink and Vulkan
           ('vkcube',ORBIS+'vkcube.exe','Vulkan cube (Vulkan-Tools)','',ORBIS+'icons\\vkcube.ico'),
           ('vkspin',ORBIS+'vkspin64.exe','Vulkan spinning triangle','',ORBIS+'icons\\vkspin64.ico'),
           ('MangoHud Config',SYS+'notepad.exe','Edit the MangoHud overlay settings',
-           # W092: %APPDATA% is the prefix's host profile (W091: C:\users\jose\AppData\Roaming)
-           'C:\\users\\jose\\AppData\\Roaming\\MangoHud\\MangoHud.conf',ORBIS+'icons\\mangohud.ico')]
+           # W092: %APPDATA% follows the registry's shell folders, C:\users\orbis since alpha-1 (build-wine-hardware.py)
+           'C:\\users\\orbis\\AppData\\Roaming\\MangoHud\\MangoHud.conf',ORBIS+'icons\\mangohud.ico')]
 # W177 (phase 9): Programs/Internet. SeaMonkey 2.53 is the browser (the user's choice; it replaced
 # Pale Moon, W177-W215, whose shortcuts build-wine-hardware.py deletes on the console). It is not in
 # the package: the shortcut expects the user's own copy in C:\Program Files\SeaMonkey and passes a
@@ -98,10 +98,6 @@ MULTIMEDIA=[('DVD Player',VLC,'Play the DVD in drive L: (VLC, Direct3D 9 video)'
             ('VLC media player',VLC,'Play video and music files (VLC)',VLC_OPTIONS+' --vout=direct3d9,wingdi',VLC),
             ('VLC plugin cache',VLC_DIR+'vlc-cache-gen.exe','Optional, once after each update: VLC then starts faster',
              '"'+VLC_DIR+'plugins"',VLC)]
-# W114: 3D Pinball only when tools/build-games.py --pinball staged it (game data not included).
-games=ROOT/'out/games/manifest.json'
-if games.is_file() and 'SpaceCadetPinball.exe' in json.loads(games.read_text())['system32']:
-    MENU['Programs/Games'].append(('3D Pinball','SpaceCadetPinball.exe','Space Cadet pinball (needs PINBALL.DAT)'))
 LINK_CLSID=bytes.fromhex('0114020000000000c000000000000046')  # {00021401-0000-0000-C000-000000000046}
 HAS_LINK_INFO,HAS_NAME,HAS_WORKING_DIR,HAS_ARGUMENTS,HAS_ICON_LOCATION,IS_UNICODE=0x2,0x4,0x10,0x20,0x40,0x80
 def string(text):return struct.pack('<H',len(text))+text.encode('utf-16-le')

@@ -25,6 +25,8 @@ Outputs, in build/steam-hosted/:
 This builder never uploads and never touches the hardware ELF's build."""
 import hashlib,json,os,pathlib,shutil,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1];SDK=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 PLAYDEN=ROOT/'upstream/playden-ps5';REVISION='fb74dbfd6bb96fc19a96afc1f48a4e40a885216b'
 VK=pathlib.Path.home()/'vk-h0'
 STB=(ROOT/'.deps/steam/downloads/stb/stb_image.h','594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3')
@@ -45,7 +47,10 @@ EXPORTS=['pw_hw_steam_open','pw_hw_steam_draw','pw_hw_steam_pad','pw_hw_steam_ac
 NEW_IMPORTS={'sceNetRecv','sceNetResolverAbort','sceNetGetDnsInfo','__pthread_cleanup_push_imp',
              '__pthread_cleanup_pop_imp','pthread_equal','pw_hw_root_mode'}
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
-if (PLAYDEN/'REVISION').read_text().strip()!=REVISION:raise SystemExit('upstream/playden-ps5 is not at '+REVISION)
+# an export carries REVISION; a clone from tools/restore-dependencies.py (the clean product build) its HEAD
+playden_revision=((PLAYDEN/'REVISION').read_text().strip() if (PLAYDEN/'REVISION').is_file() else
+                  subprocess.run(['git','-C',str(PLAYDEN),'rev-parse','HEAD'],capture_output=True,text=True).stdout.strip())
+if playden_revision!=REVISION:raise SystemExit('upstream/playden-ps5 is not at '+REVISION)
 for path,expected in (STB,CACERT,*((QRDIR/n,h) for n,h in QRCODEGEN.items()),*((GBEDIR/n,h) for n,h in GBE.items())):
     if not path.is_file() or sha(path)!=expected:raise SystemExit('missing or changed: %s'%path)
 deps=ROOT/'build/steam-deps-ps4/prefix';curl_src=ROOT/'build/steam-deps-ps4/src/curl-8.22.0'
@@ -65,7 +70,7 @@ for patch in sorted((ROOT/'native/steam/patches').glob('*.patch')):run(['patch',
 (work/'third_party').mkdir();shutil.copyfile(STB[0],work/'third_party/stb_image.h')
 
 target=['--target=x86_64-pc-freebsd12-elf','-D__ORBIS__','-fPIC','-funwind-tables','-march=btver2','-O2','-g',
-        '-ffile-prefix-map=%s/='%work,'-DSTEAM_UI_HOSTED','-DMBEDTLS_USER_CONFIG_FILE="mbedtls_user_config.h"',
+        *PREFIX_MAP,'-ffile-prefix-map=%s/='%work,'-DSTEAM_UI_HOSTED','-DMBEDTLS_USER_CONFIG_FILE="mbedtls_user_config.h"',
         '-DCURL_STATICLIB']
 # the libc overlay Mesa's Wine variant is built with (tools/vk-h0/build-mesa.sh): FreeBSD's clock numbers and
 # no C++ overloads in <math.h> (libc++ 21 brings its own), with the same feature macros. __PS4__ and
@@ -138,7 +143,11 @@ COMPILER_WEAK={'DW.ref.__gxx_personality_v0','__clang_call_terminate'}
 weak_c=sorted(name for name in symbols(out,False)-exported-COMPILER_WEAK if not name.startswith('_Z'))
 if weak_c:raise SystemExit('weak C symbols in the object: '+', '.join(weak_c))
 wine_elves=sorted(ROOT.glob('build/wine-hardware-w*/wine.elf'),key=lambda p:p.stat().st_mtime)
-if not wine_elves:raise SystemExit('no build/wine-hardware-w*/wine.elf to check against')
+# A clean workspace (tools/ci/build-product.py) has no earlier hardware ELF yet: then the bootstrap ELF
+# tools/link-wine-boot.py made, which the hardware ELF is relinked from (tools/build-wine-hardware.py) and
+# which lacks only the hardware wrapper's own objects. Anything missing there still fails here.
+if not wine_elves and (ROOT/'build/wine-boot/bootstrap.elf').is_file():wine_elves=[ROOT/'build/wine-boot/bootstrap.elf']
+if not wine_elves:raise SystemExit('no build/wine-hardware-w*/wine.elf or build/wine-boot/bootstrap.elf to check against')
 wine=wine_elves[-1]
 # what the hardware ELF's link resolves: wine.elf's own symbols (any binding: __dso_handle comes from its
 # link script, compiler-rt's helpers are hidden) and its imports, plus whatever its static libraries
@@ -202,7 +211,7 @@ ico+=b''.join(data for _,data in images)
 (work/'steam-open.ico').write_bytes(ico)
 (work/'steam-open.rc').write_text('1 ICON "steam-open.ico"\n')
 run(['x86_64-w64-mingw32-windres','-O','coff','steam-open.rc','-o','steam-open-res.o'])
-run(['x86_64-w64-mingw32-gcc','-O2','-Wall','-Wextra','-Werror','-mwindows','-Wl,--no-insert-timestamp',
+run(['x86_64-w64-mingw32-gcc','-O2','-Wall','-Wextra','-Werror','-mwindows','-Wl,--no-insert-timestamp',*PREFIX_MAP,
      ROOT/'native/steam/orbis_steam_open.c',work/'steam-open-res.o','-o',prefix/'steam-open.exe','-lntdll'])
 # the Desktop link, in tools/make-start-menu.py's .lnk format (the Start menu's item is explorer's own,
 # tools/build-explorer-hw.py)

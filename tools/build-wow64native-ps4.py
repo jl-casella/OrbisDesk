@@ -19,6 +19,8 @@ in 32-bit code do not carry the upper YMM halves.
 """
 import hashlib,json,pathlib,shlex,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 UP=ROOT/'upstream/prospero-win';MODULE=UP/'wine/wow64native'
 WINE=ROOT/'.deps/wine/source';HOST=ROOT/'.deps/wine/runtime/build';UNIX=ROOT/'.deps/wine/ps4-unix'
 work=ROOT/'build/wow64native-ps4';out=ROOT/'out/wow64native-ps4'
@@ -91,7 +93,7 @@ adaptations.append(adapt(MODULE/'unix.c',unix_c,[
 wine_flags=['-I'+str(WINE/'include'),'-Iinclude','-D__WINESRC__','-D_NTSYSTEM_','-DWINE_UNIX_LIB','-D_REENTRANT',
             '-Wall','-fcf-protection=none','-fvisibility=hidden','-fno-stack-protector','-fno-strict-aliasing',
             '-gdwarf-4','-fasynchronous-unwind-tables','-g','-O2','-D__ORBIS__','-I'+str(ROOT/'platform/ps4'),
-            '-ffunction-sections','-fdata-sections','-include',str(ROOT/'platform/ps4/pw_wine_posix.h')]
+            '-ffunction-sections','-fdata-sections','-include',str(ROOT/'platform/ps4/pw_wine_posix.h'),*PREFIX_MAP]
 unix_object=work/'unix/unix.o'
 run([UNIX/'orbis-cc','-c','-o',unix_object,unix_c,*wine_flags,'-I'+str(MODULE),
      '-D__wine_unix_call_funcs=pw_wow64native_unix_call_funcs'],cwd=UNIX)
@@ -99,7 +101,7 @@ run([UNIX/'orbis-cc','-c','-o',unix_object,unix_c,*wine_flags,'-I'+str(MODULE),
 # PE side: wow64native.dll, as prospero-win's tools/build_wow64native.sh links it.
 pe_flags=['-I'+str(MODULE),'-I'+str(HOST/'include'),'-I'+str(WINE/'include'),'-I'+str(WINE/'include/msvcrt'),
           '-D_MSVCR_VER=0','-D__WINESRC__','-D__WINE_PE_BUILD','-Wall','-fno-strict-aliasing',
-          '-mcx16','-mcmodel=small','-O2','-g','-fno-builtin','-fshort-wchar']
+          '-mcx16','-mcmodel=small','-O2','-g','-fno-builtin','-fshort-wchar',*PREFIX_MAP]
 # W169: and the RESET_STATE return (NtContinue after an exception) loads that selector instead of
 # context->SegFs. W168 set fs32_sel to 0x13, but the contexts 32-bit code hands to
 # NtRaiseException/NtContinue come from its own RtlCaptureContext and still carry fs=0000, so the

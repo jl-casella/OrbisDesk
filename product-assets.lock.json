@@ -1,6 +1,11 @@
 {
   "schema_version": 1,
   "downloads": {
+    "pl-mpeg-header": {
+      "path": ".deps/downloads/pl_mpeg-c871f2be/pl_mpeg.h",
+      "url": "https://raw.githubusercontent.com/phoboslab/pl_mpeg/c871f2be022ece7ef4f64230b4fb8e1fb9eb6023/pl_mpeg.h",
+      "sha256": "3a8cb30c83c2a1147719c30fe0c8b93da2987aa43140077c575b39aaa75fc2c9"
+    },
     "llvm-source": {
       "path": ".deps/downloads/ci/llvm-project-21.1.6.src.tar.xz",
       "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.6/llvm-project-21.1.6.src.tar.xz",
@@ -40,6 +45,86 @@
       "path": "~/.cache/wine/video-1.4.357.xml",
       "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.357/registry/video.xml",
       "sha256": "d018b914014c06605e367a3b929670511e6f6de2f225c405a8b5e2d912408b76"
+    },
+    "steam-mbedtls": {
+      "path": ".deps/steam/downloads/mbedtls-3.6.6.tar.bz2",
+      "url": "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.6/mbedtls-3.6.6.tar.bz2",
+      "sha256": "8fb65fae8dcae5840f793c0a334860a411f884cc537ea290ce1c52bb64ca007a"
+    },
+    "steam-curl": {
+      "path": ".deps/steam/downloads/curl-8.22.0.tar.xz",
+      "url": "https://curl.se/download/curl-8.22.0.tar.xz",
+      "sha256": "f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7"
+    },
+    "steam-zstd": {
+      "path": ".deps/steam/downloads/zstd-1.5.6.tar.gz",
+      "url": "https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz",
+      "sha256": "8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1"
+    },
+    "steam-lzma-lzmadec-c": {
+      "path": ".deps/steam/downloads/lzma-24.09/LzmaDec.c",
+      "url": "https://raw.githubusercontent.com/ip7z/7zip/24.09/C/LzmaDec.c",
+      "sha256": "b9ca2b8707400347c75d6fef288d1354a3b4cf93e8da42f26207b8bd4c4d5e59"
+    },
+    "steam-lzma-lzmadec": {
+      "path": ".deps/steam/downloads/lzma-24.09/LzmaDec.h",
+      "url": "https://raw.githubusercontent.com/ip7z/7zip/24.09/C/LzmaDec.h",
+      "sha256": "3aaf07b4ae4173a2d103179455dc7089b5ddbc7fc3db3c0e40964a7499c69266"
+    },
+    "steam-lzma-7ztypes": {
+      "path": ".deps/steam/downloads/lzma-24.09/7zTypes.h",
+      "url": "https://raw.githubusercontent.com/ip7z/7zip/24.09/C/7zTypes.h",
+      "sha256": "5de943c886d5d7bbcf16203e9b292a9e7be327b43fe3dfd9f4ad07d6d0870ef6"
+    },
+    "steam-lzma-precomp": {
+      "path": ".deps/steam/downloads/lzma-24.09/Precomp.h",
+      "url": "https://raw.githubusercontent.com/ip7z/7zip/24.09/C/Precomp.h",
+      "sha256": "fea249c753dfbbdd69d9397e91497205452b784279f70cad4658dc567cd2f85f"
+    },
+    "steam-lzma-compiler": {
+      "path": ".deps/steam/downloads/lzma-24.09/Compiler.h",
+      "url": "https://raw.githubusercontent.com/ip7z/7zip/24.09/C/Compiler.h",
+      "sha256": "959dac87ac7109502f6467e910d0722b932176e243153bf8c663479aa8c29b20"
+    },
+    "steam-stb-image": {
+      "path": ".deps/steam/downloads/stb/stb_image.h",
+      "url": "https://raw.githubusercontent.com/nothings/stb/013ac3beddff3dbffafd5177e7972067cd2b5083/stb_image.h",
+      "sha256": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3"
+    },
+    "steam-cacert": {
+      "path": ".deps/steam/downloads/cacert-2026-09-25.pem",
+      "url": "https://curl.se/ca/cacert-2026-09-25.pem",
+      "sha256": "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505"
+    },
+    "steam-qrcodegen-c": {
+      "path": ".deps/steam/downloads/qrcodegen-1.8.0/qrcodegen.c",
+      "url": "https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/c/qrcodegen.c",
+      "sha256": "300eff07ee25baaa7578f20284411638154716379437391e7e689c0e6ce81403"
+    },
+    "steam-qrcodegen-h": {
+      "path": ".deps/steam/downloads/qrcodegen-1.8.0/qrcodegen.h",
+      "url": "https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/c/qrcodegen.h",
+      "sha256": "e82df4bff37d18b5863b9e7486fe6bda1b6cda8c3b9ecebfec473907265cb589"
+    },
+    "steam-qrcodegen-readme": {
+      "path": ".deps/steam/downloads/qrcodegen-1.8.0/LICENSE-README.md",
+      "url": "https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/Readme.markdown",
+      "sha256": "0f8441b248157c13e43c8963ffe1af9eabb3287e24871303c8b16395b6cb7a01"
+    },
+    "steam-gbe-fork": {
+      "path": ".deps/steam/downloads/gbe_fork-2026_09_27/emu-win-release-vs22.7z",
+      "url": "https://github.com/Detanup01/gbe_fork/releases/download/release-2026_09_27/emu-win-release-vs22.7z",
+      "sha256": "300186c34f49a9ea75b33ce2af299267cc1dad0225cf45e81a229578d4e11c85"
+    },
+    "steam-gbe-fork-source": {
+      "path": ".deps/steam/downloads/gbe_fork-2026_09_27/gbe_fork-release-2026_09_27-source.tar.gz",
+      "url": "https://github.com/Detanup01/gbe_fork/archive/refs/tags/release-2026_09_27.tar.gz",
+      "sha256": "ce3ce7aee0439f1b7aff2404106fe68184185a8d0b7ca5ab2677a046ea464cbd"
+    },
+    "seamonkey": {
+      "path": ".deps/downloads/seamonkey-2.53.24/seamonkey-2.53.24.en-US.win64.zip",
+      "url": "https://archive.seamonkey-project.org/releases/2.53.24/win64/en-US/seamonkey-2.53.24.en-US.win64.zip",
+      "sha256": "2b6eefd9a1f5c7d7e39d43d4a92221dd9bfb4e1b1de885687ae75560f3a61262"
     }
   }
 }

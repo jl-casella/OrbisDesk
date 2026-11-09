@@ -40,24 +40,21 @@ wsl -d Ubuntu-22.04 -- bash -lc 'cd /mnt/c/Users/JoseCasella/DEV/Codex/PS4 && py
 
 <a id="3d-pinball-space-cadet-pendiente"></a>
 
-## 3D Pinball (Space Cadet): pending
+## 3D Pinball (Space Cadet): dropped
 
-The free port is SpaceCadetPinball (MIT, `cb9b7b88`) over SDL2 2.32.8 and SDL2_mixer 2.8.1 (Zlib), fixed at `games.lock.json` and cloned at `.deps/`. The builder has the recipe behind `--pinball` (SDL2 and SDL2_mixer shared, mix only with WAVE and native MIDI; the exe linked with `-mwindows`). It is not compiled: running CMake on these projects was denied by permits in this session. Without `--pinball` the manifest lists nothing from Pinball and the menu does not show the input; with `--pinball`, `make-start-menu.py` add "3D Pinball" alone.
-
-The data (`PINBALL.DAT`, the `.WAV`, `PINBALL.MID`) are from Microsoft and there are no free equivalents; Don't pack. The program looks for them in the work directory, next to the exe and in `%APPDATA%\SpaceCadetPinball` (`SDL_GetBasePath`, `SDL_GetPrefPath`); in the prefix the practical is `C:\users\jose\AppData\Roaming\SpaceCadetPinball`. No data shows "The .dat file is missing" with those routes and does not start the table.
+Removed in W303 together with its SDL2/SDL2_mixer pins: the table needs Microsoft's data files (`PINBALL.DAT`, `.WAV`, `PINBALL.MID`), which are not shipped, and the console never had it.
 
 <a id="sonido"></a>
 
 
 ## Sound
 
-None of the card games or Minesweeper calls `PlaySound` or `waveOut`: they don't make noise in any system, so they don't serve to test audio. The only sound candidate is Pinball.
+None of the card games or Minesweeper calls `PlaySound` or `waveOut`: they don't make noise in any system, so they don't serve to test audio.
 
 What happens in the current runtime (code Wine fixed, `dlls/winmm`):
 
 - The hardware runtime does not carry `mmdevapi.dll` or `dsound.dll`, or drivers (winealsa/winepulse). `WINMM_InitMMDevices` does `CoCreateInstance(CLSID_MMDeviceEnumerator)`; When you fail, `waveOutGetNumDevs` returns 0 and `waveOutOpen` returns `MMSYSERR_NODRIVER` (`WINMM_StartDevicesThread` failure).
 - `PlaySound` synchronus returns `FALSE`. With `SND_ASYNC` returns `TRUE` because it only creates the thread; the thread fails in `waveOutOpen` and ends without visible notice. It's the only case where the caller sees success without sound.
-- SDL2 test WASAPI (same enumerator), DirectSound (`dsound.dll` absent) and winmm; The three fail, `Mix_OpenAudio` returns error and SpaceCadetPinball prints "Cour not open audio device, continuing without audio" and still without sound.
 
 This was not touched in W114.
 
@@ -66,4 +63,4 @@ This was not touched in W114.
 
 ## Possible next step
 
-A driver audio for Wine that uses the native bridge PS4 AudioOut that already uses DOS (`native/dos_audio.c`, private class `PW_DOS_AUDIO_CLASS` of `NtQuerySystemInformation`, ABI in `platform/ps4/pw_dos_audio.h`). The most direct thing would be a driver of mmdevapi (as winealsa) or, smaller, a replacement of the `waveOut` road of winmm. It also requires to mount `mmdevapi.dll` (and `dsound.dll` for SDL/DirectSound) in the runtime.
+A driver audio for Wine that uses the native bridge PS4 AudioOut that already uses DOS (`native/dos_audio.c`, private class `PW_DOS_AUDIO_CLASS` of `NtQuerySystemInformation`, ABI in `platform/ps4/pw_dos_audio.h`). The most direct thing would be a driver of mmdevapi (as winealsa) or, smaller, a replacement of the `waveOut` road of winmm. It also requires to mount `mmdevapi.dll` (and `dsound.dll`) in the runtime.

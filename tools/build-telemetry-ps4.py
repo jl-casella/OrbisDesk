@@ -50,6 +50,14 @@ substitute(r'''    if (pw_wine_memory_info( &totalram, &freeram )) return STATUS
         ERR( "PWTASK idle time unavailable rc=%d\n", rc );
     else info->IdleTime.QuadPart = idle * peb->NumberOfProcessors;
 ''')
+# W303: tools/prepare-wine-boot.py's W096 per-CPU block (getrusage) may already fill class 8. This builder's
+# version below (W112, the title's CPU time through pw_ps4_cpu_times, as Task Manager and the HUD read it)
+# supersedes it: the W096 block is reduced to the unsupported stub it replaced, which the next step expects.
+class8='    case SystemProcessorPerformanceInformation:  /* 8 */\n    {\n#ifdef __ORBIS__\n'
+w096_end='        break;\n#else\n        SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION *sppi = NULL;'
+if text.count(class8)==1 and 'struct rusage usage;' in text[text.index(class8):text.index(w096_end,text.index(class8))]:
+    start=text.index(class8)+len(class8);end=text.index(w096_end,start)
+    text=text[:start]+'        ret = STATUS_NOT_SUPPORTED;\n'+text[end:]
 substitute(r'''#ifdef __ORBIS__
         ret = STATUS_NOT_SUPPORTED;
         break;

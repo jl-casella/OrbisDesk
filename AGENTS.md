@@ -74,7 +74,7 @@ python3 tools/restore-dependencies.py --fetch
 python3 tools/restore-dependencies.py --only wine-build-source --only shadps4-fork --only wfm --only dosbox-pure --only mangohud --archives
 ```
 
-[dependencies.lock.json](dependencies.lock.json) catalogues 19 source identities and graphics archive hashes. [sources.lock.json](sources.lock.json) fixes the original bases. Wine's pinned source says 11.17; the commit, not that version label alone, is authoritative. Existing differing/non-Git directories are not overwritten by restoration. Some checks verify HEAD only and explicitly do not assess local edits; inspect a diff when source cleanliness matters.
+[dependencies.lock.json](dependencies.lock.json) catalogues 16 source identities and graphics archive hashes. [sources.lock.json](sources.lock.json) fixes the original bases. Wine's pinned source says 11.17; the commit, not that version label alone, is authoritative. Existing differing/non-Git directories are not overwritten by restoration. Some checks verify HEAD only and explicitly do not assess local edits; inspect a diff when source cleanliness matters.
 
 The emulator recovery uses [fork.lock.json](fork.lock.json): upstream base `529ceb32f5546b820588f194b903cc39d08015fe`, 17 ordered patches, then the separately hashed [0018 overlay](patches/shadPS4/pending/0018-fixed-executable-and-kernel-signals.patch). Its expected pre-overlay tree is recorded in the dependency lock. Commit metadata can differ after replay; content/tree and overlay checks prevent pretending a different source is identical. The reference shadPS4 checkout is not the fork base.
 

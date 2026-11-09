@@ -266,7 +266,7 @@ static void read_config(void)
 {
     char line[160];
     FILE *file=fopen(CONFIG_FILE,"r");
-    lang=LANG_ES;
+    lang=LANG_EN;  /* W303 (alpha-1): English until the user picks a language on the CONFIG page */
     while(file && fgets(line,sizeof(line),file)) {
         char *eq;int mode=-1,slot;
         line[strcspn(line,"\r\n")]=0;
