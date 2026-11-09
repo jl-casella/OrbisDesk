@@ -5,7 +5,10 @@
 # only read: run build-mangohud.sh first, which copies and patches it. It is copied to mangohud-win-i386,
 # where one i386-only fix is made (ADL's allocation callback type, below).
 set -euo pipefail
+ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+prefix_map="'-ffile-prefix-map=${ORBISDESK_ROOT}=.', '-ffile-prefix-map=$H=vk-h0'"
 L=$H/llvm-mingw/bin
 X=$H/src/mangohud-win
 W=$H/src/mangohud-win-i386
@@ -38,6 +41,8 @@ python3 "$(dirname "$0")/mangohud-i386-traces.py" $W
 [ "$(grep -cE '^static (VkResult|void) overlay_[A-Za-z]+\($' $W/src/vulkan.cpp)" = 15 ] || { echo 'unexpected hook declarations in src/vulkan.cpp'; exit 1; }
 sed -i -E 's/^static (VkResult|void) (overlay_[A-Za-z]+\()$/static VKAPI_ATTR \1 VKAPI_CALL \2/' $W/src/vulkan.cpp
 [ "$(grep -cE '^static VKAPI_ATTR (VkResult|void) VKAPI_CALL overlay_[A-Za-z]+\($' $W/src/vulkan.cpp)" = 15 ] || { echo 'hook convention fix not applied'; exit 1; }
+cross=$build-cross.ini
+old_cross=$(cat $cross 2>/dev/null || true)
 cat > $build-cross.ini <<INI
 [binaries]
 c = '$L/i686-w64-mingw32-clang'
@@ -55,6 +60,8 @@ needs_exe_wrapper = true
 # VKAPI_CALL entry points are __stdcall and were exported as "overlay_GetInstanceProcAddr@8"; the loader asks
 # for the plain names the manifest gives, as on x64
 [built-in options]
+c_args = [$prefix_map]
+cpp_args = [$prefix_map]
 c_link_args = ['-Wl,--kill-at']
 cpp_link_args = ['-Wl,--kill-at']
 
@@ -64,7 +71,7 @@ cpu_family = 'x86'
 cpu = 'i686'
 endian = 'little'
 INI
-if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ]; then
+if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ] || [ "$old_cross" != "$(cat $cross)" ]; then
   rm -rf $build
   (cd $W && meson setup $build --cross-file $build-cross.ini --buildtype=release -Dwith_nvml=disabled -Dtests=disabled \
      --wrap-mode=nodownload 2>&1 | tail -25)

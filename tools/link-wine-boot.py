@@ -3,10 +3,12 @@
 """Attempt a strict full Unix ntdll link, retaining every Wine service table."""
 import hashlib,json,pathlib,re,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 work=ROOT/'build/wine-boot';sdk=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
 report=json.loads((work/'report.json').read_text())
 if any(r['exit_code'] for r in report['results']):raise SystemExit('Unix units are not all compiled')
-flags=['clang','--target=x86_64-pc-freebsd12-elf','-D__ORBIS__','-fPIC','-O2','-g','-isysroot',str(sdk),'-isystem',str(sdk/'include'),'-I'+str(ROOT/'platform/ps4')]
+flags=['clang','--target=x86_64-pc-freebsd12-elf','-D__ORBIS__','-fPIC','-O2','-g','-isysroot',str(sdk),'-isystem',str(sdk/'include'),'-I'+str(ROOT/'platform/ps4'),*PREFIX_MAP]
 objects=[work/(r['unit']+'.o') for r in report['results'] if r['unit'] not in ('harness','loader-harness')]
 for name in ['pw_wine_platform','pw_vm_ps4_kernel','pw_wine_signals','pw_wine_fs','pw_wine_net','pw_wine_unixlibs','pw_wine_sink_ps4','pw_wine_memory','pw_wine_once','pw_wine_audio']:
     obj=work/(name+'.o');subprocess.run([*flags,'-c',str(ROOT/'platform/ps4'/(name+'.c')),'-o',str(obj)],check=True);objects.append(obj)

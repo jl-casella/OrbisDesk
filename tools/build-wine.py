@@ -18,13 +18,20 @@ HOST_CONFIGURE_ARGS = ('--enable-archs=i386,x86_64 --disable-tests --without-x '
                        '--without-freetype --enable-wineusb-sys')
 
 
+# Keep the checkout and $HOME out of __FILE__ strings and debug info. Configure records
+# these in the Makefile, so the replayed PE recipes (build-*-hw.py) inherit them too.
+PREFIX_MAP = ('-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'
+              % (ROOT, pathlib.Path.home() / 'vk-h0'))
+FLAG_KEYS = ('CFLAGS', 'CXXFLAGS', 'CROSSCFLAGS', 'i386_CFLAGS',
+             'i386_CXXFLAGS', 'x86_64_CFLAGS', 'x86_64_CXXFLAGS')
+
+
 def build_environment(release_build=False):
     env = dict(os.environ, LC_ALL='C', TZ='UTC')
-    if release_build:
-        # Wine's PE flags use CROSSCFLAGS, independently of the native CFLAGS.
-        for key in ('CFLAGS', 'CXXFLAGS', 'CROSSCFLAGS', 'i386_CFLAGS',
-                    'i386_CXXFLAGS', 'x86_64_CFLAGS', 'x86_64_CXXFLAGS'):
-            env[key] = '-O2 -g0'
+    # Wine's PE flags use CROSSCFLAGS, independently of the native CFLAGS.
+    # '-g -O2' is configure's own default when these are unset.
+    for key in FLAG_KEYS:
+        env[key] = ('-O2 -g0' if release_build else os.environ.get(key, '-g -O2')) + ' ' + PREFIX_MAP
     return env
 
 
@@ -56,6 +63,12 @@ def main():
     script = script.replace('make -B -j', 'make -j')
     runtime = ROOT / '.deps/wine/runtime'
     runtime.mkdir(parents=True, exist_ok=True)
+    # The driver configures only without a Makefile. A tree configured before the
+    # prefix map (or for another checkout/$HOME) is reconfigured; objects compiled
+    # earlier keep their old paths until rebuilt.
+    makefile = runtime / 'build/Makefile'
+    if makefile.is_file() and PREFIX_MAP not in makefile.read_text(errors='replace'):
+        makefile.unlink()
     driver = runtime / 'driver.sh'
     driver.write_text(script)
     command = ['sh', str(driver), '--build-root', str(runtime), '--source', str(source),

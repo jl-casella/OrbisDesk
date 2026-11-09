@@ -18,6 +18,8 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--pinball',action='store_true',help='Also build SDL2, SDL2_mixer and SpaceCadetPinball')
 args=parser.parse_args()
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 locks=json.loads((ROOT/'games.lock.json').read_text())
 def checkout(key):
     lock=locks[key];path=ROOT/lock['checkout']
@@ -33,7 +35,7 @@ for name in ('version.rc','manifest_exe.rc'):(work/'include/reactos'/name).write
 llvm=pathlib.Path.home()/'vk-h0/llvm-mingw/bin'
 CXX=str(llvm/'x86_64-w64-mingw32-clang++');CC=str(llvm/'x86_64-w64-mingw32-clang');RC=str(llvm/'x86_64-w64-mingw32-windres')
 CARDLIB=source/'sdk/lib/3rdparty/cardlib'
-FLAGS=['-O2','-municode','-DUNICODE','-D_UNICODE','-D_WIN32_WINNT=0x0600','-D__REACTOS__','-include','windows.h','-Dmin(a,b)=(((a)<(b))?(a):(b))','-Dmax(a,b)=(((a)>(b))?(a):(b))','-w']
+FLAGS=['-O2','-municode','-DUNICODE','-D_UNICODE','-D_WIN32_WINNT=0x0600','-D__REACTOS__','-include','windows.h','-Dmin(a,b)=(((a)<(b))?(a):(b))','-Dmax(a,b)=(((a)>(b))?(a):(b))','-w',*PREFIX_MAP]
 # windows.h first: ReactOS headers include windef/winbase directly, which mingw-w64 does not support;
 # min/max as the ReactOS SDK headers define them for C++.
 commands=[]
@@ -74,6 +76,7 @@ def build_pinball():
     prefix=work/'sdl-prefix';toolchain=work/'llvm-mingw.cmake'
     toolchain.write_text(f'''set(CMAKE_SYSTEM_NAME Windows)\nset(CMAKE_SYSTEM_PROCESSOR x86_64)
 set(CMAKE_C_COMPILER {CC})\nset(CMAKE_CXX_COMPILER {CXX})\nset(CMAKE_RC_COMPILER {RC})
+set(CMAKE_C_FLAGS_INIT "{' '.join(PREFIX_MAP)}")\nset(CMAKE_CXX_FLAGS_INIT "{' '.join(PREFIX_MAP)}")
 set(CMAKE_FIND_ROOT_PATH {prefix})\nset(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)\nset(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)\nset(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)\n''')
     base=['cmake','-G','Ninja','-DCMAKE_TOOLCHAIN_FILE='+str(toolchain),'-DCMAKE_BUILD_TYPE=Release','-DCMAKE_INSTALL_PREFIX='+str(prefix)]

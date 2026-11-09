@@ -16,6 +16,8 @@ import time
 from sdk_libc import derive_libc
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--harness-only',action='store_true')
@@ -57,7 +59,7 @@ def main():
             line=lines[index];parts.append(line.rstrip().removesuffix('\\'))
             if not line.rstrip().endswith('\\'): break
             index+=1
-        command=' '.join(parts).replace('$(CC)',str(work/'orbis-cc')).replace('$(CFLAGS)','-g -O2')
+        command=' '.join(parts).replace('$(CC)',str(work/'orbis-cc')).replace('$(CFLAGS)','-g -O2 '+PREFIX_MAP)
         command=shlex.split(command.replace('$@',str(output/(name+'.o'))))
         original=str(ROOT/'.deps/wine/source'/subdir/ (recipe_name+'.c'))
         generated=not pathlib.Path(original).is_file()

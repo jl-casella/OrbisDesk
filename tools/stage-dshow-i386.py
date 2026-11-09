@@ -37,6 +37,8 @@ appends system.reg.add to system.reg.
 import hashlib,json,pathlib,re,struct,subprocess,tarfile
 from wine_staging import verify_module_copy
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build';out=ROOT/'out/dshow-i386';work=ROOT/'build/dshow-i386'
 PLMPEG=ROOT/'.deps/downloads/pl_mpeg-c871f2be';PLMPEG_SHA='3a8cb30c83c2a1147719c30fe0c8b93da2987aa43140077c575b39aaa75fc2c9'
 ARCH='i386-windows'
@@ -241,7 +243,7 @@ for name,path in sorted({**closure,**found}.items()):
 src='../../source'
 wine_inc=['-Iinclude','-I'+src+'/include','-I'+src+'/include/msvcrt','-D_UCRT','-D__WINE_PE_BUILD','-D__WINESRC__']
 i386_flags=['-fno-strict-aliasing','-ffunction-sections','-fno-omit-frame-pointer','-msse2','-gdwarf-4','-g','-O2',
-            '-mpreferred-stack-boundary=2','-mlong-double-64']
+            '-mpreferred-stack-boundary=2','-mlong-double-64',*PREFIX_MAP]
 filter_source=ROOT/'native/pwmpeg1/pwmpeg1.c';spec=ROOT/'native/pwmpeg1/pwmpeg1.spec'
 obj=work/'pwmpeg1.o'
 run(['i686-w64-mingw32-gcc','-c','-o',obj,filter_source,'-I'+str(PLMPEG),*wine_inc,'-Wall',*i386_flags])

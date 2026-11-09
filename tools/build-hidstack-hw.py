@@ -20,6 +20,8 @@ Output: out/hidstack-hw/ (x86_64-windows/*, winebus-unix.o, pwhidhost.dll, manif
 """
 import hashlib,json,pathlib,shlex,shutil,struct,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build';UNIX=ROOT/'.deps/wine/ps4-unix'
 work=ROOT/'build/hidstack-hw';overlay=work/'ntoskrnl-overlay';out=ROOT/'out/hidstack-hw'
 # what the boot runtime is checked against for missing imports (the last hardware build)
@@ -246,7 +248,7 @@ def recipe(target):
         line=makefile[index];parts.append(line.rstrip().removesuffix('\\'))
         if not line.rstrip().endswith('\\'):break
         index+=1
-    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2')
+    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2 '+PREFIX_MAP)
 units=[]
 for unit,source in (('unixlib',None),('hid',None),('bus_udev',None),('bus_iohid',None),
                     ('bus_sdl',ROOT/'native/winebus_orbis.c')):
@@ -267,7 +269,7 @@ undefined=subprocess.run(['nm','-u',str(final)],capture_output=True,text=True,ch
 
 # pwhidhost.dll
 host=out/'pwhidhost.dll'
-run(['x86_64-w64-mingw32-gcc','-std=c11','-O2','-Wall','-municode','-shared',str(ROOT/'native/pwhidhost.c'),
+run(['x86_64-w64-mingw32-gcc','-std=c11','-O2','-Wall','-municode','-shared',*PREFIX_MAP.split(),str(ROOT/'native/pwhidhost.c'),
      '-o',str(host),'-ladvapi32','-Wl,--no-insert-timestamp','-s'])
 
 manifest={'schema_version':1,'wine_commit':commit,'builder_sha256':sha(__file__),

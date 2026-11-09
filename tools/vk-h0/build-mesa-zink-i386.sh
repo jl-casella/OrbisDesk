@@ -10,6 +10,8 @@
 set -euo pipefail
 ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+prefix_map="'-ffile-prefix-map=${ORBISDESK_ROOT}=.', '-ffile-prefix-map=$H=vk-h0'"
 SRC=$H/src/mesa-win
 build=$H/build/mesa-zink-i386
 export PATH="$H/mesa-venv/bin:$H/host-tools/bin:$PATH"
@@ -18,6 +20,7 @@ if [ ! -f $SRC/VERSION ]; then
   tar -xJf ${ORBISDESK_ROOT}/.deps/vk/mesa-26.0.8.tar.xz -C $SRC --strip-components=1
 fi
 cross=$build-cross.ini
+old_cross=$(cat $cross 2>/dev/null || true)
 cat > $cross <<INI
 [binaries]
 c = '$H/llvm-mingw/bin/i686-w64-mingw32-clang'
@@ -26,6 +29,10 @@ ar = '$H/llvm-mingw/bin/llvm-ar'
 strip = '$H/llvm-mingw/bin/llvm-strip'
 windres = '$H/llvm-mingw/bin/i686-w64-mingw32-windres'
 pkg-config = 'false'
+
+[built-in options]
+c_args = [$prefix_map]
+cpp_args = [$prefix_map]
 
 [host_machine]
 system = 'windows'
@@ -36,7 +43,7 @@ endian = 'little'
 [properties]
 needs_exe_wrapper = true
 INI
-if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ]; then
+if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ] || [ "$old_cross" != "$(cat $cross)" ]; then
   rm -rf $build
   meson setup $build $SRC --cross-file $cross --wrap-mode=nofallback --buildtype=release \
     --default-library=static -Dplatforms=windows -Dgallium-drivers=zink -Dvulkan-drivers= \

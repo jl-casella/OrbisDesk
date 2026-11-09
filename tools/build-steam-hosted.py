@@ -25,6 +25,8 @@ Outputs, in build/steam-hosted/:
 This builder never uploads and never touches the hardware ELF's build."""
 import hashlib,json,os,pathlib,shutil,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1];SDK=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 PLAYDEN=ROOT/'upstream/playden-ps5';REVISION='fb74dbfd6bb96fc19a96afc1f48a4e40a885216b'
 VK=pathlib.Path.home()/'vk-h0'
 STB=(ROOT/'.deps/steam/downloads/stb/stb_image.h','594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3')
@@ -68,7 +70,7 @@ for patch in sorted((ROOT/'native/steam/patches').glob('*.patch')):run(['patch',
 (work/'third_party').mkdir();shutil.copyfile(STB[0],work/'third_party/stb_image.h')
 
 target=['--target=x86_64-pc-freebsd12-elf','-D__ORBIS__','-fPIC','-funwind-tables','-march=btver2','-O2','-g',
-        '-ffile-prefix-map=%s/='%work,'-DSTEAM_UI_HOSTED','-DMBEDTLS_USER_CONFIG_FILE="mbedtls_user_config.h"',
+        *PREFIX_MAP,'-ffile-prefix-map=%s/='%work,'-DSTEAM_UI_HOSTED','-DMBEDTLS_USER_CONFIG_FILE="mbedtls_user_config.h"',
         '-DCURL_STATICLIB']
 # the libc overlay Mesa's Wine variant is built with (tools/vk-h0/build-mesa.sh): FreeBSD's clock numbers and
 # no C++ overloads in <math.h> (libc++ 21 brings its own), with the same feature macros. __PS4__ and
@@ -209,7 +211,7 @@ ico+=b''.join(data for _,data in images)
 (work/'steam-open.ico').write_bytes(ico)
 (work/'steam-open.rc').write_text('1 ICON "steam-open.ico"\n')
 run(['x86_64-w64-mingw32-windres','-O','coff','steam-open.rc','-o','steam-open-res.o'])
-run(['x86_64-w64-mingw32-gcc','-O2','-Wall','-Wextra','-Werror','-mwindows','-Wl,--no-insert-timestamp',
+run(['x86_64-w64-mingw32-gcc','-O2','-Wall','-Wextra','-Werror','-mwindows','-Wl,--no-insert-timestamp',*PREFIX_MAP,
      ROOT/'native/steam/orbis_steam_open.c',work/'steam-open-res.o','-o',prefix/'steam-open.exe','-lntdll'])
 # the Desktop link, in tools/make-start-menu.py's .lnk format (the Start menu's item is explorer's own,
 # tools/build-explorer-hw.py)

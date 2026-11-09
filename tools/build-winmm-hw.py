@@ -17,6 +17,8 @@ Output: out/winmm-hw/{i386-windows,x86_64-windows}/winmm.dll and manifest.json.
 """
 import hashlib,json,pathlib,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build'
 work=ROOT/'build/winmm-hw';out=ROOT/'out/winmm-hw'
 ARCHES={'i386-windows':'i686-w64-mingw32','x86_64-windows':'x86_64-w64-mingw32'}
@@ -115,7 +117,7 @@ common=['-Idlls/winmm','-I'+src+'/dlls/winmm','-Iinclude','-I'+src+'/include','-
 arch_flags={'i386-windows':['-fno-omit-frame-pointer','-mpreferred-stack-boundary=2','-mlong-double-64','-msse2'],
             'x86_64-windows':['-Wformat-overflow','-Wnonnull','-mlong-double-64','-mcx16','-mcmodel=small']}
 link_tail={'i386-windows':['-Wl,--disable-stdcall-fixup','-Wl,--build-id'],'x86_64-windows':['-Wl,--build-id']}
-tail=['-gdwarf-4','-Wdeclaration-after-statement','-Wstrict-prototypes','-Wabsolute-value','-g','-O2']
+tail=['-gdwarf-4','-Wdeclaration-after-statement','-Wstrict-prototypes','-Wabsolute-value','-g','-O2',*PREFIX_MAP]
 resources=[BUILD/'dlls/winmm/winmm.res',BUILD/'dlls/winmm/winmm_res.res']
 modules={}
 for arch,triple in ARCHES.items():

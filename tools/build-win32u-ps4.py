@@ -9,6 +9,8 @@ Wine Makefile; the patched sources live in their own overlay, with every hash re
 """
 import hashlib,json,pathlib,re,shlex,shutil,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 SOURCE=ROOT/'.deps/wine/source';UNIX=ROOT/'.deps/wine/ps4-unix'
 overlay=ROOT/'.deps/wine/ps4-win32u-overlay';work=ROOT/'build/win32u-ps4'
 PATCHES=['0400-win32u-ps5-user-driver.patch','0410-win32u-ps5-fontless-metrics-and-server-desktop.patch']
@@ -2452,7 +2454,7 @@ def recipe(target):
         line=makefile[index];parts.append(line.rstrip().removesuffix('\\'))
         if not line.rstrip().endswith('\\'):break
         index+=1
-    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2')
+    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2 '+PREFIX_MAP)
 units=sorted({re.match(r'^(dlls/win32u/[a-z0-9_/]+)\.o: ',line).group(1) for line in makefile
               if re.match(r'^dlls/win32u/[a-z0-9_/]+\.o: ',line)})
 units.append('dlls/win32u/ps5drv')

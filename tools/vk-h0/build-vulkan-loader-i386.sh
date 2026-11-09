@@ -12,6 +12,8 @@ TAG=v1.4.335
 cd $H/src
 [ -d Vulkan-Loader ] && [ -d $H/vk-headers ] || { echo 'run build-vulkan-loader.sh first'; exit 1; }
 ROOT=$(cd "$HERE/../.." && pwd)
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+prefix_map="-ffile-prefix-map=$ROOT=. -ffile-prefix-map=$H=vk-h0"
 EXPECTED=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["repositories"]["Vulkan-Loader"]["commit"])' "$ROOT/dependencies.lock.json")
 [ "$(git -C Vulkan-Loader rev-parse HEAD)" = "$EXPECTED" ] || { echo 'Vulkan-Loader differs from dependencies.lock.json'; exit 1; }
 git -C Vulkan-Loader log -1 --format="loader %H"
@@ -33,7 +35,7 @@ cp -a Vulkan-Loader $S
 python3 $HERE/patch-vulkan-loader-i386-nodxgi.py $S/loader/loader_windows.c
 cmake -G Ninja -S $S -B $B -DCMAKE_TOOLCHAIN_FILE=$H/build/mingw-toolchain-i686.cmake \
   -DCMAKE_BUILD_TYPE=Release -DVulkanHeaders_DIR=$H/vk-headers/share/cmake/VulkanHeaders \
-  -DCMAKE_C_FLAGS=-DWIN32 -DCMAKE_PREFIX_PATH=$H/vk-headers -DUSE_MASM=OFF -DBUILD_TESTS=OFF 2>&1 | tail -5
+  -DCMAKE_C_FLAGS="-DWIN32 $prefix_map" -DCMAKE_PREFIX_PATH=$H/vk-headers -DUSE_MASM=OFF -DBUILD_TESTS=OFF 2>&1 | tail -5
 ninja -C $B 2>&1 | tail -3
 dll=$B/loader/vulkan-1.dll
 objdump -f $dll | grep -q 'file format pei-i386' || { echo "not an i386 DLL: $dll"; exit 1; }

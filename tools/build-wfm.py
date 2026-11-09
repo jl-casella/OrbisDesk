@@ -13,11 +13,13 @@ corresponding source). The DLL is no longer linked or shipped; the item shows an
 """
 import hashlib,json,pathlib,shutil,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 SOURCE=ROOT/'.deps/wfm';work=ROOT/'build/wfm';out=ROOT/'out/wfm'
 COMMIT='6b1860895885a6d65c37815308260293341acb5f'
 CC='x86_64-w64-mingw32-gcc';RC='x86_64-w64-mingw32-windres'
 CFLAGS=['-O2','-std=c99','-DUNICODE','-D_UNICODE','-DCOBJMACROS','-DWINVER=0x0600','-Wall',
-        '-include',str(ROOT/'tools/wfm-debug.h')]
+        '-include',str(ROOT/'tools/wfm-debug.h'),*PREFIX_MAP]
 # the headers are compiled from a copy too (main.h without libcdio's); include/libcdio is not used
 INCLUDE=['-I'+str(work/'include'),'-I'+str(ROOT/'platform/ps4')]
 def sha(path):return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()

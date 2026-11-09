@@ -5,6 +5,8 @@
 set -euo pipefail
 ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+prefix_map="'-ffile-prefix-map=${ORBISDESK_ROOT}=.', '-ffile-prefix-map=$H=vk-h0'"
 OPENORBIS=${ORBISDESK_ROOT}/.deps/sdk/OpenOrbis/PS4Toolchain
 SYSROOT=$H/sysroot
 MESA=$H/src/mesa
@@ -70,11 +72,12 @@ flags="'-target', 'x86_64-pc-freebsd12-elf', '-D_GNU_SOURCE', '-D__PS4__', '-D__
   '-D__ORBIS__', '-DPS4', '-D__BSD_VISIBLE', '-D_BSD_SOURCE', '-fPIC', '-funwind-tables',
   '-march=btver2', '-isysroot', '$OPENORBIS', '-isystem', '$overlay',
   '-isystem', '$port/port/mesa-overlay', '-I$H/src/libdrm', '-I$H/src/libdrm/include/drm',
-  '-isystem', '$OPENORBIS/include', '-I$OPENORBIS/usr/include'$extra"
+  '-isystem', '$OPENORBIS/include', '-I$OPENORBIS/usr/include'$extra, $prefix_map"
 link="'-fuse-ld=lld', '-nostdlib', '-Wl,-m,elf_x86_64', '-Wl,-pie',
   '-Wl,--eh-frame-hdr', '-Wl,--script,$OPENORBIS/link.x', '-L$OPENORBIS/lib',
   '$OPENORBIS/lib/crt1.o', '-lkernel', '-lc', '-lclang_rt.builtins-x86_64', '-lSceLibcInternal'"
 cross=$build-cross.ini
+old_cross=$(cat $cross 2>/dev/null || true)
 cat > $cross <<INI
 [binaries]
 c = 'clang-19'
@@ -99,7 +102,7 @@ cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'
 INI
-if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ]; then
+if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ] || [ "$old_cross" != "$(cat $cross)" ]; then
   rm -rf $build
   PKG_CONFIG_LIBDIR=$pc meson setup $build $MESA --cross-file $cross \
     -Dbuildtype=release -Db_ndebug=true -Ddefault_library=static \

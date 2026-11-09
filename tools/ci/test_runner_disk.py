@@ -46,11 +46,15 @@ class RunnerDiskTests(unittest.TestCase):
 
     def test_release_flags_cover_native_and_both_pe_architectures(self):
         with patch.dict(os.environ, {'CFLAGS': '-O0 -g', 'i386_CXXFLAGS': '-g'}):
-            self.assertEqual(build_wine.build_environment()['CFLAGS'], '-O0 -g')
+            # Every build keeps the checkout and $HOME out of the binaries (build-wine.py PREFIX_MAP).
+            debug = build_wine.build_environment()
+            self.assertEqual(debug['CFLAGS'], '-O0 -g ' + build_wine.PREFIX_MAP)
+            self.assertEqual(debug['i386_CXXFLAGS'], '-g ' + build_wine.PREFIX_MAP)
+            self.assertIn('-ffile-prefix-map=%s=.' % build_wine.ROOT, build_wine.PREFIX_MAP)
             release = build_wine.build_environment(True)
             for key in ('CFLAGS', 'CXXFLAGS', 'CROSSCFLAGS', 'i386_CFLAGS',
                         'i386_CXXFLAGS', 'x86_64_CFLAGS', 'x86_64_CXXFLAGS'):
-                self.assertEqual(release[key], '-O2 -g0')
+                self.assertEqual(release[key], '-O2 -g0 ' + build_wine.PREFIX_MAP)
 
     def test_compiler_omits_dwarf_with_release_flags_after_wine_debug_format_flag(self):
         compilers = [(cc, key) for cc, key in (('gcc', 'CFLAGS'),
