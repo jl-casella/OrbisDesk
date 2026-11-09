@@ -134,8 +134,14 @@ def build(version, cache_mode='reuse'):
                  'build-wfm', 'build-dos-runtime', 'build-games', 'make-icons', 'make-start-menu', 'make-app-icon'):
         python(name, *(['--pinball'] if name == 'build-games' else []))
     step('product-assets', [sys.executable, ROOT / 'tools/ci/product-fixtures.py'])
+    # W292: the extra desktop wallpapers build-wine-hardware stages (generated, no download)
+    python('make-wallpaper-set')
     python('build-wine-hardware', '--app-version', version)
-    manifest = ROOT / 'out/wine-hardware-w288/manifest.json'
+    # the builder's build ID (W288, W302, ...) names its output folder; exactly one in a clean workspace
+    manifests = list((ROOT / 'out').glob('wine-hardware-w*/manifest.json'))
+    if len(manifests) != 1:
+        raise ValueError('Expected one product manifest, found: ' + ', '.join(str(m) for m in manifests))
+    manifest = manifests[0]
     data = json.loads(manifest.read_text())
     step('web-closure', [sys.executable, '-I', ROOT / 'tools/check-web-closure.py', ROOT / data['runtime_root']])
     write_json(RESULTS / 'product-build.json', {

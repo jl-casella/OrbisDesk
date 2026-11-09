@@ -195,6 +195,7 @@ class KeyTests(unittest.TestCase):
                      'tools/wine_product_seeds.py', 'tools/stage-wine-i386.py',
                      'tools/stage-wine-programs.py', 'tools/stage-wine-extras.py',
                      'tools/stage-mshtml-hw.py', 'tools/stage-dshow-i386.py',
+                     'native/wine_hardware.c', 'platform/ps4/pw_telemetry.h',
                      '.deps/linux-tools/cmake/data/bin/cmake', '.deps/linux-tools/bin/ninja', 'fake-compiler']
             for name in names:
                 path = root / name
@@ -204,7 +205,7 @@ class KeyTests(unittest.TestCase):
                 if command[0] == 'dpkg-query':
                     return 'compiler=1\n'
                 if 'ls-files' in command:
-                    return 'tools/vk-h0/patch.py\n'
+                    return 'tools/vk-h0/patch.py\nnative/wine_hardware.c\nplatform/ps4/pw_telemetry.h\n'
                 return 'compiler-version'
             with patch.object(cache, 'ROOT', root), patch.object(cache, 'INPUTS', root / 'inputs.json'), \
                     patch.object(cache, 'output'), patch.object(cache.shutil, 'which', return_value=str(root / 'fake-compiler')), \
@@ -223,6 +224,13 @@ class KeyTests(unittest.TestCase):
                 graphics_changed = cache.make_keys()
                 self.assertNotEqual(changed['graphics']['key'], graphics_changed['graphics']['key'])
                 self.assertEqual(changed['wine']['key'], graphics_changed['wine']['key'])
+                # launcher sources are later steps' inputs; the telemetry header is read by a graphics patch
+                (root / 'native/wine_hardware.c').write_text('changed launcher')
+                launcher_changed = cache.make_keys()
+                self.assertEqual(graphics_changed['graphics']['key'], launcher_changed['graphics']['key'])
+                (root / 'platform/ps4/pw_telemetry.h').write_text('changed telemetry schema')
+                telemetry_changed = cache.make_keys()
+                self.assertNotEqual(launcher_changed['graphics']['key'], telemetry_changed['graphics']['key'])
 
 
 class DownloadTests(unittest.TestCase):

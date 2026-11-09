@@ -903,11 +903,11 @@ head=subprocess.run(['git','-C',str(ROOT),'rev-parse','HEAD'],capture_output=Tru
 dirty=bool(subprocess.run(['git','-C',str(ROOT),'status','--porcelain','--untracked-files=no'],
                           capture_output=True,text=True,check=True).stdout.strip())
 (licenses/'SOURCE.txt').write_text(
-    'OrbisDesk W302 (04.01): corresponding source\r\n\r\n'
+    'OrbisDesk W302 ('+args.app_version+'): corresponding source\r\n\r\n'
     'OrbisDesk is free software under the GNU GPL version 3 or later (GPL-3.0.txt).\r\n'
-    'Source code: '+SOURCE_REPOSITORY+', tag orbisdesk-04.01 (commit '+head+(' plus local changes' if dirty else '')+').\r\n'
+    'Source code: '+SOURCE_REPOSITORY+', tag orbisdesk-'+args.app_version+' (commit '+head+(' plus local changes' if dirty else '')+').\r\n'
     'Third-party sources (Wine, Mesa, VLC, Wine Gecko, DOSBox Pure, gbe_fork, curl, Mbed TLS and others)\r\n'
-    'are attached to the same release as orbisdesk-04.01-third-party-sources, listed with their SHA-256 in\r\n'
+    'are attached to the same release as orbisdesk-'+args.app_version+'-third-party-sources, listed with their SHA-256 in\r\n'
     'THIRD_PARTY.md. For three years from the release date the same sources are also available on request\r\n'
     'through the repository\'s issue tracker.\r\n')
 manifest_licenses={p.name:sha(p) for p in sorted(licenses.iterdir())}

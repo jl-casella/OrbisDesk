@@ -62,7 +62,7 @@ Release notes use GitHub's generated notes plus the Git commit subjects since th
 
 The recipe uses Ubuntu 22.04, Python 3.12, the checked toolchain versions and .NET 8 for the SDK's managed package tool. Graphics scripts resolve the current checkout instead of the author's Windows path. `~/vk-h0` is populated on the fresh runner from pinned sources, not copied from a workstation. Additional asset URLs/hashes are in [product-assets.lock.json](../product-assets.lock.json); existing dependencies remain in their original locks.
 
-The historical Windows System.Drawing wallpaper conversion is replaced by a recorded Pillow RGB/crop/bicubic conversion in the clean recipe; it uses the same pinned CC0 photograph but its BMP hash may differ. Package identities remain `ORBW00002` and the existing Content ID. The internal W288 builder/runtime names are retained as recipe/evidence identities; release provenance records the actual Git SHA and SFO version. Default local builds retain 03.87 unless `--app-version` is explicitly provided.
+The historical Windows System.Drawing wallpaper conversion is replaced by a recorded Pillow RGB/crop/bicubic conversion in the clean recipe; it uses the same pinned CC0 photograph but its BMP hash may differ. Package identities remain `ORBW00002` and the existing Content ID. The internal builder/runtime build ID (W288 at first, W302 since the alpha-1 merge) names `out/wine-hardware-wNNN` and is kept as a recipe/evidence identity; the clean recipe finds that single manifest instead of assuming one ID. Release provenance records the actual Git SHA and SFO version, which also fills `C:orbisicensesSOURCE.txt`. Local builds use the builder's default version (04.01) unless `--app-version` is given.
 
 The candidate contains:
 

@@ -21,6 +21,9 @@ INPUTS = RESULTS / 'product-cache-inputs.json'
 STATUS = RESULTS / 'product-cache-status.json'
 DOWNLOAD_STATUS = RESULTS / 'product-download-cache.json'
 BLOCKS = ('graphics', 'wine')
+# Repository files outside tools/vk-h0 that the graphics recipes read (patch-mangohud-orbis-metrics.py,
+# and project_brand.py imported by the patch scripts).
+GRAPHICS_REPOSITORY_INPUTS = ('platform/ps4/pw_telemetry.h', 'tools/project_brand.py')
 
 
 def fingerprint(value):
@@ -272,7 +275,11 @@ def make_keys():
     records = {}
     for block in BLOCKS:
         if block == 'graphics':
-            selected = shared + [p for p in tracked if p.startswith(('tools/vk-h0/', 'native/', 'platform/ps4/', 'patches/shadPS4/'))]
+            # Only what the graphics recipes read: tools/vk-h0 and the repository files its patch
+            # scripts open. Launcher/adapter sources (native/, the rest of platform/ps4/) are inputs of the
+            # Wine/ELF steps after this block, so editing them must not force a Mesa/Zink/MangoHud rebuild.
+            selected = shared + [p for p in tracked if p.startswith(('tools/vk-h0/', 'patches/shadPS4/'))
+                                 or p in GRAPHICS_REPOSITORY_INPUTS]
             repositories = {k: deps['repositories'][k] for k in ('DolphinPS4', 'Crema', 'mangohud',
                            'Vulkan-Headers', 'Vulkan-Loader', 'Vulkan-Tools')}
             source = {'repositories': repositories, 'archives': deps['archives'], 'llvm': assets['llvm-source'],
