@@ -68,18 +68,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
-        with:
-          dotnet-version: '8.0.x'
-      - name: Reclaim unused hosted toolchains and verify disk budget
-        timeout-minutes: 10
-        run: python3 tools/ci/runner_disk.py prepare
-      - name: Install clean runner prerequisites
-        timeout-minutes: 20
-        run: bash tools/ci/install-product.sh
+      - name: Prepare the product runner (same setup as the prebuilt blocks)
+        timeout-minutes: 30
+        uses: ./.github/actions/product-runner
       - name: Fingerprint product dependency blocks
         id: product-key
         run: python3 tools/ci/product_cache.py keys
@@ -112,6 +103,8 @@ jobs:
       - name: Build product from pinned sources
         env:
           PRODUCT_VERSION: ${{ needs.authorize.outputs.version }}
+          # read-only: downloads the prebuilt blocks pinned in prebuilt-blocks.lock.json on a cache miss
+          GH_TOKEN: ${{ github.token }}
         run: python3 tools/ci/build-product.py --version "$PRODUCT_VERSION" --cache-mode "$PRODUCT_CACHE_MODE"
       - name: Verify reusable blocks even if a later product phase failed
         id: product-ready

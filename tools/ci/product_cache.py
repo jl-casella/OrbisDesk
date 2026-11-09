@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Verified, allowlisted product build snapshots; never cache prefixes or PKGs."""
+"""Verified, allowlisted product build snapshots; never PKGs, consoles or user data.
+
+The Wine block includes the sealed prefix package produced from its complete host tree (W303).
+"""
 import argparse
 import hashlib
 import json
@@ -24,6 +27,22 @@ BLOCKS = ('graphics', 'wine')
 # Repository files outside tools/vk-h0 that the graphics recipes read (patch-mangohud-orbis-metrics.py,
 # and project_brand.py imported by the patch scripts).
 GRAPHICS_REPOSITORY_INPUTS = ('platform/ps4/pw_telemetry.h', 'tools/project_brand.py')
+# Everything the Wine block's recipe reads besides the pinned sources: the complete host tree and its
+# closures, the staging declarations they select from, and the fixture, producer and packager of the prefix.
+WINE_RECIPE_INPUTS = ('tools/build-wine.py', 'tools/build-host-wine-closure.py', 'tools/build-host-wine-unix.py',
+                      'tools/build-host-wine-tree.py', 'tools/wine_module_names.py', 'tools/wine_product_seeds.py',
+                      'tools/stage-wine-i386.py', 'tools/stage-wine-programs.py', 'tools/stage-wine-extras.py',
+                      'tools/stage-mshtml-hw.py', 'tools/stage-dshow-i386.py', 'tools/build.py',
+                      'tools/verify_artifacts.py', 'tools/prepare-host-prefix.py', 'tools/package-wine-prefix.py',
+                      'tools/wine_prefix.py')
+WINE_RECIPE_TREES = ('fixtures/win32/',)
+# Installed packages that can shape compiled outputs: development headers/libraries and the toolchain.
+# The rest of the hosted image (browsers, SDKs, the running kernel) changes weekly without touching
+# these builds and would make every prebuilt block stale with each image update.
+BUILD_PACKAGE_PREFIXES = ('binutils', 'gcc', 'g++', 'cpp', 'clang', 'llvm', 'lld', 'libllvm', 'libclang',
+                          'mingw-w64', 'bison', 'flex', 'gettext', 'autoconf', 'automake', 'libtool', 'make',
+                          'pkg-config', 'pkgconf', 'python3', 'perl', 'libc6', 'libc-', 'libstdc++', 'libgcc',
+                          'nasm', 'meson', 'ninja', 'cmake', 'p7zip')
 
 
 def fingerprint(value):
@@ -78,7 +97,8 @@ def mounts(block):
     if block == 'wine':
         return {'runtime': ROOT / '.deps/wine/runtime', 'pe': ROOT / 'out/wine',
                 'build-report': ROOT / 'out/wine-build.json',
-                'closure': ROOT / 'reports/increment15/host-build'}
+                'closure': ROOT / 'reports/increment15/host-build',
+                'prefix-package': ROOT / 'reports/increment15/prefix-package'}
     raise ValueError('Unknown product cache block')
 
 
@@ -247,8 +267,18 @@ def restore(bundle, key_record, destinations, permitted_links):
     return manifest
 
 
+def build_packages(lines):
+    selected = []
+    for line in lines:
+        name = line.split('=', 1)[0].split(':', 1)[0]
+        if name.endswith('-dev') or name.startswith(BUILD_PACKAGE_PREFIXES):
+            selected.append(line)
+    return sorted(selected)
+
+
 def make_keys():
-    packages = subprocess.check_output(['dpkg-query', '-W', '-f=${binary:Package}=${Version}\n'], text=True).splitlines()
+    packages = build_packages(subprocess.check_output(
+        ['dpkg-query', '-W', '-f=${binary:Package}=${Version}\n'], text=True).splitlines())
     tools = {}
     names = ('clang', 'clang-19', 'clang-14', 'ld', 'ld.lld-19', 'llvm-ar-19', 'llvm-ranlib-19',
              'gcc', 'g++', 'make', 'ninja', 'pkg-config', 'x86_64-w64-mingw32-gcc',
@@ -259,7 +289,7 @@ def make_keys():
     for name, path in paths.items():
         tools[name] = {'path': str(path), 'sha256': sha(path),
                        'version': subprocess.check_output([str(path), '--version'], text=True).strip()}
-    system = {'architecture': platform.machine(), 'kernel': platform.release(),
+    system = {'architecture': platform.machine(),
               'os_release': Path('/etc/os-release').read_text(),
               'packages': packages, 'tools': tools, 'root': str(ROOT), 'home': str(Path.home()),
               'environment': {k: os.environ.get(k, '') for k in ('PATH', 'CC', 'CXX', 'CFLAGS', 'CXXFLAGS',
@@ -268,7 +298,7 @@ def make_keys():
                   'CMAKE_PREFIX_PATH', 'LC_ALL', 'LANG', 'TZ')}}
     deps = json.loads((ROOT / 'dependencies.lock.json').read_text())
     assets = json.loads((ROOT / 'product-assets.lock.json').read_text())['downloads']
-    shared = ['tools/ci/product_cache.py', 'tools/ci/build-product.py', 'tools/ci/install-product.sh',
+    shared = ['tools/ci/product_cache.py', 'tools/ci/product_blocks.py', 'tools/ci/install-product.sh',
               'tools/ci/install-runner.sh', 'tools/ci/common.py', 'tools/logged_process.py',
               'tools/restore-dependencies.py', 'tools/ci/runner_disk.py']
     tracked = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files'], text=True).splitlines()
@@ -285,14 +315,10 @@ def make_keys():
             source = {'repositories': repositories, 'archives': deps['archives'], 'llvm': assets['llvm-source'],
                       'fork': json.loads((ROOT / 'fork.lock.json').read_text()), 'restore': deps['shadps4_fork']}
         else:
-            selected = shared + ['tools/build-wine.py', 'tools/build-host-wine-closure.py',
-                                 'tools/build-host-wine-unix.py', 'tools/wine_module_names.py',
-                                 'tools/wine_product_seeds.py', 'tools/stage-wine-i386.py',
-                                 'tools/stage-wine-programs.py', 'tools/stage-wine-extras.py',
-                                 'tools/stage-mshtml-hw.py', 'tools/stage-dshow-i386.py']
+            selected = shared + list(WINE_RECIPE_INPUTS) + [p for p in tracked if p.startswith(WINE_RECIPE_TREES)]
             source = {'repositories': {k: deps['repositories'][k] for k in ('wine-build-source', 'prospero-win')},
                       'wine': json.loads((ROOT / 'sources.lock.json').read_text())['sources']['wine']}
-        inputs = {'schema_version': 1, 'block': block, 'system': system, 'source': source,
+        inputs = {'schema_version': 2, 'block': block, 'system': system, 'source': source,
                   'sdk': json.loads((ROOT / 'artifacts.lock.json').read_text())['openorbis'],
                   'recipes': {p: sha(ROOT / p) for p in sorted(set(selected))}}
         records[block] = {'key': fingerprint(inputs), 'inputs': inputs}
@@ -335,6 +361,15 @@ def validate_outputs(block):
         expected = json.loads((ROOT / 'sources.lock.json').read_text())['sources']['wine']['commit']
         if report['status'] != 'passed' or report['unknown_imports'] or report['wine_commit'] != expected:
             raise ValueError('Wine closure cache is not a passed pinned closure')
+        tree = json.loads((ROOT / 'reports/increment15/host-build/tree-report.json').read_text())
+        if tree['status'] != 'passed' or tree['unexpected_failures'] or tree['wine_commit'] != expected:
+            raise ValueError('Wine block was not built from the complete pinned host tree')
+        from wine_prefix import validate_package
+        prefix = validate_package(mounts(block)['prefix-package'], expected)
+        # The prefix embeds the console fixture; the product build stages the one it compiled itself.
+        fixture = ROOT / 'out/console32-bare.exe'
+        if not fixture.is_file() or sha(fixture) != prefix['exe_sha256']:
+            raise ValueError('Wine block prefix embeds a different console fixture than this build')
 
 
 def normalize_wine_source():
@@ -358,19 +393,31 @@ class ProductCache:
         self.mode = mode
         self.keys = make_keys()
         self.status = {'cache_mode': mode, 'requested_by_source_sha': revision(), 'blocks': {},
-                       'scope': 'Build dependencies only; prefix creation, verification and packaging always run'}
+                       'scope': 'Build dependencies (graphics; host Wine with its verified sealed prefix); '
+                                'PS4 Wine, staging and packaging always run'}
         write_json(STATUS, self.status)
 
     def use(self, block):
         start = time.monotonic()
         bundle = BASE / block
-        reused = self.mode == 'reuse' and bundle.exists()
+        source, prebuilt_status = None, None
+        if self.mode == 'reuse':
+            if bundle.exists():
+                source = 'actions-cache'
+            else:
+                # Only a lock entry whose key equals this run's key, with matching hashes, lands here.
+                import prebuilt
+                with phase('product-prebuilt-fetch-' + block):
+                    prebuilt_status = prebuilt.fetch(block, self.keys[block], bundle)
+                source = 'prebuilt-release' if prebuilt_status['fetched'] else None
+        reused = source is not None
         producer = None
         if reused:
             with phase('product-cache-restore-' + block):
                 producer = restore(bundle, self.keys[block], mounts(block), allowed_links(block))
                 validate_outputs(block)
-        self.status['blocks'][block] = {'reused': reused, 'key': self.keys[block]['key'],
+        self.status['blocks'][block] = {'reused': reused, 'source': source, 'prebuilt': prebuilt_status,
+                                       'key': self.keys[block]['key'],
                                        'producer_sha': producer['producer_sha'] if producer else None,
                                        'producer_run_id': producer['run_id'] if producer else None,
                                        'restore_seconds': round(time.monotonic() - start, 3), 'sealed': False}
