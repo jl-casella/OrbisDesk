@@ -14,6 +14,8 @@ EBOOT_BASE=0x1100000000
 ROOT=pathlib.Path(__file__).resolve().parents[1];sdk=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
 parser=argparse.ArgumentParser()
 parser.add_argument('--app-version',default='04.01',help='SFO and boot-selector version (NN.NN)')
+parser.add_argument('--runtime-outside-package',action='store_true',
+                    help='development builds only: a package without the runtime (upload it with upload-hardware.py)')
 parser.add_argument('--allow-build-paths',action='store_true',
                     help='development builds only: ship even if binaries still hold the build PC\'s paths (recorded in the manifest)')
 parser.add_argument('--mangohud',choices=('enabled','disabled'),default='enabled',
@@ -23,6 +25,7 @@ if not __import__('re').fullmatch(r'[0-9]{2}\.[0-9]{2}',args.app_version):
     parser.error('app-version must be NN.NN')
 mangohud_enabled=args.mangohud=='enabled'
 work=ROOT/'build/wine-hardware-w302';app=work/'app';out=ROOT/'out/wine-hardware-w302'
+HW_BUILD_ID=work.name.rsplit('-',1)[1].upper()  # W302: the build this script makes (its work folder's name)
 app.mkdir(parents=True,exist_ok=True);out.mkdir(parents=True,exist_ok=True)
 base=json.loads((ROOT/'build/wine-boot/link-report.json').read_text())
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -980,42 +983,10 @@ for folder in (data/'wine/lib/wine/x86_64-windows',prefix/'drive_c/windows/syste
         stripped['modules']+=1;stripped['bytes_before']+=before;stripped['bytes_after']+=module.stat().st_size
 print(json.dumps({'stripped_modules':stripped['modules'],'mib_before':stripped['bytes_before']>>20,
                   'mib_after':stripped['bytes_after']>>20,'kept':len(stripped['kept'])}))
-# alpha-1: nothing of the build PC in what ships. Its checkout and home paths (compilers' __FILE__ and debug
-# strings: -ffile-prefix-map in the builders) and its user's profile, in the runtime and the ELF.
-build_identity=sorted({str(ROOT),str(ROOT).replace('/','\\'),str(pathlib.Path.home())}-{'','/','\\'})
-build_identity_utf16=[s.encode('utf-16-le') for s in build_identity]
-identity_hits=[]
-for path in [app/'eboot.bin',*(p for p in data.rglob('*') if p.is_file())]:
-    blob=path.read_bytes()
-    if any(s.encode() in blob for s in build_identity) or any(s in blob for s in build_identity_utf16):
-        identity_hits.append(str(path.relative_to(work)))
-if (prefix/'drive_c/users'/host_profiles[0].name).exists():identity_hits.append('host profile folder')
-if identity_hits and not args.allow_build_paths:
-    raise SystemExit('build PC paths in %d shipped files (first: %s); rebuild them with -ffile-prefix-map, '
-                     'or --allow-build-paths for a development build'%(len(identity_hits),', '.join(identity_hits[:5])))
-content='IV0000-ORBW00002_00-ORBISWINW0010000'
-pkg=package_app(ROOT,app,out,'OrbisDesk','ORBW00002',content,version=args.app_version,filename='OrbisDesk.pkg')
-manifest={'build':'W302','app_version':args.app_version,'title_id':'ORBW00002','package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),
-    'package_bytes':pkg.stat().st_size,'eboot_sha256':sha(app/'eboot.bin'),'base_wine_elf_sha256':base['bootstrap_sha256'],
-    'wine_commit':wine_commit,'prefix_package':verified,'hardware_status':'pending','Wine_booted':False,
-    'runtime_root':str(data.relative_to(ROOT)),
-    'directories':[p.relative_to(data).as_posix() for p in sorted(data.rglob('*')) if p.is_dir()],
-    'runtime_files':{p.relative_to(data).as_posix():{'sha256':sha(p),'bytes':p.stat().st_size} for p in sorted(data.rglob('*')) if p.is_file()},
-    'source_hashes':{str(p.relative_to(ROOT)):sha(p) for p in (ROOT/'native/wine_hardware.c',ROOT/'native/hw_text.h',ROOT/'platform/ps4/pw_wine_fs.c',ROOT/'platform/ps4/pw_wine_platform.c',
-        ROOT/'native/wine_boot.c',ROOT/'native/hw_pad.c',ROOT/'native/hw_overlay.c',ROOT/'platform/ps4/pw_wine_sink_ps4.c',ROOT/'tools/build-wine-hardware.py',ROOT/'tools/orbis_package.py')},
-    'link_command':command,'eboot_base':hex(EBOOT_BASE),'drive_mounts':{'dosdevices/c:':'../drive_c','dosdevices/z:':'../..'},
-    'expected_result':'reports/increment15/native-prefix-console32/result.txt'}
-# Reference directory naming differs in older evidence; the canonical increment11
-# fixture output is the same console32-bare contract used by the Linux runner.
-manifest['expected_result']='reports/increment25-windows-reference/text-result.txt'
-manifest['program']='C:\\windows\\explorer.exe /desktop=shell,1280x720'
-manifest['licenses']={'folder':'wine-prefix/drive_c/orbis/licenses','files':manifest_licenses,'source_commit':head,'source_dirty':dirty}
-manifest['build_identity']={'files_with_build_paths':len(identity_hits),'allowed':args.allow_build_paths,'sample':identity_hits[:20]}
-manifest['runs_until_closed']=True
 # W170: the console keeps /data/wine-prefix between builds and the upload only adds files, so a
 # file a build stops shipping stays. W168's shortcut in the common Desktop showed File Manager
 # twice next to W169's one in the user's Desktop. upload-hardware.py deletes these paths.
-manifest['obsolete_files']=['wine-prefix/drive_c/users/Public/Desktop/File Manager.lnk',
+obsolete_files=['wine-prefix/drive_c/users/Public/Desktop/File Manager.lnk',
     # W179 (phase 9): iexplore cannot run in one process (it registers a local COM server, which
     # needs rpcss); W177 shipped its Start menu shortcut, which W179 no longer makes.
     'wine-prefix/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Internet/Internet Explorer.lnk',
@@ -1031,10 +1002,65 @@ manifest['obsolete_files']=['wine-prefix/drive_c/users/Public/Desktop/File Manag
     'wine-prefix/drive_c/users/orbis/AppData/Roaming/Moonchild Productions/Pale Moon/Profiles/orbis-nojit/user.js']
 # W243: the VLC plugins stage-vlc.py leaves out. W241 shipped 290 and VLC loads whatever is in its
 # plugins folder (W241 ran out of descriptors), so the console's copies go too.
-manifest['obsolete_files']+=['wine-prefix/drive_c/Program Files/VLC/'+name for name in vlc['left_out_plugins']]
+obsolete_files+=['wine-prefix/drive_c/Program Files/VLC/'+name for name in vlc['left_out_plugins']]
 # alpha-1 licences: libcdio.dll (GPL-3.0, prebuilt, no known source) is no longer shipped; builds since W058
 # put it in system32, so the console's copy goes too.
-manifest['obsolete_files'].append('wine-prefix/drive_c/windows/system32/libcdio.dll')
+obsolete_files.append('wine-prefix/drive_c/windows/system32/libcdio.dll')
+# The runtime's inventory (also the manifest's, below) and what the console must drop
+runtime_directories=[p.relative_to(data).as_posix() for p in sorted(data.rglob('*')) if p.is_dir()]
+runtime_files={p.relative_to(data).as_posix():{'sha256':sha(p),'bytes':p.stat().st_size} for p in sorted(data.rglob('*')) if p.is_file()}
+for path in obsolete_files:
+    if not path.startswith('wine-prefix/') or '..' in path.split('/') or path in runtime_files:
+        raise SystemExit('obsolete file must be an unshipped wine-prefix path: '+path)
+user_reg_reset=[]   # CONSOLE_OWNED keys this build takes from its own user.reg once (tools/console_state.py)
+# alpha-1: the runtime travels inside OrbisDesk.pkg as /app0/runtime, and the launcher installs it into
+# /data on the first start of each build (native/hw_install.c), with install.json as its contract:
+# the same rules tools/upload-hardware.py applies over FTP. --runtime-outside-package keeps the old
+# split (a 35 MB package and an FTP-uploaded runtime) for quick development builds.
+from console_state import CONSOLE_OWNED
+install={'schema_version':1,'build':HW_BUILD_ID,'app_version':args.app_version,'state_root':'/data/orbisdesk',
+    'writable':['wine-prefix','wine-home'],'directories':runtime_directories,
+    'files':[[path,e['sha256'],e['bytes']] for path,e in runtime_files.items()],
+    'obsolete_files':obsolete_files,'console_owned':list(CONSOLE_OWNED),'user_reg_reset':user_reg_reset,
+    'host_profile':host_profiles[0].name,'bytes':sum(e['bytes'] for e in runtime_files.values())}
+install_json=work/'install.json'
+install_json.write_text(json.dumps(install,indent=1,ensure_ascii=False)+'\n',encoding='utf-8')
+embedded={} if args.runtime_outside_package else {
+    **{'runtime/'+path:data/path for path in runtime_files},'runtime/install.json':install_json}
+# alpha-1: nothing of the build PC in what ships. Its checkout and home paths (compilers' __FILE__ and debug
+# strings: -ffile-prefix-map in the builders) and its user's profile, in the runtime and the ELF.
+build_identity=sorted({str(ROOT),str(ROOT).replace('/','\\'),str(pathlib.Path.home())}-{'','/','\\'})
+build_identity_utf16=[s.encode('utf-16-le') for s in build_identity]
+identity_hits=[]
+for path in [app/'eboot.bin',*(p for p in data.rglob('*') if p.is_file())]:
+    blob=path.read_bytes()
+    if any(s.encode() in blob for s in build_identity) or any(s in blob for s in build_identity_utf16):
+        identity_hits.append(str(path.relative_to(work)))
+if (prefix/'drive_c/users'/host_profiles[0].name).exists():identity_hits.append('host profile folder')
+if identity_hits and not args.allow_build_paths:
+    raise SystemExit('build PC paths in %d shipped files (first: %s); rebuild them with -ffile-prefix-map, '
+                     'or --allow-build-paths for a development build'%(len(identity_hits),', '.join(identity_hits[:5])))
+content='IV0000-ORBW00002_00-ORBISWINW0010000'
+pkg=package_app(ROOT,app,out,'OrbisDesk','ORBW00002',content,version=args.app_version,filename='OrbisDesk.pkg',extra=embedded)
+manifest={'build':'W302','app_version':args.app_version,'title_id':'ORBW00002','package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),
+    'package_bytes':pkg.stat().st_size,'eboot_sha256':sha(app/'eboot.bin'),'base_wine_elf_sha256':base['bootstrap_sha256'],
+    'wine_commit':wine_commit,'prefix_package':verified,'hardware_status':'pending','Wine_booted':False,
+    'runtime_root':str(data.relative_to(ROOT)),
+    'directories':runtime_directories,'runtime_files':runtime_files,
+    'source_hashes':{str(p.relative_to(ROOT)):sha(p) for p in (ROOT/'native/wine_hardware.c',ROOT/'native/hw_text.h',ROOT/'platform/ps4/pw_wine_fs.c',ROOT/'platform/ps4/pw_wine_platform.c',
+        ROOT/'native/wine_boot.c',ROOT/'native/hw_pad.c',ROOT/'native/hw_overlay.c',ROOT/'platform/ps4/pw_wine_sink_ps4.c',ROOT/'tools/build-wine-hardware.py',ROOT/'tools/orbis_package.py')},
+    'link_command':command,'eboot_base':hex(EBOOT_BASE),'drive_mounts':{'dosdevices/c:':'../drive_c','dosdevices/z:':'../..'},
+    'expected_result':'reports/increment15/native-prefix-console32/result.txt'}
+# Reference directory naming differs in older evidence; the canonical increment11
+# fixture output is the same console32-bare contract used by the Linux runner.
+manifest['expected_result']='reports/increment25-windows-reference/text-result.txt'
+manifest['program']='C:\\windows\\explorer.exe /desktop=shell,1280x720'
+manifest['licenses']={'folder':'wine-prefix/drive_c/orbis/licenses','files':manifest_licenses,'source_commit':head,'source_dirty':dirty}
+manifest['build_identity']={'files_with_build_paths':len(identity_hits),'allowed':args.allow_build_paths,'sample':identity_hits[:20]}
+manifest['runs_until_closed']=True
+manifest['obsolete_files']=obsolete_files
+manifest['user_reg_reset']=user_reg_reset
+manifest['runtime_embedded']={'embedded':not args.runtime_outside_package,'install_json':'runtime/install.json','install_json_sha256':sha(install_json),'files':len(runtime_files),'bytes':install['bytes']}
 manifest['result_name']='text-result.txt'
 manifest['expected_prefix']='passed=1;family_tahoma=1;'
 # W112 retains W103's private system.o override and rebuilds native telemetry.

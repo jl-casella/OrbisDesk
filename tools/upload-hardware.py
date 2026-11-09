@@ -53,19 +53,10 @@ def put(local,remote,expected):
     with local.open('rb') as stream:ftp.storbinary('STOR '+remote,stream,blocksize=1<<20)
     if remote_hash(remote)!=expected:raise SystemExit('read-back mismatch: '+remote)
     return 'uploaded'
-# W172 (phase 7): the console keeps what the user chose per program in winecfg
-# (HKCU\Software\Wine\AppDefaults); everything else in user.reg is the build's. Wine rewrites the
-# file on the console (its server saves every 30 s), so a plain upload would erase those choices.
-# W175: also the keys of winecfg's Desktop Integration tab (colours, metrics, visual style, app
-# theme), so the theme the user picks survives builds. Each with its subkeys. A build that must
-# change one of them names it in manifest['user_reg_reset'] (this spelling, single backslashes):
-# that upload takes it from the build, once.
+# W172/W175/W292: the user.reg keys the console keeps (tools/console_state.py, shared with the
+# first-run installer's install.json)
 USER_REG='wine-prefix/user.reg';REG_HEADER=b'WINE REGISTRY Version 2'
-CONSOLE_OWNED=('software\\wine\\appdefaults','control panel\\colors','control panel\\desktop\\windowmetrics',
-               'software\\microsoft\\windows\\currentversion\\thememanager',
-               'software\\microsoft\\windows\\currentversion\\themes\\personalize',
-               # W292: explorer's copy of the wallpaper choice (Control Panel\\Desktop stays the build's)
-               'software\\orbisdesk')
+from console_state import CONSOLE_OWNED
 reset=[key.lower() for key in manifest.get('user_reg_reset',[])]
 if not set(reset)<=set(CONSOLE_OWNED):raise SystemExit('user_reg_reset names keys the console does not own: %r'%reset)
 def reg_blocks(text):
