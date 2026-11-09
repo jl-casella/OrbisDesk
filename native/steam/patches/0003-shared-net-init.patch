@@ -1,0 +1,24 @@
+diff -ru a/src/steam/backend/native_network.cpp b/src/steam/backend/native_network.cpp
+--- a/src/steam/backend/native_network.cpp	2026-11-07 21:22:21.079672272 -0300
++++ b/src/steam/backend/native_network.cpp	2026-11-07 21:22:21.088338939 -0300
+@@ -19,6 +19,8 @@
+ extern "C" {
+ int* sceNetErrnoLoc(void);
+ int sceNetInit(void);
++// OrbisDesk: true when the process already runs libSceNet (rc: this sceNetInit's result)
++bool orbisdesk_steam_net_shared(int rc);
+ int sceNetPoolCreate(const char* name, int size, int flags);
+ int sceNetPoolDestroy(int pool_id);
+ int sceNetRecv(int socket, void* data, std::size_t size, int flags);
+@@ -102,7 +104,10 @@
+ bool InitializeNativeNetworkOnce() {
+   // Do not call sceNetTerm: ownership may be shared with rendering or artwork subsystems, and the
+   // process-wide runtime is needed for the full application lifetime.
+-  return sceNetInit() == 0;
++  // OrbisDesk: inside OrbisDesk's title Wine has already called sceNetInit, and a second call
++  // returns an error on the PS4 (platform/ps4/pw_ws2_32_libc.c); the host says whether that is so.
++  const int rc = sceNetInit();
++  return rc == 0 || orbisdesk_steam_net_shared(rc);
+ }
+ #endif
+ 

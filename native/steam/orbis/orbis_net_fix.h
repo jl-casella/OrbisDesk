@@ -21,9 +21,14 @@
 /* no socket(2) type flags on this kernel's FreeBSD 9 base: curl then sets them after creating */
 #undef SOCK_NONBLOCK
 #undef SOCK_CLOEXEC
+/* Inside OrbisDesk's title (STEAM_UI_HOSTED) every setsockopt goes through Wine's wrapper, which
+ * turns Linux's TCP option numbers into the kernel's (platform/ps4/pw_wine_sockopt.c): there the SDK's
+ * Linux numbers must stay, or they would be turned twice (0x100 is no Linux name: ENOPROTOOPT). */
+#ifndef STEAM_UI_HOSTED
 #undef TCP_KEEPIDLE
 #define TCP_KEEPIDLE 0x100
 #undef TCP_KEEPINTVL
 #define TCP_KEEPINTVL 0x200
 #undef TCP_KEEPCNT
 #define TCP_KEEPCNT 0x400
+#endif

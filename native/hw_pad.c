@@ -23,6 +23,7 @@
 #include <strings.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include "pw_trace.h"  /* alpha-1: the first input events and stick reports, traces only */
 #include <sys/time.h>
 #include <orbis/libkernel.h>
 #include <orbis/Pad.h>
@@ -109,13 +110,17 @@ extern void pw_hw_cursor_moved(void);
 extern int pw_hw_fps_toggle(void);  /* W165: platform/ps4/pw_wine_sink_ps4.c; 0 when the key is not taken */
 /* W236: the control overlay (native/hw_overlay.c): 1 while it has the pad */
 extern int pw_hw_overlay_pad(const OrbisPadData *data);
+/* The Steam client inside the title (native/steam/steam_ui.c, STEAM_UI_HOSTED): its screen takes the pad
+ * while open, and "<steam-open>" (C:\orbis\steam-open.exe) opens it (native/steam/steam_client.cpp) */
+extern int pw_hw_steam_pad(const OrbisPadData *data);
+extern const char *pw_hw_steam_open(void);
 
 static void push(uint32_t type,uint32_t code,uint32_t down,const char *source)
 {
     pthread_mutex_lock(&lock);
     if(count<QUEUE) {queue[(head+count++)%QUEUE]=(struct PwWineInput){type,code,cursor_x,cursor_y,down};}
     pthread_mutex_unlock(&lock);
-    if(type!=2 && logged<48) {++logged;fprintf(stderr,"PWBOOT input_event source=%s type=%u code=%u down=%u at=%d,%d\n",
+    if(type!=2 && logged<48 && pw_trace_on()) {++logged;fprintf(stderr,"PWBOOT input_event source=%s type=%u code=%u down=%u at=%d,%d\n",
                                                source,type,code,down,cursor_x,cursor_y);}
 }
 /* Wheel (W038): ps5drv type 4 carries the signed delta in y, in WHEEL_DELTA (120) units,
@@ -126,7 +131,7 @@ static void push_wheel(int delta,const char *source)
     if(count<QUEUE) {queue[(head+count++)%QUEUE]=(struct PwWineInput){4,0,cursor_x,delta,0};}
     pthread_mutex_unlock(&lock);
     unsigned *wheel_logged=source[0]=='p'?&pad_wheel_logged:&mouse_wheel_logged;
-    if(*wheel_logged<16) {++*wheel_logged;fprintf(stderr,"PWBOOT input_event source=%s type=4 delta=%d at=%d,%d\n",source,delta,cursor_x,cursor_y);}
+    if(*wheel_logged<16 && pw_trace_on()) {++*wheel_logged;fprintf(stderr,"PWBOOT input_event source=%s type=4 delta=%d at=%d,%d\n",source,delta,cursor_x,cursor_y);}
 }
 /* W248: relative motion (ps5drv type 5: x and y the delta), for mouse look; the first few are logged */
 static void push_relative(int dx,int dy)
@@ -135,7 +140,7 @@ static void push_relative(int dx,int dy)
     pthread_mutex_lock(&lock);
     if(count<QUEUE) {queue[(head+count++)%QUEUE]=(struct PwWineInput){5,0,dx,dy,0};}
     pthread_mutex_unlock(&lock);
-    if(relative_logged<8) {++relative_logged;fprintf(stderr,"PWPAD rstick mouse dx=%d dy=%d\n",dx,dy);}
+    if(relative_logged<8 && pw_trace_on()) {++relative_logged;fprintf(stderr,"PWPAD rstick mouse dx=%d dy=%d\n",dx,dy);}
 }
 static int move_by(double dx,double dy)
 {
@@ -333,7 +338,24 @@ extern void pw_hw_overlay_exit_result(const char *result);
 extern void pw_hw_overlay_program(const char *exe,int load);
 void pw_wine_pad_profile(const char *exe,int load)
 {
+    /* Steam: the answer ("opened", "busy" or "error ...") goes back in the call's 260-byte buffer */
+    if(exe && !strcmp(exe,"<steam-open>")) {snprintf((char *)exe,260,"%s",pw_hw_steam_open());return;}
     if(exe && !strcmp(exe,"<mangohud>")) {pw_hw_overlay_mangohud(load);return;}
+    /* W292: explorer's "Reset as Root" / "Reset as Sandbox": the mode chosen at start, and the relaunch
+     * into the other one, which answers only when it failed (native/wine_hardware.c) */
+    if(exe && !strcmp(exe,"<root-mode>")) {
+        extern int pw_hw_boot_root(void) __attribute__((weak));
+        snprintf((char *)exe,260,"%s",!pw_hw_boot_root?"error: unavailable":pw_hw_boot_root()?"root":"normal");
+        return;
+    }
+    if(exe && (!strcmp(exe,"<reset-root>") || !strcmp(exe,"<reset-sandbox>"))) {
+        extern const char *pw_hw_reset_mode(int root) __attribute__((weak));
+        int root=!strcmp(exe,"<reset-root>");
+        fprintf(stderr,"PWROOT request reset to=%s\n",root?"root":"normal");
+        snprintf((char *)exe,260,"%s",pw_hw_reset_mode?pw_hw_reset_mode(root):"error: unavailable");
+        fprintf(stderr,"PWROOT request reply=%s\n",exe);
+        return;
+    }
     if(exe && !strcmp(exe,"<overlay-desktop>")) {pw_hw_overlay_desktop(load);return;}
     /* W242: "exit" or "-", then the windows Vulkan presented to in the last 2 s, in hex (the closer
      * counts MangoHud only for the one in front) */
@@ -405,7 +427,7 @@ static int poll_controller(unsigned reads,uint32_t *previous,int *moved)
     if(rc) return 0;
     /* W236: while the overlay has the pad (L3+R3), programs and the emulation read it neutral: connected,
      * nothing pressed, sticks centred, no finger. What they held is released below, as on any release. */
-    if(pw_hw_overlay_pad(&data)) {
+    if(pw_hw_overlay_pad(&data) || pw_hw_steam_pad(&data)) {
         data.buttons=0;data.leftStick.x=data.leftStick.y=data.rightStick.x=data.rightStick.y=128;
         data.analogButtons.l2=data.analogButtons.r2=0;data.touch.fingers=0;
     }
@@ -460,7 +482,7 @@ static int poll_controller(unsigned reads,uint32_t *previous,int *moved)
     /* W042: in W041 the right stick never left the dead zone on y; record any movement of
      * either axis, with the first 16 bytes of the report, to see where it lands */
     static int stick_logged;
-    if((abs(ry)>DEADZONE || abs((int)data.rightStick.x-128)>DEADZONE) && stick_logged<8) {
+    if((abs(ry)>DEADZONE || abs((int)data.rightStick.x-128)>DEADZONE) && stick_logged<8 && pw_trace_on()) {
         const uint8_t *raw=(const uint8_t *)&data;++stick_logged;
         fprintf(stderr,"PWBOOT right_stick x=%u y=%u raw=",data.rightStick.x,data.rightStick.y);
         for(int i=0;i<16;i++) fprintf(stderr,"%02x",raw[i]);

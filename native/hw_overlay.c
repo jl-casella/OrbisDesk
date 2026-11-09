@@ -7,6 +7,8 @@
  *                 F24) and answers with the result, or return_to_desktop in a relaunched title
  *                 (native/wine_hardware.c)
  *   ESTADISTICAS  a corner readout with measured values only; "--" where there is no measure.
+ *                 W2xx: laid out as MangoHud's HUD (legacy layout, its default colours), with the rows,
+ *                 place and font_size of the prefix's MangoHud.conf
  *                 W238: MangoHud's own HUD instead, when its layer is loaded and a Vulkan program
  *                 presents: Shift+F12, a hotkey of kernelbase's closer, which MangoHud reads as F12
  *   TECLADO       an on-screen keyboard; its keys go to the focused window as key events
@@ -25,11 +27,14 @@
  *                 ("lang=es" or "lang=en"); every text it shows comes from the strings table below
  * The pad thread calls pw_hw_overlay_pad on each read; the sink calls pw_hw_overlay_draw on each
  * output frame before the flip (platform/ps4/pw_wine_sink_ps4.c). Drawn opaque: reading back the
- * output buffer, which the GPU writes, would be slow. */
+ * output buffer, which the GPU writes, would be slow. The readout's background is a dither instead
+ * (hud_background): part of the pixels take the background colour, the rest keep the picture. */
+#include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/types.h>
@@ -60,11 +65,11 @@ enum {HUD_HOLD_US=250000};
 static const char *const type_names[TYPES]={"XBOX 360","XBOX ONE","DUALSENSE"};
 static const char *const type_words[TYPES]={"x360","xone","dualsense"};
 
-/* W240: every text the overlay shows, in Spanish and in English. The glyphs have no accents or N
- * with tilde (hw_text.h and the tables below), so the Spanish is written without them. */
+/* W240: every text the overlay shows, in Spanish and in English, as UTF-8. W294: with the accents and the N with
+ * tilde Spanish needs (text() draws them: a base letter and a mark, marked_glyphs below). */
 enum {LANG_ES,LANG_EN,LANGS};
 static const char *const lang_words[LANGS]={"es","en"};
-static const char *const lang_names[LANGS]={"ESPANOL","ENGLISH"};
+static const char *const lang_names[LANGS]={"ESPAÑOL","ENGLISH"};
 enum {S_ENTRY_EXIT,S_ENTRY_STATS,S_ENTRY_KEYBOARD,S_ENTRY_MOUSE,S_ENTRY_CONTROL,S_ENTRY_CONFIG,
       S_ENTRY_CURSOR,S_CURSOR_GAME,S_CURSOR_ALWAYS,S_CURSOR_HIDDEN,S_CURSOR_PROGRAM,S_HELP_CURSOR,S_T_CURSOR_NO_PROGRAM,
       S_ENTRY_STRETCH,S_HELP_STRETCH,
@@ -80,35 +85,35 @@ enum {S_ENTRY_EXIT,S_ENTRY_STATS,S_ENTRY_KEYBOARD,S_ENTRY_MOUSE,S_ENTRY_CONTROL,
       S_T_BACK_FAILED,S_T_SEARCHING,STRINGS};
 static const char *const strings[LANGS][STRINGS]={
     [LANG_ES]={
-        [S_ENTRY_EXIT]="SALIR",[S_ENTRY_STATS]="ESTADISTICAS",[S_ENTRY_KEYBOARD]="TECLADO",[S_ENTRY_MOUSE]="MOUSE",
+        [S_ENTRY_EXIT]="SALIR",[S_ENTRY_STATS]="ESTADÍSTICAS",[S_ENTRY_KEYBOARD]="TECLADO",[S_ENTRY_MOUSE]="MOUSE",
         [S_ENTRY_CONTROL]="CONTROL",[S_ENTRY_CONFIG]="CONFIG",
         [S_ENTRY_CURSOR]="CURSOR",[S_CURSOR_GAME]="JUEGO",[S_CURSOR_ALWAYS]="SIEMPRE",[S_CURSOR_HIDDEN]="OCULTO",
-        [S_CURSOR_PROGRAM]="PROGRAMA:",[S_T_CURSOR_NO_PROGRAM]="CURSOR: NINGUN PROGRAMA ABIERTO",
+        [S_CURSOR_PROGRAM]="PROGRAMA:",[S_T_CURSOR_NO_PROGRAM]="CURSOR: NINGÚN PROGRAMA ABIERTO",
         [S_ENTRY_STRETCH]="ESTIRAR",
-        [S_ENTRY_RENDER]="GRAFICOS",
-        [S_HELP_RENDER]="IZQUIERDA Y DERECHA ELIGEN, X GUARDA PARA EL ULTIMO PROGRAMA ABIERTO EN EL REGISTRO DE WINE. "
-                        "VALE DESDE SU PROXIMO ARRANQUE. PRIMERO D3D8/9, DESPUES DIRECTDRAW Y D3D7. SOLO PROGRAMAS DE 32 BITS.",
+        [S_ENTRY_RENDER]="GRÁFICOS",
+        [S_HELP_RENDER]="IZQUIERDA Y DERECHA ELIGEN, X GUARDA PARA EL ÚLTIMO PROGRAMA ABIERTO EN EL REGISTRO DE WINE. "
+                        "VALE DESDE SU PRÓXIMO ARRANQUE. PRIMERO D3D8/9, DESPUÉS DIRECTDRAW Y D3D7. SOLO PROGRAMAS DE 32 BITS.",
         [S_RENDER_DXVK_VK]="DXVK + VULKAN",[S_RENDER_DXVK_GL]="DXVK + OPENGL",[S_RENDER_WINED3D_VK]="WINED3D + VULKAN",
         [S_RENDER_WINED3D_GL]="WINED3D + OPENGL",
-        [S_T_RENDER_SAVED]="GRAFICOS: AL PROXIMO ARRANQUE",[S_T_RENDER_FAILED]="GRAFICOS: NO SE GUARDO (VER LOG)",
-        [S_T_RENDER_NO_ANSWER]="GRAFICOS: SIN RESPUESTA (VER LOG)",[S_T_RENDER_NO_PROGRAM]="GRAFICOS: NINGUN PROGRAMA ABIERTO",
-        [S_HELP_STRETCH]="X: ESTIRA LA IMAGEN A TODA LA PANTALLA, SIN FRANJAS NEGRAS, O VUELVE A MANTENER SU PROPORCION. "
-                         "SE GUARDA PARA EL ULTIMO PROGRAMA ABIERTO EN C:\\ORBIS\\OVERLAY.INI. NO CAMBIA CON EL ESCRITORIO "
+        [S_T_RENDER_SAVED]="GRÁFICOS: AL PRÓXIMO ARRANQUE",[S_T_RENDER_FAILED]="GRÁFICOS: NO SE GUARDÓ",
+        [S_T_RENDER_NO_ANSWER]="GRÁFICOS: SIN RESPUESTA",[S_T_RENDER_NO_PROGRAM]="GRÁFICOS: NINGÚN PROGRAMA ABIERTO",
+        [S_HELP_STRETCH]="X: ESTIRA LA IMAGEN A TODA LA PANTALLA, SIN FRANJAS NEGRAS, O VUELVE A MANTENER SU PROPORCIÓN. "
+                         "SE GUARDA PARA EL ÚLTIMO PROGRAMA ABIERTO EN C:\\ORBIS\\OVERLAY.INI. NO CAMBIA CON EL ESCRITORIO "
                          "AL FRENTE.",
-        [S_HELP_CURSOR]="IZQUIERDA Y DERECHA ELIGEN, X GUARDA PARA EL ULTIMO PROGRAMA ABIERTO EN C:\\ORBIS\\OVERLAY.INI. "
+        [S_HELP_CURSOR]="IZQUIERDA Y DERECHA ELIGEN, X GUARDA PARA EL ÚLTIMO PROGRAMA ABIERTO EN C:\\ORBIS\\OVERLAY.INI. "
                         "JUEGO: LA FLECHA SE VE, SALVO EN PANTALLA COMPLETA SI EL JUEGO NO PONE CURSOR. SIEMPRE: SE VE "
                         "SIEMPRE. OCULTO: NO SE VE MIENTRAS ESE PROGRAMA SIGA ABIERTO. EL MANDO LA MUEVE IGUAL.",
-        [S_ON]="SI",[S_OFF]="NO",[S_OWN_ON]="PROPIA: SI",[S_OWN_OFF]="PROPIA: NO",[S_SAVED]="GUARDADO",[S_FOOTER]="X ELEGIR   O CERRAR",
+        [S_ON]="SÍ",[S_OFF]="NO",[S_OWN_ON]="PROPIA: SÍ",[S_OWN_OFF]="PROPIA: NO",[S_SAVED]="GUARDADO",[S_FOOTER]="X ELEGIR   O CERRAR",
         [S_HELP_EXIT]="X: CIERRA EL PROGRAMA DE LA VENTANA ACTIVA, COMO SI TERMINARA DE GOLPE, Y QUEDA EL ESCRITORIO. "
                       "NO PREGUNTA NI GUARDA: LO NO GUARDADO SE PIERDE.",
         [S_HELP_EXIT_ALONE]="X: CIERRA ESTE PROGRAMA, QUE CORRE SOLO, Y LA APP SE REINICIA EN EL ESCRITORIO. NO PREGUNTA NI GUARDA.",
         [S_HELP_STATS]="X: MUESTRA U OCULTA LA LECTURA EN LA ESQUINA. FPS VK: PRESENTACIONES VULKAN POR SEGUNDO. CUADROS: "
-                       "LOS QUE WINE ENTREGA A LA PANTALLA, CON SU INTERVALO MEDIO Y MAXIMO. CPU Y GPU: USO MEDIDO DEL TITULO. "
+                       "LOS QUE WINE ENTREGA A LA PANTALLA, CON SU INTERVALO MEDIO Y MÁXIMO. CPU Y GPU: USO MEDIDO DEL TÍTULO. "
                        "MEM: FLEXIBLE LIBRE Y MAYOR BLOQUE LIBRE DE MEMORIA DIRECTA. -- ES SIN MEDIDA.",
         [S_HELP_STATS_HUD]="X: MUESTRA U OCULTA MANGOHUD CON SU TECLA (SHIFT+F12; EL PROGRAMA NO LA RECIBE). EL OVERLAY NO PUEDE "
-                           "LEER SI QUEDO VISIBLE: MIRALO EN PANTALLA. SIN UN PROGRAMA VULKAN EN PANTALLA, X PRENDE LA LECTURA PROPIA.",
-        [S_HELP_KEYBOARD]="X: ABRE EL TECLADO. ESCRIBE EN LA VENTANA CON EL FOCO. CUADRADO BORRA, TRIANGULO ESPACIO, L1 Y R1 "
-                          "MUEVEN EL CURSOR, L2 MAYUSCULA, R2 SIMBOLOS, OPTIONS ENTER, CIRCULO CIERRA.",
+                           "LEER SI QUEDÓ VISIBLE: MIRALO EN PANTALLA. SIN UN PROGRAMA VULKAN EN PANTALLA, X PRENDE LA LECTURA PROPIA.",
+        [S_HELP_KEYBOARD]="X: ABRE EL TECLADO. ESCRIBE EN LA VENTANA CON EL FOCO. CUADRADO BORRA, TRIÁNGULO ESPACIO, L1 Y R1 "
+                          "MUEVEN EL CURSOR, L2 MAYÚSCULA, R2 SÍMBOLOS, OPTIONS ENTER, CÍRCULO CIERRA.",
         [S_HELP_MOUSE]="X: ENCIENDE O APAGA EL MANDO COMO MOUSE. APAGADO, EL STICK Y EL TOUCHPAD NO MUEVEN EL PUNTERO NI HACEN "
                        "CLIC NI RUEDA. LAS TECLAS DEL MANDO Y LOS PERFILES SIGUEN. VALE HASTA CERRAR LA APP.",
         [S_HELP_CONTROL]="IZQUIERDA Y DERECHA ELIGEN, X GUARDA. MUCHOS JUEGOS ELIGEN EL MANDO AL ARRANCAR: SI NO CAMBIA, "
@@ -116,18 +121,18 @@ static const char *const strings[LANGS][STRINGS]={
                          "PARA JUEGOS QUE BUSCAN MANDOS NUEVOS (SDL, STEAM); XINPUT SIGUE COMO 360: PUEDE HABER DOS MANDOS.",
         [S_HELP_CONFIG]="IZQUIERDA Y DERECHA ELIGEN EL IDIOMA DEL OVERLAY, X LO GUARDA EN C:\\ORBIS\\OVERLAY.INI. SE APLICA "
                         "EN EL MOMENTO.",
-        [S_KB_TITLE]="TECLADO",[S_KB_CAPS]="MAYUS",[S_KB_LOWER]="minus",
-        [S_KB_HINT1]="X TECLA  CUADRADO BORRA  TRIANGULO ESPACIO  L1 R1 CURSOR",
-        [S_KB_HINT2]="L2 MAYUSCULA  R2 SIMBOLOS  OPTIONS ENTER  CIRCULO CIERRA",
-        [S_KEY_SHIFT]="MAYUS",[S_KEY_SPACE]="ESPACIO",[S_KEY_BACK]="BORRAR",[S_KEY_ENTER]="ENTER",
+        [S_KB_TITLE]="TECLADO",[S_KB_CAPS]="MAYÚS",[S_KB_LOWER]="minús",
+        [S_KB_HINT1]="X TECLA  CUADRADO BORRA  TRIÁNGULO ESPACIO  L1 R1 CURSOR",
+        [S_KB_HINT2]="L2 MAYÚSCULA  R2 SÍMBOLOS  OPTIONS ENTER  CÍRCULO CIERRA",
+        [S_KEY_SHIFT]="MAYÚS",[S_KEY_SPACE]="ESPACIO",[S_KEY_BACK]="BORRAR",[S_KEY_ENTER]="ENTER",
         [S_KEY_HOME]="INICIO",[S_KEY_END]="FIN",[S_KEY_DELETE]="SUPR",
         [S_STAT_FRAMES]="CUADROS",[S_STAT_INTERVAL]="INTERVALO",[S_STAT_DIRECT]="DIRECTA",
         [S_T_HUD_SENT]="MANGOHUD: SHIFT+F12 ENVIADO",[S_T_TYPE_NOT_SAVED]="NO SE PUDO GUARDAR EL TIPO",
         [S_T_CONFIG_NOT_SAVED]="NO SE PUDO GUARDAR LA CONFIG",[S_T_CLOSED]="PROGRAMA CERRADO",
-        [S_T_REFUSED_DESKTOP]="SALIR: EL ESCRITORIO NO SE CIERRA",[S_T_REFUSED_NONE]="SALIR: NO HAY VENTANA ACTIVA",
-        [S_T_REFUSED_CONSOLE]="SALIR: PROGRAMA DE CONSOLA, NO SE CIERRA",[S_T_KEPT]="NO SE PUDO CERRAR: VER LOG",
-        [S_T_ASKED32]="SALIR: PEDIDO AL MUNDO DE 32 BITS",[S_T_UNKNOWN]="SALIR: RESULTADO DESCONOCIDO",
-        [S_T_NOT_TAKEN]="SALIR: SIN RESPUESTA (VER LOG)",[S_T_NO_RESULT]="SALIR: SIN RESULTADO (VER LOG)",
+        [S_T_REFUSED_DESKTOP]="SALIENDO...",[S_T_REFUSED_NONE]="SALIR: NO HAY VENTANA ACTIVA",
+        [S_T_REFUSED_CONSOLE]="SALIR: PROGRAMA DE CONSOLA, NO SE CIERRA",[S_T_KEPT]="NO SE PUDO CERRAR",
+        [S_T_ASKED32]="SALIENDO...",[S_T_UNKNOWN]="SALIR: RESULTADO DESCONOCIDO",
+        [S_T_NOT_TAKEN]="SALIR: SIN RESPUESTA",[S_T_NO_RESULT]="SALIR: SIN RESULTADO",
         [S_T_BACK_DESKTOP]="VOLVIENDO AL ESCRITORIO",[S_T_BACK_FAILED]="NO SE PUDO VOLVER AL ESCRITORIO",
         [S_T_SEARCHING]="SALIR: BUSCANDO EL PROGRAMA ACTIVO"},
     [LANG_EN]={
@@ -141,8 +146,8 @@ static const char *const strings[LANGS][STRINGS]={
                         "FROM ITS NEXT START. FIRST D3D8/9, THEN DIRECTDRAW AND D3D7. 32-BIT PROGRAMS ONLY.",
         [S_RENDER_DXVK_VK]="DXVK + VULKAN",[S_RENDER_DXVK_GL]="DXVK + OPENGL",[S_RENDER_WINED3D_VK]="WINED3D + VULKAN",
         [S_RENDER_WINED3D_GL]="WINED3D + OPENGL",
-        [S_T_RENDER_SAVED]="GRAPHICS: AT THE NEXT START",[S_T_RENDER_FAILED]="GRAPHICS: NOT SAVED (SEE LOG)",
-        [S_T_RENDER_NO_ANSWER]="GRAPHICS: NO ANSWER (SEE LOG)",[S_T_RENDER_NO_PROGRAM]="GRAPHICS: NO PROGRAM OPEN",
+        [S_T_RENDER_SAVED]="GRAPHICS: AT THE NEXT START",[S_T_RENDER_FAILED]="GRAPHICS: NOT SAVED",
+        [S_T_RENDER_NO_ANSWER]="GRAPHICS: NO ANSWER",[S_T_RENDER_NO_PROGRAM]="GRAPHICS: NO PROGRAM OPEN",
         [S_HELP_STRETCH]="X: STRETCHES THE PICTURE TO THE WHOLE SCREEN, WITHOUT BLACK BARS, OR KEEPS ITS PROPORTIONS AGAIN. "
                          "SAVED FOR THE LAST PROGRAM OPENED IN C:\\ORBIS\\OVERLAY.INI. IT DOES NOT CHANGE WITH THE DESKTOP "
                          "IN FRONT.",
@@ -175,11 +180,11 @@ static const char *const strings[LANGS][STRINGS]={
         [S_STAT_FRAMES]="FRAMES",[S_STAT_INTERVAL]="INTERVAL",[S_STAT_DIRECT]="DIRECT",
         [S_T_HUD_SENT]="MANGOHUD: SHIFT+F12 SENT",[S_T_TYPE_NOT_SAVED]="COULD NOT SAVE THE TYPE",
         [S_T_CONFIG_NOT_SAVED]="COULD NOT SAVE THE SETTING",[S_T_CLOSED]="PROGRAM CLOSED",
-        [S_T_REFUSED_DESKTOP]="EXIT: THE DESKTOP IS NOT CLOSED",[S_T_REFUSED_NONE]="EXIT: NO ACTIVE WINDOW",
-        [S_T_REFUSED_CONSOLE]="EXIT: CONSOLE PROGRAM, NOT CLOSED",[S_T_KEPT]="COULD NOT CLOSE: SEE LOG",
-        [S_T_ASKED32]="EXIT: ASKED THE 32-BIT WORLD",[S_T_UNKNOWN]="EXIT: UNKNOWN RESULT",
-        [S_T_NOT_TAKEN]="EXIT: NO ANSWER (SEE LOG)",[S_T_NO_RESULT]="EXIT: NO RESULT (SEE LOG)",
-        [S_T_BACK_DESKTOP]="BACK TO THE DESKTOP",[S_T_BACK_FAILED]="COULD NOT RETURN TO THE DESKTOP",
+        [S_T_REFUSED_DESKTOP]="EXITING...",[S_T_REFUSED_NONE]="EXIT: NO ACTIVE WINDOW",
+        [S_T_REFUSED_CONSOLE]="EXIT: CONSOLE PROGRAM, NOT CLOSED",[S_T_KEPT]="COULD NOT CLOSE",
+        [S_T_ASKED32]="EXITING...",[S_T_UNKNOWN]="EXIT: UNKNOWN RESULT",
+        [S_T_NOT_TAKEN]="EXIT: NO ANSWER",[S_T_NO_RESULT]="EXIT: NO RESULT",
+        [S_T_BACK_DESKTOP]="RETURNING TO THE DESKTOP",[S_T_BACK_FAILED]="COULD NOT RETURN TO THE DESKTOP",
         [S_T_SEARCHING]="EXIT: LOOKING FOR THE ACTIVE PROGRAM"}};
 
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
@@ -192,7 +197,19 @@ static uint32_t nav_held;   /* d-pad or stick directions held, for repeat */
 static uint64_t nav_next_us;
 static char toast[48];
 static uint64_t toast_until_us,stats_next_us;
-static char stats_lines[5][44];
+/* the readout's measures, sampled once a second: -1 (or 0 for FPS) where the source has none */
+struct hud_values {int sampled,gpu_m,cpu_m,vk;long long ram_mib;unsigned fps_tenths,frame_us;};
+static struct hud_values hud_now;
+/* the intervals between output frames, measured in pw_hw_overlay_draw while the readout shows */
+enum {FT_SAMPLES=200};  /* MangoHud's frametime graph keeps 200 */
+static uint32_t ft_us[FT_SAMPLES];
+static int ft_count,ft_head;
+static uint64_t ft_last_us;
+/* MangoHud.conf's rows, place and size, read when Estadisticas turns on */
+enum {POS_TOP_LEFT,POS_TOP_RIGHT,POS_TOP_CENTER,POS_MIDDLE_LEFT,POS_MIDDLE_RIGHT,POS_BOTTOM_LEFT,POS_BOTTOM_RIGHT,
+      POS_BOTTOM_CENTER,POSITIONS};
+struct hud_conf {int loaded,gpu,cpu,vram,ram,fps,frametime,frame_timing,position,offset_x,offset_y,font_size,alpha_pct;};
+static struct hud_conf hud_conf;
 /* W238: kernelbase's closer says whether libMangoHud.dll is loaded; the sink whether Vulkan presents */
 static int mangohud_loaded,vk_presenting;
 /* W261: kernelbase's closer: the desktop, the taskbar or no window is in front (Salir's refusals) */
@@ -394,6 +411,53 @@ static int cursor_apply(const char *why)
             name[0]?name:"-",slot>=0,why);
     return 1;
 }
+/* W293: the "app starting" pointer, as Windows' IDC_APPSTARTING: from a program's start (pw_hw_overlay_program with
+ * load 1: kernelbase's guest launch, 64- and 32-bit, or a relaunched title) until a top-level window is shown
+ * (ps5drv.c through the sink, pw_hw_overlay_window_shown), that program ends, or BUSY_US pass. The sink draws a
+ * turning ring by the arrow (pw_hw_busy_frame); the pad thread asks for a frame every BUSY_FRAME_US. */
+enum {BUSY_US=20000000,BUSY_FRAME_US=100000,BUSY_FRAMES=8};
+static volatile uint64_t busy_since_us;  /* 0 while no program starts; read by the sink without the lock */
+static uint64_t busy_next_us;
+static char busy_program[64];
+/* lock held; 1 when it was busy */
+static int busy_end(const char *why,const void *hwnd,const char *class_name)
+{
+    if(!busy_since_us) return 0;
+    fprintf(stderr,"PWSINK busy end program=%s why=%s hwnd=%p class=%s ms=%llu\n",busy_program,why,hwnd,
+            class_name?class_name:"-",(unsigned long long)((sceKernelGetProcessTime()-busy_since_us)/1000));
+    busy_since_us=0;
+    return 1;
+}
+/* lock held: a program started (load 1) or ended; 1 when the pointer changes */
+static int busy_program_event(const char *name,int load)
+{
+    uint64_t now=sceKernelGetProcessTime();
+    if(!load) return !strcasecmp(name,busy_program) && busy_end("exit",NULL,NULL);
+    busy_end("replaced",NULL,NULL);
+    snprintf(busy_program,sizeof(busy_program),"%s",name);
+    busy_since_us=now?now:1;busy_next_us=now+BUSY_FRAME_US;
+    fprintf(stderr,"PWSINK busy begin program=%s why=start\n",busy_program);
+    return 1;
+}
+/* the sink, from ps5drv.c: a top-level window was shown for the first time (menus, tooltips, the desktop, the
+ * taskbar and tool windows left out there) */
+void pw_hw_overlay_window_shown(void *hwnd,const char *class_name);
+void pw_hw_overlay_window_shown(void *hwnd,const char *class_name)
+{
+    int ended;
+    pthread_mutex_lock(&lock);
+    ended=busy_end("window",hwnd,class_name);
+    pthread_mutex_unlock(&lock);
+    if(ended) pw_hw_cursor_moved();
+}
+/* the sink, on each frame: the ring's frame (0 to BUSY_FRAMES-1) while a program starts, -1 otherwise */
+int pw_hw_busy_frame(void);
+int pw_hw_busy_frame(void)
+{
+    uint64_t since=busy_since_us,now=sceKernelGetProcessTime();
+    if(!since || now-since>=BUSY_US) return -1;
+    return (int)((now-since)/BUSY_FRAME_US%BUSY_FRAMES);
+}
 void pw_hw_overlay_program(const char *exe,int load);
 void pw_hw_overlay_program(const char *exe,int load)
 {
@@ -412,6 +476,7 @@ void pw_hw_overlay_program(const char *exe,int load)
         snprintf(programs[program_count++],sizeof(programs[0]),"%s",base);
     }
     changed=cursor_apply(load?"start":"exit");
+    changed|=busy_program_event(base,load);  /* W293 */
     pthread_mutex_unlock(&lock);
     if(changed) pw_hw_cursor_moved();
 }
@@ -507,41 +572,89 @@ static void render_choose(void)
 static int hud_mode(void) {return mangohud_loaded && vk_presenting;}
 
 /* ---- the readout: each value is a measure, "--" when its source has none ---- */
+/* MangoHud.conf as MangoHud reads it (overlay_params.cpp): its defaults first (fps, frametime,
+ * frame_timing, cpu_stats, gpu_stats; font_size 24; background_alpha 0.5; top-left), then each line,
+ * "key" or "key=value", turns on, off or sets; "full" turns every row on. Kept: the rows drawn here,
+ * position, offset_x/y, font_size and background_alpha. legacy_layout=0's own order is not followed. */
+#ifndef HUD_USERS  /* a host preview points it elsewhere */
+#define HUD_USERS "/data/wine-prefix/drive_c/users"
+#endif
+static const char *const hud_positions[POSITIONS]={"top-left","top-right","top-center","middle-left","middle-right",
+                                                    "bottom-left","bottom-right","bottom-center"};
+static void hud_read_conf(struct hud_conf *c)
+{
+    char path[256],line[160];FILE *file=NULL;
+    *c=(struct hud_conf){.loaded=1,.gpu=1,.cpu=1,.fps=1,.frametime=1,.frame_timing=1,.font_size=24,.alpha_pct=50};
+    DIR *users=opendir(HUD_USERS);  /* %APPDATA% is under the prefix's user, whatever its name */
+    if(users) {
+        struct dirent *e;
+        while(!file && (e=readdir(users))) {
+            if(e->d_name[0]=='.' || !strcasecmp(e->d_name,"Public")) continue;
+            snprintf(path,sizeof(path),HUD_USERS "/%s/AppData/Roaming/MangoHud/MangoHud.conf",e->d_name);
+            file=fopen(path,"r");
+        }
+        closedir(users);
+    }
+    if(!file) {fprintf(stderr,"PWOVERLAY hud: no MangoHud.conf, MangoHud's defaults\n");return;}
+    while(fgets(line,sizeof(line),file)) {
+        char *key=line,*value,*end;
+        if((end=strpbrk(key,"#\r\n"))) *end=0;
+        while(*key==' ' || *key=='\t') key++;
+        if((value=strchr(key,'='))) {*value++=0;while(*value==' ' || *value=='\t') value++;}
+        for(end=key+strlen(key);end>key && (end[-1]==' ' || end[-1]=='\t');) *--end=0;
+        if(!*key) continue;
+        int on=!value || atoi(value)!=0;
+        if(!strcmp(key,"gpu_stats")) c->gpu=on;
+        else if(!strcmp(key,"cpu_stats")) c->cpu=on;
+        else if(!strcmp(key,"vram")) c->vram=on;
+        else if(!strcmp(key,"ram")) c->ram=on;
+        else if(!strcmp(key,"fps")) c->fps=on;
+        else if(!strcmp(key,"frametime")) c->frametime=on;
+        else if(!strcmp(key,"frame_timing")) c->frame_timing=on;
+        else if(!strcmp(key,"full") && on) c->gpu=c->cpu=c->vram=c->ram=c->fps=c->frametime=c->frame_timing=1;
+        else if(!strcmp(key,"position") && value) {
+            for(int i=0;i<POSITIONS;i++) if(!strcmp(value,hud_positions[i])) c->position=i;
+        } else if(!strcmp(key,"offset_x") && value) c->offset_x=atoi(value);
+        else if(!strcmp(key,"offset_y") && value) c->offset_y=atoi(value);
+        else if(!strcmp(key,"font_size") && value) {int n=atoi(value);if(n>=8 && n<=96) c->font_size=n;}
+        else if(!strcmp(key,"background_alpha") && value) {
+            double a=strtod(value,NULL);
+            if(a>=0 && a<=1) c->alpha_pct=(int)(a*100+0.5);
+        }
+    }
+    fclose(file);
+    fprintf(stderr,"PWOVERLAY hud: %s gpu=%d cpu=%d vram=%d ram=%d fps=%d frametime=%d frame_timing=%d position=%s"
+            " font_size=%d alpha=%d%%\n",path,c->gpu,c->cpu,c->vram,c->ram,c->fps,c->frametime,c->frame_timing,
+            hud_positions[c->position],c->font_size,c->alpha_pct);
+}
 static void sample_stats(void)
 {
-    unsigned vk_tenths=0,frames_tenths=0,avg_us=0,max_us=0;int vk_fresh=0,frames_fresh=0;
+    unsigned vk_tenths=0,frames_tenths=0,avg_us=0,max_us=0;int vk_fresh=0,frames_fresh=0,load_conf;
     struct pw_ps4_telemetry telemetry;uint32_t returned=0;
-    size_t flexible=0,direct_free=0;off_t found=0;
-    char lines[5][44],cpu[16],gpu[16],flex[16],direct[16];
+    size_t direct_free=0;off_t found=0,total;
+    struct hud_values v={.sampled=1,.gpu_m=-1,.cpu_m=-1,.ram_mib=-1};
+    struct hud_conf conf;
+    pthread_mutex_lock(&lock);load_conf=!hud_conf.loaded;pthread_mutex_unlock(&lock);
+    if(load_conf) hud_read_conf(&conf);
     pw_hw_sink_stats(&vk_tenths,&vk_fresh,&frames_tenths,&avg_us,&max_us,&frames_fresh);
     memset(&telemetry,0,sizeof(telemetry));
-    int telemetry_ok=!pw_ps4_telemetry_query(&telemetry,sizeof(telemetry),&returned);
-    /* the SDK declares these two with their outputs as plain values (platform/ps4/pw_wine_memory.c) */
-    int flex_rc=((int32_t (*)(size_t *))(uintptr_t)&sceKernelAvailableFlexibleMemorySize)(&flexible);
-    int direct_rc=((int32_t (*)(off_t,off_t,size_t,off_t *,size_t *))(uintptr_t)&sceKernelAvailableDirectMemorySize)(
-        0,(off_t)sceKernelGetDirectMemorySize(),0,&found,&direct_free);
-    if(vk_fresh) snprintf(lines[0],sizeof(lines[0]),"FPS VK %u.%u",vk_tenths/10,vk_tenths%10);
-    else snprintf(lines[0],sizeof(lines[0]),"FPS VK --");
-    if(frames_fresh) {
-        snprintf(lines[1],sizeof(lines[1]),"%s %u.%u/S",str(S_STAT_FRAMES),frames_tenths/10,frames_tenths%10);
-        snprintf(lines[2],sizeof(lines[2]),"%s %u.%u MS MAX %u.%u",str(S_STAT_INTERVAL),avg_us/1000,avg_us/100%10,
-                 max_us/1000,max_us/100%10);
-    } else {
-        snprintf(lines[1],sizeof(lines[1]),"%s --",str(S_STAT_FRAMES));
-        snprintf(lines[2],sizeof(lines[2]),"%s --",str(S_STAT_INTERVAL));
+    if(!pw_ps4_telemetry_query(&telemetry,sizeof(telemetry),&returned)) {
+        if(telemetry.flags&PW_GPU_VALID) v.gpu_m=(int)telemetry.gpu_millipercent;
+        if(telemetry.flags&PW_CPU_VALID) v.cpu_m=(int)telemetry.cpu_millipercent;
     }
-    if(telemetry_ok && (telemetry.flags&PW_CPU_VALID))
-        snprintf(cpu,sizeof(cpu),"%u.%u%%",telemetry.cpu_millipercent/1000,telemetry.cpu_millipercent/100%10);
-    else snprintf(cpu,sizeof(cpu),"--");
-    if(telemetry_ok && (telemetry.flags&PW_GPU_VALID))
-        snprintf(gpu,sizeof(gpu),"%u.%u%%",telemetry.gpu_millipercent/1000,telemetry.gpu_millipercent/100%10);
-    else snprintf(gpu,sizeof(gpu),"--");
-    snprintf(lines[3],sizeof(lines[3]),"CPU %s GPU %s",cpu,gpu);
-    if(!flex_rc) snprintf(flex,sizeof(flex),"%zu MB",flexible>>20); else snprintf(flex,sizeof(flex),"--");
-    if(!direct_rc) snprintf(direct,sizeof(direct),"%zu MB",direct_free>>20); else snprintf(direct,sizeof(direct),"--");
-    snprintf(lines[4],sizeof(lines[4]),"MEM FLEX %s %s %s",flex,str(S_STAT_DIRECT),direct);
+    /* RAM: the title's direct memory less its largest free range (the SDK declares the call with its
+     * outputs as plain values, platform/ps4/pw_wine_memory.c); with free memory in pieces that is an
+     * upper bound of what is in use. VRAM has no measure of its own: the PS4's memory is one. */
+    total=(off_t)sceKernelGetDirectMemorySize();
+    if(total>0 && !((int32_t (*)(off_t,off_t,size_t,off_t *,size_t *))(uintptr_t)&sceKernelAvailableDirectMemorySize)(
+           0,total,0,&found,&direct_free) && (off_t)direct_free<=total)
+        v.ram_mib=(long long)((total-(off_t)direct_free)>>20);
+    /* FPS: the Vulkan program's presents when it presents, otherwise the output's frames */
+    if(vk_fresh && vk_tenths) {v.vk=1;v.fps_tenths=vk_tenths;v.frame_us=(unsigned)(10000000ull/vk_tenths);}
+    else if(frames_fresh && frames_tenths) {v.fps_tenths=frames_tenths;v.frame_us=avg_us;}
     pthread_mutex_lock(&lock);
-    memcpy(stats_lines,lines,sizeof(stats_lines));
+    hud_now=v;
+    if(load_conf) hud_conf=conf;
     pthread_mutex_unlock(&lock);
 }
 
@@ -658,6 +771,7 @@ static int panel_input(uint32_t pressed,uint32_t nav)
         /* W261: not turned on over the desktop (a game still loading): silently, only logged */
         if(!stats_on && desktop_front) {fprintf(stderr,"PWOVERLAY stats refused: desktop\n");break;}
         stats_on=!stats_on;stats_next_us=0;
+        hud_conf.loaded=0;hud_now.sampled=0;ft_count=ft_head=0;ft_last_us=0;  /* MangoHud.conf read again */
         fprintf(stderr,"PWOVERLAY stats=%d\n",stats_on);
         break;
     case ENTRY_KEYBOARD: view=VIEW_KEYBOARD;kb_row=1;kb_col=0;kb_page=0;kb_shift=0;fprintf(stderr,"PWOVERLAY keyboard\n");break;
@@ -721,6 +835,9 @@ int pw_hw_overlay_pad(const OrbisPadData *data)
         set_toast(str(exit_pending==1?S_T_NOT_TAKEN:S_T_NO_RESULT));
         exit_pending=0;changed=1;
     }
+    /* W293: the starting pointer's next frame, or its end after BUSY_US */
+    if(busy_since_us && now-busy_since_us>=BUSY_US) changed|=busy_end("timeout",NULL,NULL);
+    else if(busy_since_us && now>=busy_next_us) {busy_next_us=now+BUSY_FRAME_US;changed=1;}
     /* W287: a set waits at most RENDER_ANSWER_US, a get once taken; a get no closer took waits */
     if(render_request && (render_taken || render_request==RENDER_SET) && now>=render_deadline_us) {
         fprintf(stderr,"PWOVERLAY render %s for %s: %s\n",render_request==RENDER_SET?"set":"get",render_program,
@@ -776,7 +893,8 @@ static const unsigned char lower_glyphs[26][7]={
     {0,0,30,17,30,16,16},{0,0,13,19,15,1,1},{0,0,22,25,16,16,16},{0,0,14,16,14,1,30},{8,8,28,8,8,9,6},
     {0,0,17,17,17,19,13},{0,0,17,17,17,10,4},{0,0,17,17,21,21,10},{0,0,17,10,4,10,17},{0,0,17,17,15,1,14},
     {0,0,31,2,4,8,31}};
-static const struct {char c;unsigned char rows[7];} extra_glyphs[]={
+static const struct {unsigned short c;unsigned char rows[7];} extra_glyphs[]={
+    {0xa1,{4,0,4,4,4,4,4}},{0xbf,{4,0,4,8,16,17,14}},  /* W294: ¡ ¿ */
     {'!',{4,4,4,4,4,0,4}},{'"',{10,10,10,0,0,0,0}},{'#',{10,10,31,10,31,10,10}},{'$',{4,15,20,14,5,30,4}},
     {'&',{12,18,20,8,21,18,13}},{'\'',{12,4,8,0,0,0,0}},{'(',{2,4,8,8,8,4,2}},{')',{8,4,2,2,2,4,8}},
     {'*',{0,4,21,14,21,4,0}},{'+',{0,4,4,31,4,4,0}},{',',{0,0,0,0,12,4,8}},{';',{0,12,12,0,12,4,8}},
@@ -784,14 +902,23 @@ static const struct {char c;unsigned char rows[7];} extra_glyphs[]={
     {'@',{14,17,1,13,21,21,14}},{'[',{14,8,8,8,8,8,14}},{'\\',{16,8,8,4,2,2,1}},{']',{14,2,2,2,2,2,14}},
     {'^',{4,10,17,0,0,0,0}},{'_',{0,0,0,0,0,0,31}},{'`',{8,4,2,0,0,0,0}},{'{',{2,4,4,8,4,4,2}},
     {'|',{4,4,4,4,4,4,4}},{'}',{8,4,4,2,4,4,8}},{'~',{0,0,8,21,2,0,0}}};
-static const unsigned char *glyph(unsigned char c)
+/* W294: Latin-1 letters Spanish needs: the base letter's glyph and a mark of two rows, drawn above a capital (rows -2
+ * and -1, so it keeps its height) and over a lowercase letter one row lower (rows -1 and 0, row 1 free; í loses its dot) */
+enum {MARK_ACUTE,MARK_TILDE,MARK_DIAERESIS};
+static const unsigned char marks[3][2]={{2,4},{13,22},{0,10}};
+static const struct {unsigned short c;char base;unsigned char mark;} marked_glyphs[]={
+    {0xc1,'A',MARK_ACUTE},{0xc9,'E',MARK_ACUTE},{0xcd,'I',MARK_ACUTE},{0xd3,'O',MARK_ACUTE},{0xda,'U',MARK_ACUTE},
+    {0xd1,'N',MARK_TILDE},{0xdc,'U',MARK_DIAERESIS},
+    {0xe1,'a',MARK_ACUTE},{0xe9,'e',MARK_ACUTE},{0xed,'i',MARK_ACUTE},{0xf3,'o',MARK_ACUTE},{0xfa,'u',MARK_ACUTE},
+    {0xf1,'n',MARK_TILDE},{0xfc,'u',MARK_DIAERESIS}};
+static const unsigned char *glyph(unsigned c)
 {
     if(c>='A' && c<='Z') return hw_glyphs[c-'A'];
     if(c>='0' && c<='9') return hw_glyphs[26+c-'0'];
     if(c>='a' && c<='z') return lower_glyphs[c-'a'];
     switch(c) {case ':':return hw_glyphs[36];case '-':return hw_glyphs[37];case '.':return hw_glyphs[38];
                case '/':return hw_glyphs[39];case '%':return hw_glyphs[40];}
-    for(unsigned i=0;i<sizeof(extra_glyphs)/sizeof(extra_glyphs[0]);i++) if(extra_glyphs[i].c==(char)c) return extra_glyphs[i].rows;
+    for(unsigned i=0;i<sizeof(extra_glyphs)/sizeof(extra_glyphs[0]);i++) if(extra_glyphs[i].c==c) return extra_glyphs[i].rows;
     return NULL;
 }
 struct surface {uint32_t *pixels;unsigned pitch;int width,height;};
@@ -804,27 +931,60 @@ static void box(const struct surface *s,int x,int y,int w,int h,uint32_t color,u
 {
     fill(s,x,y,w,h,edge);fill(s,x+2,y+2,w-4,h-4,color);
 }
-static int text_width(const char *t,int scale) {return t[0]?((int)strlen(t)*6-1)*scale:0;}
+/* W294: the next character of UTF-8 text: one byte (ASCII) or two (up to U+07FF, Latin-1 included); a longer or
+ * broken sequence is one "?" */
+static unsigned next_char(const char **t)
+{
+    const unsigned char *p=(const unsigned char *)*t;
+    if(p[0]<0x80) {*t+=1;return p[0];}
+    if((p[0]&0xe0)==0xc0 && (p[1]&0xc0)==0x80) {*t+=2;return (unsigned)(p[0]&0x1f)<<6|(p[1]&0x3f);}
+    p++;
+    while((*p&0xc0)==0x80) p++;
+    *t=(const char *)p;
+    return '?';
+}
+static int text_width(const char *t,int scale)
+{
+    int n=0;
+    while(*t) {next_char(&t);n++;}
+    return n?(n*6-1)*scale:0;
+}
+static void glyph_rows(const struct surface *s,int x,int y,const unsigned char *rows,int first,int count,uint32_t color,int scale)
+{
+    for(int r=0;r<count;r++)
+        for(int col=0;col<5;col++) if(rows[r]&(1<<(4-col))) fill(s,x+col*scale,y+(first+r)*scale,scale,scale,color);
+}
 static void text(const struct surface *s,int x,int y,const char *t,uint32_t color,int scale)
 {
-    for(;*t;t++,x+=6*scale) {
-        const unsigned char *g=glyph((unsigned char)*t);
+    for(;*t;x+=6*scale) {
+        unsigned c=next_char(&t);
+        const unsigned char *g=glyph(c),*mark=NULL;
+        int lower=0;
+        for(unsigned i=0;i<sizeof(marked_glyphs)/sizeof(marked_glyphs[0]);i++)
+            if(marked_glyphs[i].c==c) {
+                g=glyph((unsigned char)marked_glyphs[i].base);mark=marks[marked_glyphs[i].mark];
+                lower=marked_glyphs[i].base>='a';
+            }
         if(!g) continue;
-        for(int r=0;r<7;r++) for(int c=0;c<5;c++) if(g[r]&(1<<(4-c))) fill(s,x+c*scale,y+r*scale,scale,scale,color);
+        if(lower) glyph_rows(s,x,y,g+2,2,5,color,scale);  /* the mark takes the top rows */
+        else glyph_rows(s,x,y,g,0,7,color,scale);
+        if(mark) glyph_rows(s,x,y,mark,lower?-1:-2,2,color,scale);  /* a lowercase one: rows -1 and 0, row 1 left free */
     }
 }
-/* words wrapped to columns characters; returns the y below the last line */
+/* words wrapped to columns characters (W294: characters, not bytes); returns the y below the last line */
 static int wrapped(const struct surface *s,int x,int y,int columns,const char *t,uint32_t color,int scale,int bottom)
 {
-    char line[64];
+    char line[160];
     while(*t && y+7*scale<=bottom) {
-        int n=0,cut=0;
-        while(t[n] && n<columns) {if(t[n]==' ') cut=n;n++;}
-        if(t[n] && cut) n=cut;
-        if(n>=(int)sizeof(line)) n=sizeof(line)-1;
-        memcpy(line,t,(size_t)n);line[n]=0;
+        const char *at=t,*cut=NULL;
+        int n=0;
+        while(*at && n<columns) {if(*at==' ') cut=at;next_char(&at);n++;}
+        if(*at && cut) at=cut;
+        size_t bytes=(size_t)(at-t);
+        if(bytes>=sizeof(line)) bytes=sizeof(line)-1;
+        memcpy(line,t,bytes);line[bytes]=0;
         text(s,x,y,line,color,scale);
-        t+=n;while(*t==' ') t++;
+        t+=bytes;while(*t==' ') t++;
         y+=7*scale+5;
     }
     return y;
@@ -926,27 +1086,149 @@ static void draw_keyboard(const struct surface *s)
     text(s,x0,hy,str(S_KB_HINT1),C_DIM,2);
     text(s,x0,hy+22,str(S_KB_HINT2),C_DIM,2);
 }
-/* W240: where MangoHud puts its HUD with this prefix's MangoHud.conf (position=top-left, no offsets):
- * a 10 px margin from the corner and 5 px of padding inside (overlay.cpp, margin and WindowPadding) */
-static void draw_stats(const struct surface *s,char lines[5][44])
+/* MangoHud's default colours (overlay_params.cpp) */
+enum {HUD_BG=0xff020202,HUD_TEXT=0xffffffff,HUD_GPU=0xff2e9762,HUD_CPU=0xff2e97cb,HUD_VRAM=0xffad64c1,
+      HUD_RAM=0xffc26693,HUD_ENGINE=0xffeb5b5b,HUD_FRAMETIME=0xff00ff00};
+/* background_alpha without reading the output back: of each 2x2 block of pixels, alpha in quarters
+ * take the background colour and the rest keep the picture; 0.5, MangoHud's default, is a checkerboard */
+static void hud_background(const struct surface *s,int x,int y,int w,int h,int alpha_pct)
 {
-    enum {MARGIN=10,PADDING=5,LINE=22,GLYPH=14};
-    int widest=0;
-    for(int i=0;i<5;i++) if(text_width(lines[i],2)>widest) widest=text_width(lines[i],2);
-    fill(s,MARGIN,MARGIN,widest+2*PADDING,4*LINE+GLYPH+2*PADDING,C_BLACK);
-    for(int i=0;i<5;i++) text(s,MARGIN+PADDING,MARGIN+PADDING+i*LINE,lines[i],0xffffff00u,2);
+    static const int rank[4]={0,2,3,1};  /* (row&1)*2+(column&1): the diagonal first */
+    int quarters=(alpha_pct*4+50)/100;
+    if(quarters<=0) return;
+    if(quarters>=4) {fill(s,x,y,w,h,HUD_BG);return;}
+    for(int r=y<0?0:y;r<y+h && r<s->height;r++) {
+        uint32_t *row=s->pixels+(size_t)r*s->pitch;
+        for(int c=x<0?0:x;c<x+w && c<s->width;c++) if(rank[(r&1)*2+(c&1)]<quarters) row[c]=HUD_BG;
+    }
+}
+/* text with a 1 px shadow in the background colour: the dither alone leaves bright pictures showing
+ * through every other pixel, where blending would have darkened them */
+static void hud_text(const struct surface *s,int x,int y,const char *t,uint32_t color,int scale)
+{
+    text(s,x+1,y+1,t,HUD_BG,scale);text(s,x,y,t,color,scale);
+}
+/* a value whose right edge, its unit included, is at right; the unit smaller and raised, as MangoHud's */
+static void hud_value(const struct surface *s,int right,int y,const char *value,const char *unit,int scale,int small)
+{
+    int unit_w=value[0]=='-' || !unit?0:text_width(unit,small)+scale;
+    hud_text(s,right-unit_w-text_width(value,scale),y,value,HUD_TEXT,scale);
+    if(unit_w) hud_text(s,right-unit_w+scale,y,unit,HUD_TEXT,small);
+}
+static void hud_percent(char *out,size_t size,int millipercent)
+{
+    if(millipercent<0) snprintf(out,size,"--");
+    else snprintf(out,size,"%d.%d",millipercent/1000,millipercent/100%10);
+}
+static void hud_line(const struct surface *s,int x0,int y0,int x1,int y1,uint32_t color)
+{
+    int dx=x1>x0?x1-x0:x0-x1,dy=y1>y0?y0-y1:y1-y0,sx=x0<x1?1:-1,sy=y0<y1?1:-1,e=dx+dy;
+    for(;;) {
+        fill(s,x0,y0,2,2,color);  /* MangoHud's line is 1.5 px */
+        if(x0==x1 && y0==y1) break;
+        int e2=2*e;
+        if(e2>=dy) {e+=dy;x0+=sx;}
+        if(e2<=dx) {e+=dx;y0+=sy;}
+    }
+}
+/* lock held. MangoHud's legacy layout (hud_elements.cpp): a table of 3 columns, font_size*4.6 wide
+ * each, one row per stat; its 24 px font is the 5x7 glyphs at 2x, the small font (0.55) at 1x.
+ * Margin 10 px from the corner and 5 px of padding inside (overlay.cpp). */
+static void draw_stats(const struct surface *s)
+{
+    enum {MARGIN=10,PADDING=5,GRAPH_H=50,GRAPH_MAX_US=50000};
+    const struct hud_conf *c=&hud_conf;const struct hud_values *v=&hud_now;
+    int fs=c->font_size,scale=(fs+6)/12,small=(fs*55/100+6)/12,row=fs,ty,x,y,x0,y0;
+    if(scale<1) scale=1;
+    if(small<1) small=1;
+    int width=fs*3*46/10,col=width/3,frametime=c->fps && c->frametime;
+    int height=(c->gpu+c->cpu+c->vram+c->ram+c->fps)*row+(c->frame_timing?fs/2+7*small+fs/4+GRAPH_H:0);
+    int pw=width+2*PADDING,ph=height+2*PADDING;
+    char value[48],other[24];
+    if(!height) return;
+    switch(c->position) {
+    case POS_TOP_RIGHT: case POS_MIDDLE_RIGHT: case POS_BOTTOM_RIGHT: x0=s->width-MARGIN-pw;break;
+    case POS_TOP_CENTER: case POS_BOTTOM_CENTER: x0=(s->width-pw)/2;break;
+    default: x0=MARGIN;
+    }
+    switch(c->position) {
+    case POS_MIDDLE_LEFT: case POS_MIDDLE_RIGHT: y0=(s->height-ph)/2;break;
+    case POS_BOTTOM_LEFT: case POS_BOTTOM_RIGHT: case POS_BOTTOM_CENTER: y0=s->height-MARGIN-ph;break;
+    default: y0=MARGIN;
+    }
+    x0+=c->offset_x;y0+=c->offset_y;
+    hud_background(s,x0,y0,pw,ph,c->alpha_pct);
+    x=x0+PADDING;y=y0+PADDING;ty=(row-7*scale)/2;
+    if(c->gpu) {
+        hud_text(s,x,y+ty,"GPU",HUD_GPU,scale);hud_percent(value,sizeof(value),v->gpu_m);
+        hud_value(s,x+2*col,y+ty,value,"%",scale,small);y+=row;
+    }
+    if(c->cpu) {
+        hud_text(s,x,y+ty,"CPU",HUD_CPU,scale);hud_percent(value,sizeof(value),v->cpu_m);
+        hud_value(s,x+2*col,y+ty,value,"%",scale,small);y+=row;
+    }
+    if(c->vram) {hud_text(s,x,y+ty,"VRAM",HUD_VRAM,scale);hud_value(s,x+2*col,y+ty,"--",NULL,scale,small);y+=row;}
+    if(c->ram) {
+        hud_text(s,x,y+ty,"RAM",HUD_RAM,scale);
+        if(v->ram_mib<0) snprintf(value,sizeof(value),"--");
+        else snprintf(value,sizeof(value),"%lld.%lld",v->ram_mib/1024,v->ram_mib*10/1024%10);
+        hud_value(s,x+2*col,y+ty,value,"GiB",scale,small);y+=row;
+    }
+    if(c->fps) {
+        /* MangoHud names the program's API; here Vulkan's presents or the output's own frames */
+        hud_text(s,x,y+ty,v->vk?"VULKAN":lang==LANG_EN?"OUTPUT":"SALIDA",HUD_ENGINE,scale);
+        if(v->fps_tenths) snprintf(value,sizeof(value),"%u",(v->fps_tenths+5)/10);
+        else snprintf(value,sizeof(value),"--");
+        hud_value(s,x+2*col,y+ty,value,"FPS",scale,small);
+        if(frametime) {
+            if(v->frame_us) snprintf(value,sizeof(value),"%u.%u",v->frame_us/1000,v->frame_us/100%10);
+            else snprintf(value,sizeof(value),"--");
+            hud_value(s,x+3*col,y+ty,value,"ms",scale,small);
+        }
+        y+=row;
+    }
+    if(!c->frame_timing) return;
+    /* the graph: the intervals between this output's frames, 0 to 50 ms, oldest at the left */
+    uint32_t low=UINT32_MAX,high=0;
+    for(int i=0;i<ft_count;i++) {
+        uint32_t us=ft_us[(ft_head-ft_count+i+FT_SAMPLES)%FT_SAMPLES];
+        if(us<low) low=us;
+        if(us>high) high=us;
+    }
+    y+=fs/2;
+    hud_text(s,x,y,"Frametime",HUD_ENGINE,small);
+    if(ft_count) {
+        snprintf(other,sizeof(other),"%u.%ums",high/1000,high/100%10);
+        snprintf(value,sizeof(value),"min: %u.%ums, max: %s",low/1000,low/100%10,other);
+    } else snprintf(value,sizeof(value),"min: --, max: --");
+    hud_text(s,x+width-text_width(value,small),y,value,HUD_TEXT,small);
+    y+=7*small+fs/4;
+    for(int i=0,px=0,py=0;i<ft_count;i++) {
+        uint32_t us=ft_us[(ft_head-ft_count+i+FT_SAMPLES)%FT_SAMPLES];
+        if(us>GRAPH_MAX_US) us=GRAPH_MAX_US;
+        int nx=x+(int)((long)i*(width-2)/(FT_SAMPLES-1)),ny=y+GRAPH_H-2-(int)((long)us*(GRAPH_H-2)/GRAPH_MAX_US);
+        hud_line(s,i?px:nx,i?py:ny,nx,ny,HUD_FRAMETIME);
+        px=nx;py=ny;
+    }
 }
 /* the sink, on each output frame before the flip (its lock held) */
 void pw_hw_overlay_draw(uint32_t *pixels,unsigned pitch,unsigned width,unsigned height);
 void pw_hw_overlay_draw(uint32_t *pixels,unsigned pitch,unsigned width,unsigned height)
 {
     struct surface s={pixels,pitch,(int)width,(int)height};
-    char lines[5][44],message[48];
+    char message[48];
     pthread_mutex_lock(&lock);
     int shown_view=view,stats=stats_on,toast_on=toast_until_us!=0;
-    if(stats) memcpy(lines,stats_lines,sizeof(lines));
     if(toast_on) snprintf(message,sizeof(message),"%s",toast);
-    if(stats && lines[0][0]) draw_stats(&s,lines);
+    if(stats) {  /* the frametime graph's sample: this output frame's interval, under a second */
+        uint64_t now=sceKernelGetProcessTime();
+        if(ft_last_us && now-ft_last_us<1000000) {
+            ft_us[ft_head]=(uint32_t)(now-ft_last_us);ft_head=(ft_head+1)%FT_SAMPLES;
+            if(ft_count<FT_SAMPLES) ft_count++;
+        }
+        ft_last_us=now;
+    }
+    if(stats && hud_now.sampled && hud_conf.loaded) draw_stats(&s);
     if(shown_view==VIEW_PANEL) draw_panel(&s,entry,stats_on,mouse_on,pad_type,type_choice,title_alone,hud_mode());
     if(shown_view==VIEW_KEYBOARD) draw_keyboard(&s);
     pthread_mutex_unlock(&lock);

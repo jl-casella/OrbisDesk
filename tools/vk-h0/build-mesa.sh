@@ -53,6 +53,8 @@ python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-wsi.py $MESA
 sed -e "${winsys_paths:-s#^##}" $port/port/mesa/ac_ps4_drm.c > $MESA/src/amd/common/ac_ps4_drm.c
 if [ "${VARIANT:-}" = wine ]; then
   python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-crema-telemetry.py "$MESA/src/amd/common/ac_ps4_drm.c"
+  # alpha-1: the winsys log follows OrbisDesk's trace switch, each line once (W299)
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-crema-traces.py "$MESA/src/amd/common/ac_ps4_drm.c"
   # W126: VK_EXT_map_memory_placed for Wine's 32-bit programs (DXVK x86)
   python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-placed.py "$MESA"
 fi

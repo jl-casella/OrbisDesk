@@ -30,10 +30,12 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 ## Native Steam client, games and attribution
 
 - [GAMES.md](GAMES.md) — W114: games in Start → Programs → Games
+- [STEAM_HOSTED.md](STEAM_HOSTED.md) — The Steam client inside OrbisDesk
 - [STEAM_S1.md](STEAM_S1.md) — S1: HTTPS native to the Steam customer (ORBS00001)
 - [STEAM_S2.md](STEAM_S2.md) — S2: anonymous download of a Steam depot
 - [STEAM_S3.md](STEAM_S3.md) — S3: user login by QR and library
 - [STEAM_S4.md](STEAM_S4.md) — S4: install a game from the library
+- [STEAM_S5.md](STEAM_S5.md) — S5: launching an installed game from OrbisDesk's Explorer (in progress)
 - [THIRD_PARTY_FONTS.md](THIRD_PARTY_FONTS.md) — FreeType and runtime sources
 
 ## Platform and Wine increments (historical)
@@ -213,3 +215,5 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 
 - [CI.md](CI.md) — Running CI and measuring the platform matrix
 - [RELEASES.md](RELEASES.md) — Product builds, releases and the development branch
+- [RELEASE_LICENSES.md](RELEASE_LICENSES.md) — Release licenses (alpha-1)
+- [RELEASE_TRACES.md](RELEASE_TRACES.md) — Release traces: one switch for alpha-1

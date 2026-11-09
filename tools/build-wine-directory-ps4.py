@@ -46,14 +46,18 @@ replace('''    if (!stat( name, &st ))
         ignored_files[ignored_files_count].dev''')
 replace('''static inline BOOL is_ignored_file( const struct stat *st )
 {
-    unsigned int i;''','''static inline BOOL is_ignored_file( const struct stat *st )
+    unsigned int i;''','''extern int pw_trace_enabled( void );  /* alpha-1: OrbisDesk's trace switch (platform/ps4/pw_trace.h) */
+
+static inline BOOL is_ignored_file( const struct stat *st )
 {
     unsigned int i;
     /* A missing inode is not proof that this entry is the hidden prefix/dev/proc. */
     if (!st->st_ino) return FALSE;''')
-replace('''        TRACE( "file no longer exists %s\\n", debugstr_a(names->unix_name) );''','''        fprintf(stderr,"PWDIRENUM stat_failed name=%s errno=%d\\n",names->unix_name,errno);
+# alpha-1: these two fire per directory entry (an entry gone between readdir and stat, the hidden prefix entries);
+# traces only (platform/ps4/pw_trace.h, pw_trace_enabled in platform/ps4/pw_wine_platform.c)
+replace('''        TRACE( "file no longer exists %s\\n", debugstr_a(names->unix_name) );''','''        if (pw_trace_enabled()) fprintf(stderr,"PWDIRENUM stat_failed name=%s errno=%d\\n",names->unix_name,errno);
         TRACE( "file no longer exists %s\\n", debugstr_a(names->unix_name) );''')
-replace('''        TRACE( "ignoring file %s\\n", debugstr_a(names->unix_name) );''','''        fprintf(stderr,"PWDIRENUM ignored name=%s dev=%llu ino=%llu\\n",names->unix_name,
+replace('''        TRACE( "ignoring file %s\\n", debugstr_a(names->unix_name) );''','''        if (pw_trace_enabled()) fprintf(stderr,"PWDIRENUM ignored name=%s dev=%llu ino=%llu\\n",names->unix_name,
                 (unsigned long long)st.st_dev,(unsigned long long)st.st_ino);
         TRACE( "ignoring file %s\\n", debugstr_a(names->unix_name) );''')
 # W151: the per-entry logs of W110 (native_entry, returned, matched, cached) are gone: they wrote

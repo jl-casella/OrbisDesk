@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <string.h>
+#include "pw_trace.h"
 
 typedef void (*pw_vk_function)(void);
 extern pw_vk_function vk_icdGetInstanceProcAddr( void *instance, const char *name );
@@ -74,8 +75,9 @@ static void presented( const void *swapchain, const void *pixels, uint32_t pitch
     if (now - second_start >= 1000000)
     {
         double seconds = (now - second_start) / 1e6;
-        /* W074: and how long each present waited for the blit into the CPU buffer */
-        fprintf( stderr, "PWVK present fps %.1f (%u presents, %ux%u format %d) blit_wait_us=%llu\n",
+        /* W074: and how long each present waited for the blit into the CPU buffer. alpha-1: a line a second for
+         * the whole game, traces only (pw_trace.h); the overlay's counter below keeps the value */
+        if (pw_trace_on()) fprintf( stderr, "PWVK present fps %.1f (%u presents, %ux%u format %d) blit_wait_us=%llu\n",
                  second_count / seconds, count, width, height, format,
                  (unsigned long long)(second_wait_ns / second_count / 1000) );
         fps_tenths = (unsigned int)(second_count * 10 / seconds + 0.5);

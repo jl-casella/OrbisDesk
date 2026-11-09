@@ -30,10 +30,12 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 ## Cliente Steam nativo, juegos y atribuciones
 
 - [GAMES-es.md](GAMES-es.md) — W114: juegos en Start → Programs → Games
+- [STEAM_HOSTED-es.md](STEAM_HOSTED-es.md) — El cliente de Steam dentro de OrbisDesk
 - [STEAM_S1-es.md](STEAM_S1-es.md) — S1: HTTPS nativo para el cliente de Steam (ORBS00001)
 - [STEAM_S2-es.md](STEAM_S2-es.md) — S2: descarga anónima de un depot de Steam
 - [STEAM_S3-es.md](STEAM_S3-es.md) — S3: login del usuario por QR y biblioteca
 - [STEAM_S4-es.md](STEAM_S4-es.md) — S4: instalar un juego de la biblioteca
+- [STEAM_S5-es.md](STEAM_S5-es.md) — S5: lanzar desde el Explorer de OrbisDesk un juego instalado (en curso)
 - [THIRD_PARTY_FONTS-es.md](THIRD_PARTY_FONTS-es.md) — FreeType y fuentes del runtime
 
 ## Incrementos de plataforma y Wine (históricos)
@@ -213,3 +215,5 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 
 - [CI-es.md](CI-es.md) — Ejecutar CI y medir la matriz de plataforma
 - [RELEASES-es.md](RELEASES-es.md) — Construcción del producto, releases y rama de desarrollo
+- [RELEASE_LICENSES-es.md](RELEASE_LICENSES-es.md) — Licencias del release (alpha-1)
+- [RELEASE_TRACES-es.md](RELEASE_TRACES-es.md) — Trazas en release: un solo interruptor para el alpha-1
