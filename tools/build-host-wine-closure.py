@@ -2,15 +2,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Build actual PE dependencies for external prefix preparation, not PS4 code."""
 import argparse,hashlib,json,pathlib,re,struct,subprocess,time
-from wine_module_names import import_library_alias, register_alias, resolve_import_library
+from wine_module_names import import_library_alias, register_alias, resolve_import_library, forwarded_modules, configured_pe_targets
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 BUILD=ROOT/'.deps/wine/runtime/build'
 parser=argparse.ArgumentParser();parser.add_argument('--jobs',type=int,default=12);args=parser.parse_args()
 out=ROOT/'reports/increment15/host-build';out.mkdir(parents=True,exist_ok=True)
 makefile=(BUILD/'Makefile').read_text()
-targets={}
-for match in re.finditer(r'^((?:dlls|programs)/[^/ :]+/(i386|x86_64)-windows/([^/ :]+\.(?:dll|exe|sys|drv))):',makefile,re.M):
-    targets[(match[2],match[3].lower())]=match[1]
+targets=configured_pe_targets(makefile)
 
 aliases={};definitions={}
 for (arch,name),target in targets.items():
@@ -46,10 +44,11 @@ def imports(path):
             if index==13 and not (struct.unpack_from('<I',entry)[0]&1):name-=imagebase
             found.add(string(name))
     return sorted(found)
-resources=['mscms.dll','hidclass.sys','mouhid.sys','winebth.sys','winebus.sys','winehid.sys','wineusb.sys','winexinput.sys']
+resources=['apisetschema.dll','mscms.dll','hidclass.sys','mouhid.sys','winebth.sys','winebus.sys','winehid.sys','wineusb.sys','winexinput.sys']
 seed=['wineboot.exe','services.exe','rundll32.exe','explorer.exe','rpcss.exe','winedevice.exe','svchost.exe','mountmgr.sys','kernel32.dll','kernelbase.dll','ntdll.dll',*resources]
 missing_seeds=[name for name in seed if ('x86_64',name) not in targets]
 if missing_seeds:raise SystemExit('Missing required PE64 targets: '+repr(missing_seeds))
+if ('i386','apisetschema.dll') not in targets:raise SystemExit('Missing required PE32 API-set schema target')
 pending={(arch,name) for arch in ('i386','x86_64') for name in seed if (arch,name) in targets}
 pending|={('x86_64',name) for name in ('wow64.dll','wow64cpu.dll','wow64win.dll')}
 done={};commands=[];unknown=[];start=time.monotonic()
@@ -67,9 +66,10 @@ while pending:
         definition=definitions[directory]
         delayed=re.search(r'^DELAYIMPORTS\s*=\s*(.*)$',definition,re.M)
         source_delayed=sorted({resolve_import_library(module,arch,aliases) for module in delayed.group(1).split()}) if delayed else []
+        forwarded=sorted({resolve_import_library(module,arch,aliases) for module in forwarded_modules(path)})
         if any('$' in module for module in source_delayed):raise SystemExit('Unexpanded delayed import: '+str(directory))
-        dependencies=sorted(set(dependencies)|set(source_delayed))
-        done[(arch,name)]={'path':str(path.relative_to(ROOT)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'imports':dependencies,'source_delayed_imports':source_delayed}
+        dependencies=sorted(set(dependencies)|set(source_delayed)|set(forwarded))
+        done[(arch,name)]={'path':str(path.relative_to(ROOT)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'imports':dependencies,'source_delayed_imports':source_delayed,'forwarded_imports':forwarded}
         for dependency in dependencies:
             key=(arch,dependency)
             if key in targets and key not in done:pending.add(key)

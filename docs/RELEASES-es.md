@@ -114,6 +114,14 @@ La corrida `42526738112` en `9a844ba31aba52cab493d750af9f124d83d23e54` aprobó e
 
 Una build local temporal nueva de la fuente fijada ejecutó correctamente `make -j2 loader/all server/wineserver`, generó los tres ejecutables ELF nativos y `wine.inf`, y obtuvo salida 0 de `wineserver --version` (`Wine 11.17`). Esto verifica la compilación de los ejecutables nativos, no un runtime completo ni el arranque del prefijo.
 
+## Esquema API-set y exports reenviados: corrida 42533695365
+
+La corrida `42533695365` en `473f337e81ebf66016fce6405b25b5eae6b826e1` inició el loader y wineserver nativos, pero wineboot terminó con salida 1 después de unos 41 segundos. Escribió los tres registros, pero nunca ejecutó el fixture y `prefix_ready_for_packaging` quedó en false. Su log muestra el esquema API-set ausente (`c000000f`) y el forwarder `cryptbase.SystemFunction036` de `advapi32.dll` no disponible. El cambio posterior de caché no corrige esas dependencias de ejecución: un bloque anfitrión compilado correctamente todavía puede tener un cierre de arranque incompleto, y la verificación del prefijo debe seguir ejecutándose.
+
+El cierre anfitrión ahora exige targets reales `apisetschema.dll` para ambas arquitecturas y lee los directorios de exports PE además de los imports normales/diferidos. Los exports reenviados agregan sus proveedores reales al grafo recursivo de build (incluidos `cryptbase.dll` y `cryptsp.dll` para advapi32), registrados en `forwarded_imports`. La detección de targets incluye más extensiones PE: por ejemplo, `krnl386.exe16` de Wine es un wrapper PE32 aunque su nombre sea histórico. Los archivos siguen pasando por el parser PE; no se afirma compatibilidad Win16 nueva ni se sustituyen módulos por stubs.
+
+La validación local compiló fixtures reales PE32/PE64 con forwarders y comprobó imágenes fijadas reales de advapi32/kernel32/API-schema. Una auditoría del grafo de sólo lectura visitó 171 nodos sin encontrar dependencias no configuradas entre las imágenes analizadas; faltaba un binario bcrypt x64 local y no se analizó. Es validación local parcial del grafo, no otro arranque de prefijo en GitHub. El builder del cierre y el resolutor existente son entradas de caché exclusivas de Wine, por lo que el fix invalida Wine sin cambiar la clave gráfica. Ejecutar otra build de rama con `cache_mode=reuse`; wineboot y el fixture deben aprobar antes de aceptar el prefijo.
+
 ## Instalación y flujo dev → main
 
 El PKG solo no alcanza: también necesita su runtime en `/data`. Seguir las instrucciones del candidato, respaldar registros/documentos/configuración/partidas y usar una actualización que preserve cambios del usuario si ya existe una instalación. El archivo es un runtime nuevo; reemplazar un prefijo instalado sin combinar puede perder estado. Actions no hace transferencias FTP ni instala en consola.

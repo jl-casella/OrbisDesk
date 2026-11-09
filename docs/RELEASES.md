@@ -114,6 +114,14 @@ Run `42526738112` at `9a844ba31aba52cab493d750af9f124d83d23e54` passed the PE cl
 
 A local fresh temporary build of the pinned source successfully ran `make -j2 loader/all server/wineserver`, produced all three native ELF executables and `wine.inf`, and returned exit 0 from `wineserver --version` (`Wine 11.17`). This verifies compilation of the native entry points, not a complete runtime or prefix boot.
 
+## API-set schema and forwarded exports: run 42533695365
+
+Run `42533695365` on `473f337e81ebf66016fce6405b25b5eae6b826e1` started the native loader and wineserver, but wineboot exited 1 after approximately 41 seconds. It wrote all three registry files, yet the fixture was never executed and `prefix_ready_for_packaging` remained false. Its log reports a missing API-set schema (`c000000f`) and an unavailable `cryptbase.SystemFunction036` forwarder exported by `advapi32.dll`. The later cache-only change does not fix those runtime dependencies: a successfully compiled host block can still have an incomplete boot closure, and prefix verification must keep running.
+
+The host closure now requires real `apisetschema.dll` targets for both architectures and reads PE export directories as well as normal/delayed imports. Forwarded exports add their actual provider modules to the recursive build graph (including `cryptbase.dll` and `cryptsp.dll` for advapi32), with providers recorded in `forwarded_imports`. Target discovery also includes additional PE suffixes: Wine's `krnl386.exe16`, for example, is a PE32 wrapper despite its legacy name. Files still pass the PE parser; this is not a new Win16 compatibility claim or a stub substitution.
+
+Local validation compiled real PE32/PE64 forwarder fixtures and checked real pinned advapi32/kernel32/API-schema images. A read-only graph audit visited 171 nodes without finding unconfigured dependencies among parsed images; one local x64 bcrypt binary was absent and was not parsed. This is partial local graph validation, not a new hosted prefix boot. The closure builder and existing module resolver are Wine-only cache inputs, so this correction invalidates the Wine block without changing the graphics key. Run a new branch build with `cache_mode=reuse`; wineboot and the fixture must still pass before the prefix can be accepted.
+
 ## Installation and the dev → main flow
 
 A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.
