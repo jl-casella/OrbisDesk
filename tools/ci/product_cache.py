@@ -266,7 +266,10 @@ def make_keys():
                       'fork': json.loads((ROOT / 'fork.lock.json').read_text()), 'restore': deps['shadps4_fork']}
         else:
             selected = shared + ['tools/build-wine.py', 'tools/build-host-wine-closure.py',
-                                 'tools/build-host-wine-unix.py', 'tools/wine_module_names.py']
+                                 'tools/build-host-wine-unix.py', 'tools/wine_module_names.py',
+                                 'tools/wine_product_seeds.py', 'tools/stage-wine-i386.py',
+                                 'tools/stage-wine-programs.py', 'tools/stage-wine-extras.py',
+                                 'tools/stage-mshtml-hw.py', 'tools/stage-dshow-i386.py']
             source = {'repositories': {k: deps['repositories'][k] for k in ('wine-build-source', 'prospero-win')},
                       'wine': json.loads((ROOT / 'sources.lock.json').read_text())['sources']['wine']}
         inputs = {'schema_version': 1, 'block': block, 'system': system, 'source': source,

@@ -5,7 +5,9 @@ import argparse,hashlib,json,pathlib,re,struct,subprocess,time
 from wine_module_names import import_library_alias, register_alias, resolve_import_library, forwarded_modules, configured_pe_targets
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 BUILD=ROOT/'.deps/wine/runtime/build'
-parser=argparse.ArgumentParser();parser.add_argument('--jobs',type=int,default=12);args=parser.parse_args()
+parser=argparse.ArgumentParser();parser.add_argument('--jobs',type=int,default=12)
+parser.add_argument('--product-staging',action='store_true',help='Also build the declared product staging modules and resources')
+args=parser.parse_args()
 out=ROOT/'reports/increment15/host-build';out.mkdir(parents=True,exist_ok=True)
 makefile=(BUILD/'Makefile').read_text()
 targets=configured_pe_targets(makefile)
@@ -51,6 +53,13 @@ if missing_seeds:raise SystemExit('Missing required PE64 targets: '+repr(missing
 if ('i386','apisetschema.dll') not in targets:raise SystemExit('Missing required PE32 API-set schema target')
 pending={(arch,name) for arch in ('i386','x86_64') for name in seed if (arch,name) in targets}
 pending|={('x86_64',name) for name in ('wow64.dll','wow64cpu.dll','wow64win.dll')}
+resource_targets=[]
+if args.product_staging:
+    from wine_product_seeds import product_seeds
+    product_modules,resource_targets=product_seeds(ROOT)
+    missing=sorted(product_modules-set(targets))
+    if missing:raise SystemExit('Product staging requires unconfigured PE targets: '+repr(missing))
+    pending|=product_modules
 done={};commands=[];unknown=[];start=time.monotonic()
 while pending:
     current=sorted(pending-set(done));pending=set()
@@ -76,7 +85,13 @@ while pending:
             elif key not in targets and not dependency.startswith(('api-ms-','ext-ms-')):
                 unknown.append({'arch':arch,'module':name,'import':dependency})
     print('PE modules built:',len(done),'next:',len(pending),flush=True)
+if resource_targets:
+    command=['make','-j'+str(args.jobs),*resource_targets];commands.append(command)
+    with (out/'make-product-resources.log').open('w') as log:
+        subprocess.run(command,cwd=BUILD,stdout=log,stderr=subprocess.STDOUT,check=True)
 report={'scope':'Native Linux Wine PE closure for prefix initialization; not PS4 validation',
+        'product_staging':args.product_staging,
+        'resources':{name:hashlib.sha256((BUILD/name).read_bytes()).hexdigest() for name in resource_targets},
         'status':'passed' if not unknown else 'blocked','modules':{arch+'/'+name:value for (arch,name),value in sorted(done.items())},
         'unknown_imports':unknown,'commands':commands,'duration_seconds':round(time.monotonic()-start,3),
         'wine_commit':subprocess.check_output(['git','-C',str(ROOT/'.deps/wine/source'),'rev-parse','HEAD'],text=True).strip(),

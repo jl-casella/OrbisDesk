@@ -130,6 +130,18 @@ After OpenOrbis configuration, `build-wine-ps4.py --boot --all-unix` compiled th
 
 A focused local check extracted Wine's actual configured version-generation rule, ran it in a fresh temporary directory, compiled the resulting source for `x86_64-pc-freebsd12-elf` and verified its `wine_build` symbol. Generation and compilation both exited 0; this does not establish the remaining cross-build/link/boot stages. Only the PS4 builder and evidence paths changed, so both dependency cache keys remain compatible. Run a new branch build with `cache_mode=reuse` to attempt the first warm restore and continue the cross-build.
 
+## Warm cache accepted; product staging inputs: run 42542796408
+
+Run `42542796408` at `7e8a16c8035c1a91a1cb4bc890b3f086ffda4893` reused both dependency snapshots: graphics restored in 34.535 seconds and host Wine in 11.323 seconds. Fresh prefix production passed again, followed by PS4 Unix-module and server compilation. This proves warm dependency reuse and compilation, not a PS4 Wine boot or a completed product package.
+
+`stage-wine-i386.py` then rejected 24 missing initial DLLs, including ddraw, wined3d, winevulkan and opengl32. The clean recipe built the prefix boot closure but omitted the larger product staging set that existed on the prepared workstation. `build-host-wine-closure.py --jobs 2 --product-staging` now reads the stagers' declared module lists without importing/executing those scripts, builds the selected PE targets and recursively follows imports, delayed imports and export forwarders. It also builds the required MSHTML/theme resources and DirectShow static libraries. The default prefix-only command remains available. These outputs are produced before sealing the Wine snapshot, so later matching builds can reuse them. Changes to the selection helper or staging declarations invalidate that snapshot.
+
+The product sequence now stages Wine programs before the i386 consumer and builds bcrypt and dmsynth before the browser and DirectShow consumers. The DirectShow decoder's pinned pl_mpeg header is also an explicit checksum-verified download, rather than an implicit workstation input. Existing missing-module/import checks remain active.
+
+Auditing the expanded delayed-import graph also found wmvcore's dependency on host winegstreamer. The supplied configure log shows GStreamer was disabled because `pkg-config` could not find `libunwind`; the runner now explicitly installs `libunwind-dev` alongside the existing GStreamer development packages. This supplies the native build dependency, without claiming a PS4 GStreamer backend: the console package still uses its existing wmvcore adapter and staging exclusions.
+
+Local validation passed 61 CI unit tests and a read-only audit found configured targets for all 879 declared PE seeds and all nine resource/library targets in the prepared Wine Makefile. This is target/ordering validation, not a successful build of those 879 modules on a clean runner. The orchestration and cache recipes changed, so both dependency fingerprints change conservatively; the next manual branch run with `cache_mode=reuse` will rebuild and refill them. Keep publication disabled until the complete package and runtime pass their gates.
+
 ## Installation and the dev → main flow
 
 A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.

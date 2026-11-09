@@ -1,6 +1,11 @@
 {
   "schema_version": 1,
   "downloads": {
+    "pl-mpeg-header": {
+      "path": ".deps/downloads/pl_mpeg-c871f2be/pl_mpeg.h",
+      "url": "https://raw.githubusercontent.com/phoboslab/pl_mpeg/c871f2be022ece7ef4f64230b4fb8e1fb9eb6023/pl_mpeg.h",
+      "sha256": "3a8cb30c83c2a1147719c30fe0c8b93da2987aa43140077c575b39aaa75fc2c9"
+    },
     "llvm-source": {
       "path": ".deps/downloads/ci/llvm-project-21.1.6.src.tar.xz",
       "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.6/llvm-project-21.1.6.src.tar.xz",

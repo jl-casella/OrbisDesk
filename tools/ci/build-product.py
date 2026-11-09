@@ -103,7 +103,7 @@ def build(version, cache_mode='reuse'):
     normalize_wine_source()
     if not cache.use('wine'):
         python('build-wine', '--jobs', '2')
-        python('build-host-wine-closure', '--jobs', '2')
+        python('build-host-wine-closure', '--jobs', '2', '--product-staging')
         python('build-host-wine-unix')
         cache.save('wine')
     python('prepare-host-prefix')
@@ -115,16 +115,17 @@ def build(version, cache_mode='reuse'):
     python('build-wine-ps4', '--boot', '--all-unix')
     python('build-wine-ps4', '--boot', '--server')
     # These entries are ordered by their input manifests, not alphabetically.
-    for name in ('stage-wine-pe64', 'stage-wine-gui', 'stage-wine-i386', 'stage-wine-programs',
-                 'stage-wine-extras', 'stage-mshtml-hw', 'stage-dshow-i386', 'stage-wine-gecko', 'stage-vlc',
+    for name in ('stage-wine-pe64', 'stage-wine-gui', 'stage-wine-programs', 'stage-wine-i386',
+                 'stage-wine-extras', 'build-bcrypt-x64', 'stage-mshtml-hw',
+                 'build-dmsynth-i386', 'stage-dshow-i386', 'stage-wine-gecko', 'stage-vlc',
                  'stage-dxvk', 'build-wowprospero-ps4', 'build-wow64native-ps4', 'build-freetype-ps4',
                  'build-win32u-ps4', 'build-winevulkan-batch', 'build-winevulkan-ps4',
                  'build-unixlibs-ps4', 'build-audio-ps4', 'build-xinput-hw', 'build-hidstack-hw',
                  'build-dinput-hw', 'build-joycpl-hw', 'build-env-ps4', 'build-signal-ps4',
                  'build-telemetry-ps4', 'link-wine-boot', 'build-wine-delete-server',
                  'build-wine-directory-ps4', 'build-wow64-world-ps4', 'build-ddraw-hw',
-                 'build-wined3d-hw', 'build-dmsynth-i386', 'build-wmvcore-hw', 'build-msstyles-hw',
-                 'build-nsi-hw', 'build-bcrypt-x64', 'build-dxgi-hw', 'build-winmm-hw',
+                 'build-wined3d-hw', 'build-wmvcore-hw', 'build-msstyles-hw',
+                 'build-nsi-hw', 'build-dxgi-hw', 'build-winmm-hw',
                  'build-taskmgr-hw', 'build-winecfg-hw', 'build-explorer-hw', 'build-guest-hw',
                  'build-wfm', 'build-dos-runtime', 'build-games', 'make-icons', 'make-start-menu', 'make-app-icon'):
         python(name, *(['--pinball'] if name == 'build-games' else []))

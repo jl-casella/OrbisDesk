@@ -178,6 +178,9 @@ class KeyTests(unittest.TestCase):
                      'tools/ci/install-runner.sh', 'tools/ci/common.py', 'tools/logged_process.py',
                      'tools/restore-dependencies.py', 'tools/build-wine.py', 'tools/build-host-wine-closure.py',
                      'tools/build-host-wine-unix.py', 'tools/wine_module_names.py', 'tools/vk-h0/patch.py',
+                     'tools/wine_product_seeds.py', 'tools/stage-wine-i386.py',
+                     'tools/stage-wine-programs.py', 'tools/stage-wine-extras.py',
+                     'tools/stage-mshtml-hw.py', 'tools/stage-dshow-i386.py',
                      '.deps/linux-tools/cmake/data/bin/cmake', '.deps/linux-tools/bin/ninja', 'fake-compiler']
             for name in names:
                 path = root / name
@@ -197,6 +200,11 @@ class KeyTests(unittest.TestCase):
                 changed = cache.make_keys()
                 self.assertNotEqual(original['wine']['key'], changed['wine']['key'])
                 self.assertEqual(original['graphics']['key'], changed['graphics']['key'])
+                (root / 'tools/stage-wine-i386.py').write_text('changed required staging modules')
+                declarations_changed = cache.make_keys()
+                self.assertNotEqual(changed['wine']['key'], declarations_changed['wine']['key'])
+                self.assertEqual(changed['graphics']['key'], declarations_changed['graphics']['key'])
+                changed = declarations_changed
                 (root / 'tools/vk-h0/patch.py').write_text('changed graphics recipe')
                 graphics_changed = cache.make_keys()
                 self.assertNotEqual(changed['graphics']['key'], graphics_changed['graphics']['key'])
