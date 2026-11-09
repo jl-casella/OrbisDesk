@@ -341,6 +341,21 @@ void pw_wine_pad_profile(const char *exe,int load)
     /* Steam: the answer ("opened", "busy" or "error ...") goes back in the call's 260-byte buffer */
     if(exe && !strcmp(exe,"<steam-open>")) {snprintf((char *)exe,260,"%s",pw_hw_steam_open());return;}
     if(exe && !strcmp(exe,"<mangohud>")) {pw_hw_overlay_mangohud(load);return;}
+    /* W292: explorer's "Reset as Root" / "Reset as Sandbox": the mode chosen at start, and the relaunch
+     * into the other one, which answers only when it failed (native/wine_hardware.c) */
+    if(exe && !strcmp(exe,"<root-mode>")) {
+        extern int pw_hw_boot_root(void) __attribute__((weak));
+        snprintf((char *)exe,260,"%s",!pw_hw_boot_root?"error: unavailable":pw_hw_boot_root()?"root":"normal");
+        return;
+    }
+    if(exe && (!strcmp(exe,"<reset-root>") || !strcmp(exe,"<reset-sandbox>"))) {
+        extern const char *pw_hw_reset_mode(int root) __attribute__((weak));
+        int root=!strcmp(exe,"<reset-root>");
+        fprintf(stderr,"PWROOT request reset to=%s\n",root?"root":"normal");
+        snprintf((char *)exe,260,"%s",pw_hw_reset_mode?pw_hw_reset_mode(root):"error: unavailable");
+        fprintf(stderr,"PWROOT request reply=%s\n",exe);
+        return;
+    }
     if(exe && !strcmp(exe,"<overlay-desktop>")) {pw_hw_overlay_desktop(load);return;}
     /* W242: "exit" or "-", then the windows Vulkan presented to in the last 2 s, in hex (the closer
      * counts MangoHud only for the one in front) */

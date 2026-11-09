@@ -31,11 +31,11 @@
 #include <limits.h>
 #include <pthread.h>
 /* W001 and W002 sources and evidence: reports/wine-hardware-w00N/release-w00N. */
-#define HW_BUILD "W288"
+#define HW_BUILD "W302"
 #ifndef HW_VERSION
-#define HW_VERSION "03.87"
+#define HW_VERSION "04.01"
 #endif
-#define HW_DIR "/data/orbisdesk/w288"
+#define HW_DIR "/data/orbisdesk/w302"
 #define HW_EXE "C:\\windows\\explorer.exe"
 #define HW_RESULT "text-result.txt"
 #ifndef PW_MANGOHUD_LAYER_ENABLED
@@ -324,6 +324,50 @@ static size_t switch_program_name_length(const char *image,const char *command_l
     }
     return 0;
 }
+/* W292: "Reset as Root" / "Reset as Sandbox" (explorer's Start menu, native/hw_pad.c "<reset-root>",
+ * "<reset-sandbox>"): the title relaunches itself, as for a program (W043), and the next start takes that
+ * mode once without the NORMAL/ROOT screen (boot_choose reads and removes HW_FORCE_MODE). Returns only
+ * when that failed. */
+#define HW_FORCE_MODE "/data/orbisdesk/force-mode.txt"
+static void wait_for_system_close(const char *who);
+const char *pw_hw_reset_mode(int root);
+const char *pw_hw_reset_mode(int root)
+{
+    static char reply[128];
+    const char *mode=root?"root":"normal";
+    if(switched) return "error: not the desktop's run";
+    if(!root==!boot_root) {snprintf(reply,sizeof(reply),"error: already in %s mode",root?"ROOT":"NORMAL");return reply;}
+    FILE *force=fopen(HW_FORCE_MODE,"w");
+    if(!force) {
+        snprintf(reply,sizeof(reply),"error: cannot write %s (errno %d)",HW_FORCE_MODE,errno);
+        note(HW_BUILD " PWROOT reset to=%s open_failed errno=%d\n",mode,errno);
+        return reply;
+    }
+    int written=fprintf(force,"%s\n",mode)>0;
+    if(fclose(force) || !written) {
+        snprintf(reply,sizeof(reply),"error: cannot write %s (errno %d)",HW_FORCE_MODE,errno);
+        note(HW_BUILD " PWROOT reset to=%s write_failed errno=%d\n",mode,errno);
+        unlink(HW_FORCE_MODE);
+        return reply;
+    }
+    note(HW_BUILD " PWROOT reset to=%s relaunch t_ms=%llu\n",mode,(unsigned long long)(sceKernelGetProcessTime()/1000));
+    pw_hw_unjailbreak("reset");
+    int rc=sceSystemServiceLoadExec(HW_SELF,NULL);
+    note(HW_BUILD " PWROOT reset to=%s load_exec rc=0x%08x\n",mode,(unsigned)rc);
+    if(rc) {
+        unlink(HW_FORCE_MODE);
+        if(boot_root) pw_hw_jailbreak();
+        snprintf(reply,sizeof(reply),"error: the relaunch was refused (0x%08x)",(unsigned)rc);
+        return reply;
+    }
+    wait_for_system_close("reset");
+    unlink(HW_FORCE_MODE);
+    if(boot_root) pw_hw_jailbreak();
+    note(HW_BUILD " PWROOT reset to=%s still_running\n",mode);
+    snprintf(reply,sizeof(reply),"error: the system did not close the title; close OrbisDesk and choose %s on its start screen",
+             root?"ROOT":"NORMAL");
+    return reply;
+}
 int pw_hw_switch_program(const char *image,const char *command_line)
 {
     enum {MAX_SWITCH_ARGS=16};  /* W265: was 6 (Worms 3D: /W 1280 /H 720 /FS /REFRESH 60) */
@@ -514,6 +558,21 @@ static void boot_choose(void)
 {
     extern int pw_hw_pad_handle(void);  /* native/hw_pad.c: opened once, shared with its input thread */
     struct stat st;
+    /* W292: "Reset as Root" / "Reset as Sandbox" (pw_hw_reset_mode): that mode once, without the screen */
+    if(!stat(HW_FORCE_MODE,&st)) {
+        char mode[16]={0};FILE *file=fopen(HW_FORCE_MODE,"r");
+        if(file){if(!fgets(mode,sizeof(mode),file))mode[0]=0;fclose(file);}
+        int removed=unlink(HW_FORCE_MODE);
+        int root=!strncmp(mode,"root",4),normal=!strncmp(mode,"normal",6);
+        note(HW_BUILD " PWROOT force_mode=%.8s removed=%d\n",(root||normal)?mode:"(unknown)",removed);
+        if(root||normal) {
+            boot_root=root;
+            file=fopen(HW_BOOT_MODE,"w");
+            if(file){fputs(root?"root\n":"normal\n",file);fclose(file);}
+            note(HW_BUILD " PWJB mode=%s source=reset\n",root?"root":"normal");
+            return;
+        }
+    }
     /* a program started from the desktop relaunches the title (W043): it keeps the first start's mode */
     if(!stat(HW_NEXT,&st)) {
         char mode[16]={0};FILE *file=fopen(HW_BOOT_MODE,"r");
@@ -767,6 +826,7 @@ static int windows_unix_path(const char *windows_path,char *out,size_t size)
     if(drive=='c') n=(size_t)snprintf(out,size,"/data/wine-prefix/drive_c");
     else if(drive>='d' && drive<='k') n=(size_t)snprintf(out,size,"/mnt/usb%d",drive-'d');
     else if(drive=='l') n=(size_t)snprintf(out,size,"/mnt/disc");
+    else if(drive=='z') n=(size_t)snprintf(out,size,"/data");
     else return 0;
     for(const char *at=windows_path+2;*at && n<size-1;++at) out[n++]=*at=='\\'?'/':*at;
     out[n]=0;return 1;

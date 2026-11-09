@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""W288 (W001 kept in reports/wine-hardware-w001/release-w001): real Wine boot objects, automatic PE32 launch, file logs and packaged host UI."""
+"""W302 (W001 kept in reports/wine-hardware-w001/release-w001): real Wine boot objects, automatic PE32 launch, file logs and packaged host UI."""
 import argparse,hashlib,json,os,pathlib,shutil,subprocess,tarfile
 from wine_prefix import validate_package
 from wine_fonts import stage_fonts
@@ -13,14 +13,14 @@ from project_brand import normalize_marker
 EBOOT_BASE=0x1100000000
 ROOT=pathlib.Path(__file__).resolve().parents[1];sdk=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
 parser=argparse.ArgumentParser()
-parser.add_argument('--app-version',default='03.87',help='SFO and boot-selector version (NN.NN)')
+parser.add_argument('--app-version',default='04.01',help='SFO and boot-selector version (NN.NN)')
 parser.add_argument('--mangohud',choices=('enabled','disabled'),default='enabled',
                     help='load the MangoHud layer (default enabled; disabled is a diagnostic control)')
 args=parser.parse_args()
 if not __import__('re').fullmatch(r'[0-9]{2}\.[0-9]{2}',args.app_version):
     parser.error('app-version must be NN.NN')
 mangohud_enabled=args.mangohud=='enabled'
-work=ROOT/'build/wine-hardware-w288';app=work/'app';out=ROOT/'out/wine-hardware-w288'
+work=ROOT/'build/wine-hardware-w302';app=work/'app';out=ROOT/'out/wine-hardware-w302'
 app.mkdir(parents=True,exist_ok=True);out.mkdir(parents=True,exist_ok=True)
 base=json.loads((ROOT/'build/wine-boot/link-report.json').read_text())
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -57,7 +57,7 @@ if sha(ROOT/telemetry_build['object'])!=telemetry_build['object_sha256']:
 for key in ('gpu_source','gpu_library'):
     if sha(pathlib.Path(telemetry_build[key]))!=telemetry_build[key+'_sha256']:
         raise SystemExit('Telemetry GPU input changed: '+key)
-sink=work/'sink.c';sink.write_text((ROOT/'platform/ps4/pw_wine_sink_ps4.c').read_text().replace('"/data/frames','"/data/orbisdesk/w288/frames'))
+sink=work/'sink.c';sink.write_text((ROOT/'platform/ps4/pw_wine_sink_ps4.c').read_text().replace('"/data/frames','"/data/orbisdesk/w302/frames'))
 # W027: at most 8 BMP dumps (explorer builds its desktop over several frames); process time in the frame markers.
 sink_obj=work/'sink.o';run([*flags,'-I'+str(ROOT/'native'),'-DPW_SINK_MAX_DUMPS=8','-DPW_SINK_TIMING=1','-DPW_SINK_EXTERNAL_INPUT','-DPW_SINK_ASYNC','-DPW_SINK_GPU','-c',sink,'-o',sink_obj])
 # W028: controller input and the pointer position the sink draws.
@@ -784,6 +784,11 @@ system_reg.write_text(system_text)
 # name and format, so the registry and ps5drv's WINE_PS5_WALLPAPER stay as they are.
 wallpaper=json.loads((ROOT/'out/wallpaper-cc0/manifest.json').read_text())['wallpaper']
 copy_verified(ROOT/'out/wallpaper-cc0'/wallpaper['path'],prefix/'drive_c/windows/orbis-hills.bmp',wallpaper['sha256'])
+# W292: more wallpapers to choose from (the desktop's right-click menu > Wallpaper lists the BMPs in
+# C:\windows), drawn by tools/make-wallpaper-set.py; the default stays orbis-hills.bmp.
+wallpaper_set=json.loads((ROOT/'out/wallpaper-set/manifest.json').read_text())
+for item in wallpaper_set['wallpapers']:
+    copy_verified(ROOT/'out/wallpaper-set'/item['path'],prefix/'drive_c/windows'/item['path'],item['sha256'])
 user_reg=prefix/'user.reg';text=user_reg.read_text()
 for old,new in (('"Wallpaper"=""','"Wallpaper"="C:\\\\windows\\\\orbis-hills.bmp"'),('"DragFullWindows"="0"','"DragFullWindows"="1"')):
     if text.count(old)!=1:raise SystemExit('user.reg: unexpected '+old)
@@ -959,7 +964,7 @@ print(json.dumps({'stripped_modules':stripped['modules'],'mib_before':stripped['
                   'mib_after':stripped['bytes_after']>>20,'kept':len(stripped['kept'])}))
 content='IV0000-ORBW00002_00-ORBISWINW0010000'
 pkg=package_app(ROOT,app,out,'OrbisDesk','ORBW00002',content,version=args.app_version,filename='OrbisDesk.pkg')
-manifest={'build':'W288','app_version':args.app_version,'title_id':'ORBW00002','package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),
+manifest={'build':'W302','app_version':args.app_version,'title_id':'ORBW00002','package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),
     'package_bytes':pkg.stat().st_size,'eboot_sha256':sha(app/'eboot.bin'),'base_wine_elf_sha256':base['bootstrap_sha256'],
     'wine_commit':wine_commit,'prefix_package':verified,'hardware_status':'pending','Wine_booted':False,
     'runtime_root':str(data.relative_to(ROOT)),
@@ -1004,9 +1009,9 @@ manifest['expected_prefix']='passed=1;family_tahoma=1;'
 # The old CPU-telemetry preparer draft is deliberately not run.
 overlay_source=vk/'src/mangohud-win/src/vulkan.cpp'
 if '// OrbisDesk W096: shared-process overlay lock.' not in normalize_marker(overlay_source.read_text()):
-    raise SystemExit('W288 requires the W096 shared-process MangoHud patch')
+    raise SystemExit('W302 requires the W096 shared-process MangoHud patch')
 if '// OrbisDesk W099: join outside the UI lock.' not in normalize_marker(overlay_source.read_text()):
-    raise SystemExit('W288 requires the W099 teardown patch')
+    raise SystemExit('W302 requires the W099 teardown patch')
 overlay_proof=json.loads((vk/'build/mangohud/orbis-build.json').read_text())
 if overlay_proof['dll_sha256']!=vulkan_files['libMangoHud.dll']:
     raise SystemExit('MangoHud DLL differs from its successful build proof')
@@ -1017,9 +1022,9 @@ for name,marker in (('src/overlay.cpp','// OrbisDesk W102: sample on the frame t
                     ('src/fps_metrics.h','// OrbisDesk W102: calculate on the frame thread'),
                     ('src/notify_win32.cpp','// OrbisDesk W102: configuration reloads at instance creation')):
     if name not in overlay_proof['sources'] or marker not in normalize_marker((vk/'src/mangohud-win'/name).read_text()):
-        raise SystemExit('W288 requires compiled frame-sampling source: '+name)
+        raise SystemExit('W302 requires compiled frame-sampling source: '+name)
 for name in ('src/cpu_win32.cpp','src/hud_elements.cpp','src/orbis_metrics.h','src/orbis_telemetry.h'):
-    if name not in overlay_proof['sources']:raise SystemExit('W288 native metrics source missing from build proof: '+name)
+    if name not in overlay_proof['sources']:raise SystemExit('W302 native metrics source missing from build proof: '+name)
 if overlay_proof['sources']['src/orbis_telemetry.h']!=sha(ROOT/'platform/ps4/pw_telemetry.h'):
     raise SystemExit('MangoHud/native telemetry schemas differ')
 manifest['mangohud']={'library_sha256':vulkan_files['libMangoHud.dll'],
@@ -1031,7 +1036,7 @@ manifest['mangohud']={'library_sha256':vulkan_files['libMangoHud.dll'],
     'hardware_validation':'pending','cpu_gpu_telemetry_changed':True,'metric_labels':['CPU','GPU']}
 for source in (ROOT/'tools/vk-h0/build-mangohud.sh',ROOT/'tools/vk-h0/build-mangohud-i386.sh',ROOT/'tools/vk-h0/build-vulkan-loader-i386.sh',ROOT/'tools/vk-h0/patch-mangohud-shared-process.py',ROOT/'tools/vk-h0/patch-mangohud-teardown.py',ROOT/'tools/vk-h0/patch-mangohud-frame-sampling.py'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
-manifest['shell_diagnostics']={'build':'W288','purpose':'locate Start failure after guest window/thread teardown',
+manifest['shell_diagnostics']={'build':'W302','purpose':'locate Start failure after guest window/thread teardown',
     'observer':'independent Wine thread; GUI clock heartbeat; Start and taskbar cleanup progress',
     'guest_thread_wait_result_logged':True,'fix_validated':False}
 manifest['reload_diagnostics']={'wine_debug':'warn+module,trace+seh,trace+loaddll,warn+debugstr',

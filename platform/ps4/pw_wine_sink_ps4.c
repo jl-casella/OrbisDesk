@@ -175,6 +175,7 @@ static const char *const arrow[]={
 static volatile int pointer_hidden;
 extern int pw_hw_cursor_mode(void);  /* native/hw_overlay.c: 0 game, 1 always, 2 hidden */
 extern int pw_hw_overlay_stretch(void);  /* W266: native/hw_overlay.c, 1 to fill the output */
+extern int pw_hw_busy_frame(void);  /* W293: native/hw_overlay.c, 0-7 while a program starts, -1 otherwise */
 static int pointer_off(void)
 {
     int mode=pw_hw_cursor_mode();
@@ -200,6 +201,25 @@ static int cursor_origin(uint32_t left,uint32_t top,uint32_t scale_w,uint32_t sc
     if(pointer_off() || !pw_hw_cursor(&x,&y,&w,&h) || w<=0 || h<=0) return 0;
     *ox=(int)left+(int)((int64_t)x*scale_w/w);*oy=(int)top+(int)((int64_t)y*scale_h/h);
     return 1;
+}
+/* W293: while a program starts (native/hw_overlay.c), eight dots in a ring by the arrow, lower right, as Windows'
+ * IDC_APPSTARTING; the brightest turns with the frame. Drawn into the output after the GPU or CPU has drawn it. */
+static void draw_busy(uint32_t *target,uint32_t left,uint32_t top,uint32_t scale_w,uint32_t scale_h)
+{
+    static const signed char dots[8][2]={{6,0},{4,4},{0,6},{-4,4},{-6,0},{-4,-4},{0,-6},{4,-4}};
+    int frame=pw_hw_busy_frame(),ox,oy;
+    if(frame<0 || !cursor_origin(left,top,scale_w,scale_h,&ox,&oy)) return;
+    for(int i=0;i<8;++i) {
+        int age=(frame-i+8)%8;  /* 0 the brightest, then the ones behind it */
+        uint32_t color=!age?0xffffffffu:age<3?0xffb0b0b0u:0xff606060u;
+        int cx=ox+18+dots[i][0],cy=oy+18+dots[i][1];
+        for(int y=-2;y<2;++y)
+            for(int x=-2;x<2;++x) {
+                int px=cx+x,py=cy+y;
+                if(px<0 || py<0 || px>=OUT_WIDTH || py>=OUT_HEIGHT) continue;
+                target[(size_t)py*pitch+px]=x==-2 || y==-2 || x==1 || y==1?0xff000000u:color;
+            }
+    }
 }
 #endif
 /* time spent in show() per output frame, by path, logged every 300 frames */
@@ -350,6 +370,7 @@ static int show(void)
 flip:;
 #endif
 #ifdef PW_SINK_EXTERNAL_INPUT
+    draw_busy(target,left,top,scale_w,scale_h);  /* W293 */
     draw_fps(target,sceKernelGetProcessTime());
     pw_hw_steam_draw(target,pitch,OUT_WIDTH,OUT_HEIGHT);
     pw_hw_overlay_draw(target,pitch,OUT_WIDTH,OUT_HEIGHT);  /* W236 */
@@ -444,6 +465,17 @@ extern void pw_hw_pointer_area(int width,int height);
 #endif
 /* W256: ps5drv.c hides the pointer in a full-screen game that sets no cursor (W261: none at all); the frame is
  * shown again */
+/* W293: ps5drv.c, a top-level window shown for the first time: it ends the "app starting" pointer */
+void pw_wine_window_shown(void *hwnd,const char *class_name);
+void pw_wine_window_shown(void *hwnd,const char *class_name)
+{
+#ifdef PW_SINK_EXTERNAL_INPUT
+    extern void pw_hw_overlay_window_shown(void *hwnd,const char *class_name);
+    pw_hw_overlay_window_shown(hwnd,class_name);
+#else
+    (void)hwnd;(void)class_name;
+#endif
+}
 void pw_wine_pointer_hidden(int hidden);
 #ifdef PW_SINK_EXTERNAL_INPUT
 void pw_hw_cursor_moved(void);
