@@ -2924,7 +2924,8 @@ revise('ntdll','loader','''        if ( mod->Flags & LDR_NO_DLL_CALLS )
         MODULE_InitDLL( CONTAINING_RECORD(mod, WINE_MODREF, ldr), DLL_THREAD_ATTACH, NULL );''','''        if ( mod->Flags & LDR_NO_DLL_CALLS )
             continue;
 
-#ifndef _WIN64
+#if !defined(_WIN64) && defined(ORBIS_RELEASE) && !ORBIS_RELEASE
+        /* alpha-1: a line per DLL for every new 32-bit thread; only in a -DORBIS_RELEASE=0 build (pw_trace.h) */
         ERR( "PWWOW guest32 thread %04lx thread_attach %s\\n", HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ),
              debugstr_w( mod->BaseDllName.Buffer ) );  /* W236 */
 #endif
@@ -3944,7 +3945,242 @@ revise('ntdll','loader','''    nt_name->Buffer = NULL;
     {
         status = find_apiset_dll( libname, &fullname );''',"A 32-bit guest's own choice of Wine's d3d8/d3d9 (W287).")
 
+# W293 (W292: Portal 2's exit hung explorer: its own tier0 took the last reference to system32 WINMM.dll with it, and
+# winmm's DllMain(DETACH) released dinput, which waits for its hook thread, process-wide since W281, while the exiting
+# thread holds the loader lock; the hook thread ends with FreeLibraryAndExitThread, which needs that lock). A module
+# whose thread lives for the whole process stays loaded and attached for the whole process (W173 did it for Mesa).
+revise('kernelbase','thread','''            ERR( "PWGUEST shared_thread %04lx start=%s+%Ix: not the guest's\\n", GetThreadId( handle ),
+                 debugstr_w( mod->BaseDllName.Buffer ), (ULONG_PTR)start - (ULONG_PTR)mod->DllBase );
+            guest = NULL;''','''            ERR( "PWGUEST shared_thread %04lx start=%s+%Ix: not the guest's\\n", GetThreadId( handle ),
+                 debugstr_w( mod->BaseDllName.Buffer ), (ULONG_PTR)start - (ULONG_PTR)mod->DllBase );
+            guest = NULL;
+            {
+                /* W293 (W292: winmm's DllMain(DETACH) at a guest's exit waited for dinput's thread, which needs the
+                 * loader lock to end): the module of a process-wide thread is never detached or unmapped under it */
+                HMODULE pinned;
+
+                if (GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                        (const WCHAR *)(ULONG_PTR)start, &pinned ))
+                    ERR( "PWGUEST shared_thread module %s pinned at %p\\n", debugstr_w( mod->BaseDllName.Buffer ), pinned );
+                else ERR( "PWGUEST shared_thread module %s not pinned (error %lu)\\n", debugstr_w( mod->BaseDllName.Buffer ),
+                          GetLastError() );
+            }''','The module of a process-wide thread is pinned (W293).')
+revise('kernelbase','process','''            static const WCHAR *const resident[] = { L"opengl32.dll", L"libgallium_wgl.dll" };''',
+'''            /* W293 (W292): and winmm, dinput, dinput8, whose threads are process-wide since W281: winmm's
+             * DllMain(DETACH) releases dinput, which waits for its hook thread under the loader lock */
+            static const WCHAR *const resident[] = { L"opengl32.dll", L"libgallium_wgl.dll", L"winmm.dll",
+                                                     L"dinput.dll", L"dinput8.dll" };''','The modules with process-wide threads stay (W293).')
+revise('kernelbase','process','''static void ps4_guest_unload( struct ps4_guest *guest )
+{''','''/* W293 (W292: a system module's DllMain(DETACH) hung a guest's exit): the system modules (Windows folder) this guest
+ * loaded, before its unload; then which ones its unload took away, their DllMain(DETACH) run at the guest's exit */
+struct ps4_guest_systems
+{
+    UINT count;
+    struct { void *base; WCHAR name[48]; } entry[64];
+};
+
+static void ps4_guest_systems_before( struct ps4_guest *guest, struct ps4_guest_systems *systems )
+{
+    LIST_ENTRY *list = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList, *entry;
+    ULONG_PTR magic;
+    UINT j;
+
+    systems->count = 0;
+    if (LdrLockLoaderLock( 0, NULL, &magic )) return;
+    for (entry = list->Flink; entry != list && systems->count < ARRAY_SIZE(systems->entry); entry = entry->Flink)
+    {
+        LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
+
+        if (mod->DllBase == guest->module || ps4_guest_outside_windows( &mod->FullDllName )) continue;
+        for (j = 0; j < guest->modules_before_count; j++) if (guest->modules_before[j] == mod->DllBase) break;
+        if (j < guest->modules_before_count) continue;
+        systems->entry[systems->count].base = mod->DllBase;
+        lstrcpynW( systems->entry[systems->count].name, mod->BaseDllName.Buffer ? mod->BaseDllName.Buffer : L"?",
+                   ARRAY_SIZE(systems->entry[0].name) );
+        ERR( "PWGUEST system_module %s base=%p refcount=%d\\n", debugstr_w( systems->entry[systems->count].name ),
+             mod->DllBase, mod->LoadCount );
+        systems->count++;
+    }
+    LdrUnlockLoaderLock( 0, magic );
+}
+
+static void ps4_guest_systems_after( struct ps4_guest *guest, const struct ps4_guest_systems *systems )
+{
+    UINT i, gone = 0;
+
+    for (i = 0; i < systems->count; i++)
+    {
+        LDR_DATA_TABLE_ENTRY *mod;
+
+        if (!LdrFindEntryForAddress( systems->entry[i].base, &mod ) && mod->DllBase == systems->entry[i].base) continue;
+        ERR( "PWGUEST system_unloaded %s base=%p: its DllMain(DETACH) ran at the exit of module %p\\n",
+             debugstr_w( systems->entry[i].name ), systems->entry[i].base, guest->module );
+        gone++;
+    }
+    ERR( "PWGUEST system_modules module=%p loaded=%u unloaded=%u\\n", guest->module, systems->count, gone );
+}
+
+static void ps4_guest_unload( struct ps4_guest *guest )
+{''','System modules loaded and unloaded by a guest are traced (W293).')
+revise('kernelbase','process','''        UINT atom, unused = 0, unregistered = 0, in_use = 0, kept = 0;''','''        UINT atom, unused = 0, unregistered = 0, in_use = 0, kept = 0;
+        struct ps4_guest_systems systems;  /* W293 */''','System modules of the guest (W293).')
+revise('kernelbase','process','''        ERR( "PWGUEST unload_begin module=%p''','''        ps4_guest_systems_before( guest, &systems );  /* W293 */
+        ERR( "PWGUEST unload_begin module=%p''','System modules before the unload (W293).')
+revise('kernelbase','process','''        ps4_guest_unload_own( guest, FALSE );  /* W208 */''','''        ps4_guest_unload_own( guest, FALSE );  /* W208 */
+        ps4_guest_systems_after( guest, &systems );  /* W293 */''','System modules the unload took away (W293).')
+# W293 (W292: with the desktop hung, opening the program again waited 120 s and said only "error 1460"): when a start in
+# the 32-bit world times out, the thread that holds the 32-bit loader lock, read through the waiting thread's TEB, in
+# the log (PWOPEN world_loader_lock, world_failed ... cause=) and in the dialog.
+revise('kernelbase','process','''static DWORD ps4_world_launch( const WCHAR *app_name, const WCHAR *cmd_line, const WCHAR *cur_dir, DWORD flags,
+                               PROCESS_INFORMATION *info )
+{''','''/* W293 (W292: a guest's exit hung holding the 32-bit loader lock, and the next 32-bit start waited for it): the thread
+ * that holds the 32-bit world's loader lock, read through the TEB of a 32-bit thread that is still waiting */
+static DWORD ps4_world_loader_owner;
+
+static DWORD ps4_world_loader_holder( HANDLE thread )
+{
+    THREAD_BASIC_INFORMATION tbi;
+    struct { ULONG debug_info; LONG lock_count, recursion; ULONG owner; } crit;  /* a 32-bit RTL_CRITICAL_SECTION */
+    LONG offset = 0;
+    ULONG peb32 = 0, lock32 = 0;
+    char *teb;
+
+    if (NtQueryInformationThread( thread, ThreadBasicInformation, &tbi, sizeof(tbi), NULL ) || !tbi.TebBaseAddress)
+        return 0;
+    teb = tbi.TebBaseAddress;
+    if (!ReadProcessMemory( GetCurrentProcess(), teb + FIELD_OFFSET( TEB, WowTebOffset ), &offset, sizeof(offset), NULL ) ||
+        !offset ||
+        !ReadProcessMemory( GetCurrentProcess(), teb + offset + FIELD_OFFSET( TEB32, Peb ), &peb32, sizeof(peb32), NULL ) ||
+        !peb32 ||
+        !ReadProcessMemory( GetCurrentProcess(), (char *)ULongToPtr( peb32 ) + FIELD_OFFSET( PEB32, LoaderLock ), &lock32,
+                            sizeof(lock32), NULL ) || !lock32 ||
+        !ReadProcessMemory( GetCurrentProcess(), ULongToPtr( lock32 ), &crit, sizeof(crit), NULL ))
+        return 0;
+    ERR( "PWOPEN world_loader_lock owner=%04lx lock_count=%ld recursion=%ld\\n", crit.owner, crit.lock_count,
+         crit.recursion );
+    return crit.owner;
+}
+
+static DWORD ps4_world_launch( const WCHAR *app_name, const WCHAR *cmd_line, const WCHAR *cur_dir, DWORD flags,
+                               PROCESS_INFORMATION *info )
+{''','The holder of the 32-bit loader lock when a start times out (W293).')
+revise('kernelbase','process','''    wait = ps4_world_wait( thread, 120000 );
+    GetExitCodeThread( thread, &exit_code );''','''    wait = ps4_world_wait( thread, 120000 );
+    ps4_world_loader_owner = wait == WAIT_OBJECT_0 ? 0 : ps4_world_loader_holder( thread );  /* W293 */
+    GetExitCodeThread( thread, &exit_code );''','A timed-out start reads the loader lock holder (W293).')
+# W293: the dialogs the guest model shows, in English (the meaning kept)
+revise('kernelbase','process','''            swprintf( world_text, ARRAY_SIZE(world_text),
+                      L"No se pudo abrir este programa de 32 bits dentro del escritorio (error %lu).\\n\\n"
+                      L"Para abrirlo, OrbisDesk se reinicia y lo ejecuta solo; al cerrarlo vuelve al escritorio. "
+                      L"Se cerrarán los programas abiertos. ¿Continuar?", error );''','''            if (error == ERROR_TIMEOUT && ps4_world_loader_owner)  /* W293 */
+                swprintf( world_text, ARRAY_SIZE(world_text),
+                          L"This 32-bit program could not be opened inside the desktop (error %lu: thread %04lx holds "
+                          L"the 32-bit loader lock and has not released it, so 32-bit programs cannot start until "
+                          L"OrbisDesk restarts).\\n\\n"
+                          L"To open it, OrbisDesk restarts and runs it on its own; when you close it, you return to the "
+                          L"desktop. Open programs will be closed. Continue?", error, ps4_world_loader_owner );
+            else
+                swprintf( world_text, ARRAY_SIZE(world_text),
+                          L"This 32-bit program could not be opened inside the desktop (error %lu).\\n\\n"
+                          L"To open it, OrbisDesk restarts and runs it on its own; when you close it, you return to the "
+                          L"desktop. Open programs will be closed. Continue?", error );
+            ERR( "PWOPEN world_failed image=%s error=%lu cause=%s loader_owner=%04lx\\n", debugstr_w(app_name), error,
+                 error == ERROR_TIMEOUT ? (ps4_world_loader_owner ? "loader_lock_held" : "start_timeout") : "launch_error",
+                 ps4_world_loader_owner );''','The world failure dialog in English, with the loader lock holder (W293).')
+revise('kernelbase','process','''                      L"Este programa de 32 bits necesita la misma dirección de memoria que otro programa abierto "
+                      L"en el escritorio y no se puede mover.\\n\\n"''','''                      L"This 32-bit program needs the same memory address as another program open on the "
+                      L"desktop, and it cannot be moved.\\n\\n"''','Base taken dialog in English (W293).')
+for spanish, english in (
+    ('''L"Para abrirlo, OrbisDesk se reinicia y lo ejecuta solo, con los mismos argumentos; al cerrarlo "
+                      L"vuelve al escritorio. Se cerrarán los programas abiertos. ¿Continuar?" );''',
+     '''L"To open it, OrbisDesk restarts and runs it on its own, with the same arguments; when you close "
+                      L"it, you return to the desktop. Open programs will be closed. Continue?" );'''),
+    ('''L"Este es un programa de 32 bits. Para abrirlo, OrbisDesk se reinicia y lo ejecuta solo; "
+                L"al cerrarlo vuelve al escritorio.\\n\\nSe cerrarán los programas abiertos. ¿Continuar?" :''',
+     '''L"This is a 32-bit program. To open it, OrbisDesk restarts and runs it on its own; "
+                L"when you close it, you return to the desktop.\\n\\nOpen programs will be closed. Continue?" :'''),
+    ('''L"Este programa se ejecuta solo: OrbisDesk se reinicia para abrirlo y al cerrarlo vuelve al "
+                L"escritorio.\\n\\nSe cerrarán los programas abiertos. ¿Continuar?",''',
+     '''L"This program runs on its own: OrbisDesk restarts to open it, and when you close it, you return "
+                L"to the desktop.\\n\\nOpen programs will be closed. Continue?",'''),
+    ('''swprintf( text, ARRAY_SIZE(text), L"Este programa no puede abrirse ahora: usa su propia %s y ya hay otra cargada "
+                      L"(%s).\\n\\nReiniciá OrbisDesk y abrilo antes que el otro programa.", clash, loaded );''',
+     '''swprintf( text, ARRAY_SIZE(text), L"This program cannot be opened now: it uses its own %s, and another one is "
+                      L"already loaded (%s).\\n\\nRestart OrbisDesk and open this program before the other one.", clash, loaded );'''),
+):
+    revise('kernelbase','process',spanish,english,'A dialog in English (W293).')
+# the "already open" box, twice (64-bit second start and the 32-bit world's bridge)
+_target=overlay/'kernelbase'/'process.c';_text=_target.read_text()
+_old='L"Este programa ya está abierto. Esperá a que aparezca su ventana, o cerralo antes de volver a abrirlo."'
+if _text.count(_old)!=2:raise SystemExit('Unexpected count of the already-open text: %d'%_text.count(_old))
+_target.write_text(_text.replace(_old,'L"This program is already open. Wait for its window to appear, or close it before opening it again."'))
+revisions.append({'path':sources['kernelbase']['process'],'module':'kernelbase','why':'The already-open dialog in English (W293).'})
+
 # W235 (pe32-en-explorer-plan.md P6): the same modules, built for x86_64 (out/guest-hw) and for i386
+# alpha-1 (W299: a 403 KB release run log): diagnostic lines of guests and of the 32-bit world follow OrbisDesk's
+# trace switch, PW_TRACE=0|1 from the launcher (platform/ps4/pw_trace.h; unset counts as on). Failures still log.
+revise('kernelbase','volume','''        ERR( "PWFS logical_drives accessible_roots=%08lx\\n", mask );''','''        {
+            static DWORD logged_mask = ~0u;  /* alpha-1: the first answer and each change, not every call */
+
+            if (mask != logged_mask) ERR( "PWFS logical_drives accessible_roots=%08lx\\n", mask );
+            logged_mask = mask;
+        }''','GetLogicalDrives logs its first answer and each change (alpha-1).')
+revise('kernelbase','process','''static void WINAPI ps4_guest_exit_process( struct ps4_guest *guest, DWORD status )
+{''','''/* alpha-1: OrbisDesk's trace switch as the launcher hands it to Windows code (PW_TRACE=0|1, platform/ps4/pw_trace.h);
+ * unset counts as on. Read once. */
+static BOOL ps4_guest_traced( void )
+{
+    static LONG traced = -1;
+
+    if (traced < 0)
+    {
+        WCHAR value[4];
+
+        traced = !(GetEnvironmentVariableW( L"PW_TRACE", value, ARRAY_SIZE(value) ) == 1 && value[0] == '0');
+    }
+    return traced;
+}
+
+static void WINAPI ps4_guest_exit_process( struct ps4_guest *guest, DWORD status )
+{''','The trace switch in kernelbase (alpha-1).')
+revise('kernelbase','process','''        if (guest->module && !LdrFindEntryForAddress( guest->module, &mod ))
+            for (; sp + 1 <= (ULONG_PTR *)tib->StackBase && found < 12; sp++)''','''        /* alpha-1: for an exit with status 0 only with traces */
+        if (guest->module && (status || ps4_guest_traced()) && !LdrFindEntryForAddress( guest->module, &mod ))
+            for (; sp + 1 <= (ULONG_PTR *)tib->StackBase && found < 12; sp++)''','Exit callers of a clean exit only with traces (alpha-1).')
+revise('kernelbase','process','''        ERR( "PWGUEST system_module %s base=%p refcount=%d\\n", debugstr_w( systems->entry[systems->count].name ),''','''        if (ps4_guest_traced())  /* alpha-1: system_unloaded and the system_modules summary always log */
+        ERR( "PWGUEST system_module %s base=%p refcount=%d\\n", debugstr_w( systems->entry[systems->count].name ),''',
+       'Per-DLL system module lines only with traces (alpha-1).')
+revise('ntdll','loader','''/******************************************************************
+ *		LdrShutdownThread (NTDLL.@)''','''#ifndef _WIN64
+/* alpha-1: OrbisDesk's trace switch (PW_TRACE=0|1, platform/ps4/pw_trace.h); unset counts as on. Read once. */
+static BOOL pw_loader_traced( void )
+{
+    static LONG traced = -1;
+
+    if (traced < 0)
+    {
+        WCHAR buffer[4] = {0};
+        UNICODE_STRING name, value;
+
+        RtlInitUnicodeString( &name, L"PW_TRACE" );
+        value.Buffer = buffer;
+        value.Length = 0;
+        value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
+        traced = RtlQueryEnvironmentVariable_U( NULL, &name, &value ) || buffer[0] != '0';
+    }
+    return traced;
+}
+#endif
+
+/******************************************************************
+ *		LdrShutdownThread (NTDLL.@)''','The trace switch in the i386 ntdll (alpha-1).')
+revise('ntdll','loader','''    ERR( "PWWOW guest32 thread %04lx ends\\n",''','''    if (pw_loader_traced())  /* alpha-1 */
+    ERR( "PWWOW guest32 thread %04lx ends\\n",''','The end of a 32-bit thread only with traces (alpha-1).')
+revise('ntdll','loader','''        ERR( "PWWOW guest32 thread %04lx loader_init: tls\\n",''','''        if (pw_loader_traced())  /* alpha-1 */
+        ERR( "PWWOW guest32 thread %04lx loader_init: tls\\n",''','The steps of a 32-bit thread only with traces (alpha-1).')
+revise('ntdll','loader','''        ERR( "PWWOW guest32 thread %04lx loader_init: attached\\n",''','''        if (pw_loader_traced())  /* alpha-1 */
+        ERR( "PWWOW guest32 thread %04lx loader_init: attached\\n",''','The steps of a 32-bit thread only with traces (alpha-1).')
+
 # (out/guest-hw-i386): the i386 ones are the guests' ntdll, kernelbase and ucrtbase in explorer's
 # 32-bit world, in wine/lib/wine/i386-guest (tools/build-wine-hardware.py), which ntdll Unix searches
 # only in a 64-bit process (tools/build-wow64-world-ps4.py).

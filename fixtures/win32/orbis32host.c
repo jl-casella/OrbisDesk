@@ -334,8 +334,13 @@ __declspec(dllexport) DWORD WINAPI ps4_guest32_launch( struct guest32_launch *re
     }
     else
     {
-        SetEnvironmentVariableW( L"DXVK_LOG_LEVEL", NULL );
-        SetEnvironmentVariableW( L"DXVK_LOG_PATH", NULL );
+        /* alpha-1 (platform/ps4/pw_trace.h): unset, DXVK logs at info into <exe>_d3d9.log and friends in the
+         * current directory, the program's folder. Its warnings and errors go to the run log only (stderr):
+         * warnings with traces (PW_TRACE=1), errors without */
+        WCHAR level[4];
+        BOOL traced = !GetEnvironmentVariableW( L"PW_TRACE", level, 4 ) || level[0] != '0';
+        SetEnvironmentVariableW( L"DXVK_LOG_LEVEL", traced ? L"warn" : L"error" );
+        SetEnvironmentVariableW( L"DXVK_LOG_PATH", L"none" );
     }
     /* W270 (W269: Call of Duty ended with "Buffer overrun detected" right after glGetString(GL_EXTENSIONS),
      * 7831 characters from Mesa): id Tech 3 games copy the string into a fixed buffer. Mesa's

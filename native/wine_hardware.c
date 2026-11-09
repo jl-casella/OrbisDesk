@@ -27,14 +27,15 @@
 #include "pw_wine_platform.h"
 #include "pw_wine_context.h"
 #include "pw_wine_net.h"
+#include "pw_trace.h"
 #include <limits.h>
 #include <pthread.h>
 /* W001 and W002 sources and evidence: reports/wine-hardware-w00N/release-w00N. */
-#define HW_BUILD "W288"
+#define HW_BUILD "W302"
 #ifndef HW_VERSION
-#define HW_VERSION "03.87"
+#define HW_VERSION "04.01"
 #endif
-#define HW_DIR "/data/orbisdesk/w288"
+#define HW_DIR "/data/orbisdesk/w302"
 #define HW_EXE "C:\\windows\\explorer.exe"
 #define HW_RESULT "text-result.txt"
 #ifndef PW_MANGOHUD_LAYER_ENABLED
@@ -118,6 +119,12 @@ struct hw_jailbreak_backup
 static struct hw_jailbreak_backup jailbreak_backup;
 static volatile int jailbroken;
 static int boot_root;  /* Root chosen (boot_choose) */
+/* the Steam client inside the title (native/steam/steam_client.cpp) logs whether GoldHEN's jailbreak is on */
+int pw_hw_root_mode(void);
+int pw_hw_root_mode(void) {return jailbroken;}
+/* W292: the mode chosen at start, for explorer's Reset item (native/hw_pad.c "<root-mode>") */
+int pw_hw_boot_root(void);
+int pw_hw_boot_root(void) {return boot_root;}
 extern int pw_wine_sigaction(int,const struct sigaction *,struct sigaction *);
 static long goldhen_cmd(uint64_t cmd,void *data,int *error)
 {
@@ -317,6 +324,50 @@ static size_t switch_program_name_length(const char *image,const char *command_l
     }
     return 0;
 }
+/* W292: "Reset as Root" / "Reset as Sandbox" (explorer's Start menu, native/hw_pad.c "<reset-root>",
+ * "<reset-sandbox>"): the title relaunches itself, as for a program (W043), and the next start takes that
+ * mode once without the NORMAL/ROOT screen (boot_choose reads and removes HW_FORCE_MODE). Returns only
+ * when that failed. */
+#define HW_FORCE_MODE "/data/orbisdesk/force-mode.txt"
+static void wait_for_system_close(const char *who);
+const char *pw_hw_reset_mode(int root);
+const char *pw_hw_reset_mode(int root)
+{
+    static char reply[128];
+    const char *mode=root?"root":"normal";
+    if(switched) return "error: not the desktop's run";
+    if(!root==!boot_root) {snprintf(reply,sizeof(reply),"error: already in %s mode",root?"ROOT":"NORMAL");return reply;}
+    FILE *force=fopen(HW_FORCE_MODE,"w");
+    if(!force) {
+        snprintf(reply,sizeof(reply),"error: cannot write %s (errno %d)",HW_FORCE_MODE,errno);
+        note(HW_BUILD " PWROOT reset to=%s open_failed errno=%d\n",mode,errno);
+        return reply;
+    }
+    int written=fprintf(force,"%s\n",mode)>0;
+    if(fclose(force) || !written) {
+        snprintf(reply,sizeof(reply),"error: cannot write %s (errno %d)",HW_FORCE_MODE,errno);
+        note(HW_BUILD " PWROOT reset to=%s write_failed errno=%d\n",mode,errno);
+        unlink(HW_FORCE_MODE);
+        return reply;
+    }
+    note(HW_BUILD " PWROOT reset to=%s relaunch t_ms=%llu\n",mode,(unsigned long long)(sceKernelGetProcessTime()/1000));
+    pw_hw_unjailbreak("reset");
+    int rc=sceSystemServiceLoadExec(HW_SELF,NULL);
+    note(HW_BUILD " PWROOT reset to=%s load_exec rc=0x%08x\n",mode,(unsigned)rc);
+    if(rc) {
+        unlink(HW_FORCE_MODE);
+        if(boot_root) pw_hw_jailbreak();
+        snprintf(reply,sizeof(reply),"error: the relaunch was refused (0x%08x)",(unsigned)rc);
+        return reply;
+    }
+    wait_for_system_close("reset");
+    unlink(HW_FORCE_MODE);
+    if(boot_root) pw_hw_jailbreak();
+    note(HW_BUILD " PWROOT reset to=%s still_running\n",mode);
+    snprintf(reply,sizeof(reply),"error: the system did not close the title; close OrbisDesk and choose %s on its start screen",
+             root?"ROOT":"NORMAL");
+    return reply;
+}
 int pw_hw_switch_program(const char *image,const char *command_line)
 {
     enum {MAX_SWITCH_ARGS=16};  /* W265: was 6 (Worms 3D: /W 1280 /H 720 /FS /REFRESH 60) */
@@ -507,6 +558,21 @@ static void boot_choose(void)
 {
     extern int pw_hw_pad_handle(void);  /* native/hw_pad.c: opened once, shared with its input thread */
     struct stat st;
+    /* W292: "Reset as Root" / "Reset as Sandbox" (pw_hw_reset_mode): that mode once, without the screen */
+    if(!stat(HW_FORCE_MODE,&st)) {
+        char mode[16]={0};FILE *file=fopen(HW_FORCE_MODE,"r");
+        if(file){if(!fgets(mode,sizeof(mode),file))mode[0]=0;fclose(file);}
+        int removed=unlink(HW_FORCE_MODE);
+        int root=!strncmp(mode,"root",4),normal=!strncmp(mode,"normal",6);
+        note(HW_BUILD " PWROOT force_mode=%.8s removed=%d\n",(root||normal)?mode:"(unknown)",removed);
+        if(root||normal) {
+            boot_root=root;
+            file=fopen(HW_BOOT_MODE,"w");
+            if(file){fputs(root?"root\n":"normal\n",file);fclose(file);}
+            note(HW_BUILD " PWJB mode=%s source=reset\n",root?"root":"normal");
+            return;
+        }
+    }
     /* a program started from the desktop relaunches the title (W043): it keeps the first start's mode */
     if(!stat(HW_NEXT,&st)) {
         char mode[16]={0};FILE *file=fopen(HW_BOOT_MODE,"r");
@@ -633,6 +699,21 @@ static void install_crash_handler(void)
     }
 }
 
+/* Alpha-1 trace switch (platform/ps4/pw_trace.h): the build's default, then /data/orbisdesk/trace.txt.
+ * Present and empty or "1": traces on; "0": off. The answer reaches Wine as PW_TRACE (main). */
+static void trace_setup(void)
+{
+    const char *source="build";
+    pw_trace_level=!ORBIS_RELEASE;
+    int fd=open(PW_TRACE_FILE,O_RDONLY);
+    if(fd>=0) {
+        char text[8]={0};ssize_t n=read(fd,text,sizeof(text)-1);close(fd);
+        pw_trace_level=n>0&&text[0]>='0'&&text[0]<='9'?text[0]-'0':1;
+        source="trace.txt";
+    }
+    setenv("PW_TRACE",pw_trace_level?"1":"0",1);
+    note(HW_BUILD " trace level=%d source=%s release=%d\n",pw_trace_level,source,ORBIS_RELEASE);
+}
 /* Platform facts the Wine path layer relies on, each with its own error code. */
 static void platform_probes(void)
 {
@@ -736,7 +817,8 @@ static char program_cwd[400],program_dir_env[430];
 
 /* Phase 10: a Windows path as a Unix one: C: is the prefix's drive_c, D:..K: the USB disks at
  * /mnt/usb0..7 and L: the optical disc at /mnt/disc (platform/ps4/pw_wine_fs.c, seen after the
- * jailbreak). 0 for any other drive. */
+ * jailbreak); S5: Z: is the prefix's parent, /data, where the Steam title (ORBS00001) installs games
+ * as Z:\orbisdesk\steam-games\<app>\. 0 for any other drive. */
 static int windows_unix_path(const char *windows_path,char *out,size_t size)
 {
     char drive=(char)(windows_path[0]|0x20);size_t n;
@@ -744,6 +826,7 @@ static int windows_unix_path(const char *windows_path,char *out,size_t size)
     if(drive=='c') n=(size_t)snprintf(out,size,"/data/wine-prefix/drive_c");
     else if(drive>='d' && drive<='k') n=(size_t)snprintf(out,size,"/mnt/usb%d",drive-'d');
     else if(drive=='l') n=(size_t)snprintf(out,size,"/mnt/disc");
+    else if(drive=='z') n=(size_t)snprintf(out,size,"/data");
     else return 0;
     for(const char *at=windows_path+2;*at && n<size-1;++at) out[n++]=*at=='\\'?'/':*at;
     out[n]=0;return 1;
@@ -929,11 +1012,12 @@ int main(void)
     note(HW_BUILD " entered_launcher log=%s\n",path);
     redirect_stderr();
     install_crash_handler();
+    trace_setup();
     loading(5,"PREPARING WINE");
     boot_choose();  /* phase 10: Normal or Root */
     int net=(int)sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
     note(HW_BUILD " sysmodule_net rc=0x%08x\n",(unsigned)net);
-    platform_probes();
+    if(pw_trace_on()) platform_probes();  /* diagnostics of W001-W030; the paths they checked are in use since */
     /* W135: phase 5, whether 32-bit code can run natively (compatibility mode) on this
      * console; once per build (native/compat32_probe.c) */
     {
@@ -1061,8 +1145,22 @@ int main(void)
      * ERROR_DLL_INIT_FAILED (1114) in W091. W151: warn+module, not trace+module, which logged
      * every resource lookup (the Start menu's icons on each opening). */
     static char mesa_log[]="--env=WINEDEBUG=warn+module,trace+seh,trace+loaddll,warn+debugstr";
+    /* alpha-1 (pw_trace.h): without traces, Wine's errors and warn+module (a DLL that fails to load or
+     * initialise) only. Off: fixme (dozens of lines per program start), trace+seh (lines per exception,
+     * on the faulting thread), trace+loaddll and debugstr (each OutputDebugString). */
+    static char release_log[]="--env=WINEDEBUG=fixme-all,warn+module";
     int debug_arg=argc;
-    args[argc++]=mesa_log;
+    args[argc++]=pw_trace_on()?mesa_log:release_log;
+    static char trace_env[]="--env=PW_TRACE=0";
+    trace_env[sizeof(trace_env)-2]=pw_trace_on()?'1':'0';
+    args[argc++]=trace_env;
+    /* alpha-1: DXVK (64-bit programs, and 32-bit ones relaunched alone) unset logs at info into <exe>_d3d9.log and
+     * friends in the program's folder. Never files; warnings with traces, errors without, to the run log (stderr).
+     * The 32-bit world sets its own per program (fixtures/win32/orbis32host.c, C:\orbis\dxvkdebug.txt). */
+    static char dxvk_path[]="--env=DXVK_LOG_PATH=none";
+    static char dxvk_warn[]="--env=DXVK_LOG_LEVEL=warn",dxvk_error[]="--env=DXVK_LOG_LEVEL=error";
+    args[argc++]=dxvk_path;
+    args[argc++]=pw_trace_on()?dxvk_warn:dxvk_error;
     /* W086: the MangoHud Vulkan layer (implicit, registered in the prefix) is on for every
      * Vulkan and OpenGL (Zink) program */
     static char mangohud[]="--env=MANGOHUD=1";
@@ -1134,7 +1232,7 @@ int main(void)
      * W178: without its counters (PW_VK_BATCH_STATS, PW_VK_BATCH_FALLBACK_PROFILE) and without
      * wow64native's profiler (PW_NATIVE_PROFILE, PW_QPC_TSC_HZ), which measured the W159-W167 work. */
     static char vk_batch[]="--env=PW_VK_BATCH=1";
-    if(machine==0x14c) {args[argc++]=wow64_cpu;cpu="wow64native";args[debug_arg]=pe32_log;args[d3d_arg]=d3d_vulkan;
+    if(machine==0x14c) {args[argc++]=wow64_cpu;cpu="wow64native";if(pw_trace_on()) args[debug_arg]=pe32_log;args[d3d_arg]=d3d_vulkan;
                         args[argc++]=native_signals;args[argc++]=fit;args[argc++]=vk_batch;}
     /* B0 of the plan for 32-bit guests of explorer (pe32-en-explorer-plan.md): explorer with the raw
      * signal entry 32-bit code needs, while C:\orbis\wow64probe.txt exists; C:\orbis\wow64probe64.exe

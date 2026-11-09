@@ -37,7 +37,13 @@ replacement=r'''static int is_dir_empty( int original )
     }
     saved = errno;
     closedir(dir);
-    fprintf(stderr,"PWDELETE empty_check fd=%d result=%d errno=%d\n",original,empty,empty<0?saved:0);
+    {
+        /* alpha-1: an empty directory (the delete goes on) is traced only with traces (platform/ps4/pw_trace.h);
+         * a full or unreadable one always, with the blocking entry above */
+        extern int pw_trace_enabled( void );
+        if (empty != 1 || pw_trace_enabled())
+            fprintf(stderr,"PWDELETE empty_check fd=%d result=%d errno=%d\n",original,empty,empty<0?saved:0);
+    }
     errno = saved;
     return empty;
 }
@@ -167,9 +173,11 @@ static inline void fd_poll_event( struct fd *fd, int event )
 static unsigned int pw_late_timers, pw_late_wakes;
 static timeout_t pw_poll_start;
 
+extern int pw_trace_enabled( void );  /* alpha-1: W268's lines, traces only (platform/ps4/pw_trace.h) */
+
 static void pw_late_timer( const char *list, timeout_t late, void *callback )
 {
-    if (late > 50 * 10000 && (pw_late_timers++ < 20 || !(pw_late_timers % 100)))
+    if (late > 50 * 10000 && pw_trace_enabled() && (pw_late_timers++ < 20 || !(pw_late_timers % 100)))
         fprintf( stderr, "PWSERVER late_timer n=%u late_ms=%lld list=%s callback=%p\\n", pw_late_timers,
                  (long long)(late / 10000), list, callback );
 }
@@ -199,12 +207,12 @@ static int get_next_timeout( struct timespec *ts )
         set_current_time();
 ''',
      '''#ifdef __ORBIS__
-        pw_poll_start = monotonic_counter();  /* W268 */
+        pw_poll_start = pw_trace_enabled() ? monotonic_counter() : 0;  /* W268; alpha-1: no clock read without traces */
 #endif
         ret = poll( pollfd, nb_users, timeout );
         set_current_time();
 #ifdef __ORBIS__
-        if (timeout >= 0 && (monotonic_time - pw_poll_start) / 10000 > (timeout_t)timeout + 50 &&
+        if (pw_poll_start && timeout >= 0 && (monotonic_time - pw_poll_start) / 10000 > (timeout_t)timeout + 50 &&
             (pw_late_wakes++ < 20 || !(pw_late_wakes % 100)))
             fprintf( stderr, "PWSERVER late_wake n=%u asked_ms=%d took_ms=%lld ret=%d users=%d\\n", pw_late_wakes,
                      timeout, (long long)((monotonic_time - pw_poll_start) / 10000), ret, nb_users );

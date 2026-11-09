@@ -29,6 +29,11 @@
 #define PW_SINK_TIMING 0
 #endif
 enum {OUT_WIDTH=1280,OUT_HEIGHT=720,OUT_BUFFERS=2,MAX_DUMPS=PW_SINK_MAX_DUMPS};
+/* alpha-1 (pw_trace.h): without traces no BMP dumps (each a synchronous multi-MB write, and the CPU path hashed
+ * every frame while dumps were left), no periodic frame lines, no show() timing. The first 8 frame_presented
+ * lines stay: they are the run's "presented" evidence (tools/fetch-hardware.py). */
+#include "pw_trace.h"
+#define DUMP_LIMIT (pw_trace_on()?MAX_DUMPS:0)
 enum {FORMAT_A8R8G8B8_SRGB=(int)0x80000000,TILING_LINEAR=1,USER_MAIN=255,FLIP_VSYNC=1};
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int handle=-1,failed;
@@ -170,6 +175,7 @@ static const char *const arrow[]={
 static volatile int pointer_hidden;
 extern int pw_hw_cursor_mode(void);  /* native/hw_overlay.c: 0 game, 1 always, 2 hidden */
 extern int pw_hw_overlay_stretch(void);  /* W266: native/hw_overlay.c, 1 to fill the output */
+extern int pw_hw_busy_frame(void);  /* W293: native/hw_overlay.c, 0-7 while a program starts, -1 otherwise */
 static int pointer_off(void)
 {
     int mode=pw_hw_cursor_mode();
@@ -196,11 +202,31 @@ static int cursor_origin(uint32_t left,uint32_t top,uint32_t scale_w,uint32_t sc
     *ox=(int)left+(int)((int64_t)x*scale_w/w);*oy=(int)top+(int)((int64_t)y*scale_h/h);
     return 1;
 }
+/* W293: while a program starts (native/hw_overlay.c), eight dots in a ring by the arrow, lower right, as Windows'
+ * IDC_APPSTARTING; the brightest turns with the frame. Drawn into the output after the GPU or CPU has drawn it. */
+static void draw_busy(uint32_t *target,uint32_t left,uint32_t top,uint32_t scale_w,uint32_t scale_h)
+{
+    static const signed char dots[8][2]={{6,0},{4,4},{0,6},{-4,4},{-6,0},{-4,-4},{0,-6},{4,-4}};
+    int frame=pw_hw_busy_frame(),ox,oy;
+    if(frame<0 || !cursor_origin(left,top,scale_w,scale_h,&ox,&oy)) return;
+    for(int i=0;i<8;++i) {
+        int age=(frame-i+8)%8;  /* 0 the brightest, then the ones behind it */
+        uint32_t color=!age?0xffffffffu:age<3?0xffb0b0b0u:0xff606060u;
+        int cx=ox+18+dots[i][0],cy=oy+18+dots[i][1];
+        for(int y=-2;y<2;++y)
+            for(int x=-2;x<2;++x) {
+                int px=cx+x,py=cy+y;
+                if(px<0 || py<0 || px>=OUT_WIDTH || py>=OUT_HEIGHT) continue;
+                target[(size_t)py*pitch+px]=x==-2 || y==-2 || x==1 || y==1?0xff000000u:color;
+            }
+    }
+}
 #endif
 /* time spent in show() per output frame, by path, logged every 300 frames */
 static void show_stats(const char *path,uint64_t start)
 {
     static uint64_t total,worst,count;
+    if(!pw_trace_on()) return;
     uint64_t spent=sceKernelGetProcessTime()-start;
     total+=spent;if(spent>worst) worst=spent;
     if(++count%300) return;
@@ -213,7 +239,7 @@ static void dump_output(const uint32_t *target)
 {
     dump_wanted=0;
     uint64_t hash=frame_hash((const uint8_t *)target,OUT_WIDTH,OUT_HEIGHT,pitch*4);
-    if(dumps<MAX_DUMPS && hash!=last_dump_hash) {
+    if(dumps<DUMP_LIMIT && hash!=last_dump_hash) {
         dump((const uint8_t *)target,OUT_WIDTH,OUT_HEIGHT,pitch*4);++dumps;last_dump_hash=hash;
         fprintf(stderr,"PWSINK dump frame=%llu layers=%u\n",(unsigned long long)frames,layer_count);
     }
@@ -278,6 +304,8 @@ void pw_hw_sink_stats(unsigned *vk_tenths,int *vk_fresh,unsigned *frames_tenths,
     pthread_mutex_unlock(&lock);
 }
 extern void pw_hw_overlay_draw(uint32_t *pixels,unsigned pitch,unsigned width,unsigned height);
+/* the Steam client inside the title (native/steam/steam_ui.c): its page over the whole frame while open */
+extern int pw_hw_steam_draw(uint32_t *pixels,unsigned pitch,unsigned width,unsigned height);
 #endif
 static int show(void)
 {
@@ -342,7 +370,9 @@ static int show(void)
 flip:;
 #endif
 #ifdef PW_SINK_EXTERNAL_INPUT
+    draw_busy(target,left,top,scale_w,scale_h);  /* W293 */
     draw_fps(target,sceKernelGetProcessTime());
+    pw_hw_steam_draw(target,pitch,OUT_WIDTH,OUT_HEIGHT);
     pw_hw_overlay_draw(target,pitch,OUT_WIDTH,OUT_HEIGHT);  /* W236 */
 #endif
     int rc=sceVideoOutSubmitFlip(handle,(int32_t)(flips%OUT_BUFFERS),FLIP_VSYNC,(int64_t)flips);
@@ -388,8 +418,8 @@ int pw_wine_present(const void *pixels,unsigned int width,unsigned int height,un
     pthread_mutex_lock(&lock);
     ++frames;
     /* hashing reads every byte: only for frames that are logged or may be dumped */
-    int logged=frames<=8 || !(frames%64);
-    uint64_t hash=logged || dumps<MAX_DUMPS?frame_hash(bgra,width,height,stride):0;
+    int logged=frames<=8 || (!(frames%64) && pw_trace_on());
+    uint64_t hash=logged || dumps<DUMP_LIMIT?frame_hash(bgra,width,height,stride):0;
     if(logged) {
 #if PW_SINK_TIMING
         fprintf(stderr,"PWBOOT frame_presented n=%llu size=%ux%u hash=%016llx t_ms=%llu\n",(unsigned long long)frames,
@@ -399,7 +429,7 @@ int pw_wine_present(const void *pixels,unsigned int width,unsigned int height,un
                 width,height,(unsigned long long)hash);
 #endif
     }
-    if(dumps<MAX_DUMPS && hash!=last_dump_hash) {dump(bgra,width,height,stride);++dumps;last_dump_hash=hash;}
+    if(dumps<DUMP_LIMIT && hash!=last_dump_hash) {dump(bgra,width,height,stride);++dumps;last_dump_hash=hash;}
     if(handle<0 && !failed && open_video()) failed=1;
 #ifdef PW_SINK_EXTERNAL_INPUT
     frame_handed();  /* W236 */
@@ -435,6 +465,17 @@ extern void pw_hw_pointer_area(int width,int height);
 #endif
 /* W256: ps5drv.c hides the pointer in a full-screen game that sets no cursor (W261: none at all); the frame is
  * shown again */
+/* W293: ps5drv.c, a top-level window shown for the first time: it ends the "app starting" pointer */
+void pw_wine_window_shown(void *hwnd,const char *class_name);
+void pw_wine_window_shown(void *hwnd,const char *class_name)
+{
+#ifdef PW_SINK_EXTERNAL_INPUT
+    extern void pw_hw_overlay_window_shown(void *hwnd,const char *class_name);
+    pw_hw_overlay_window_shown(hwnd,class_name);
+#else
+    (void)hwnd;(void)class_name;
+#endif
+}
 void pw_wine_pointer_hidden(int hidden);
 #ifdef PW_SINK_EXTERNAL_INPUT
 void pw_hw_cursor_moved(void);
@@ -505,8 +546,8 @@ int pw_wine_present_layers(const struct pw_wine_layer *stack,unsigned int count,
     if(!gpu || handle<0) {pthread_mutex_unlock(&lock);return -1;}
     ++frames;
     /* the output buffer is dumped only for logged frames (a BMP write costs ~100 ms) */
-    if(frames<=8 || !(frames%64)) {
-        if(dumps<MAX_DUMPS) dump_wanted=1;
+    if(frames<=8 || (!(frames%64) && pw_trace_on())) {
+        if(dumps<DUMP_LIMIT) dump_wanted=1;
 #if PW_SINK_TIMING
         fprintf(stderr,"PWBOOT frame_presented n=%llu size=%ux%u layers=%u t_ms=%llu\n",(unsigned long long)frames,
                 width,height,count,(unsigned long long)(sceKernelGetProcessTime()/1000));
