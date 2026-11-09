@@ -69,7 +69,7 @@ def assemble():
             'Install OrbisDesk.pkg with your existing homebrew package installer and start it.\n'
             'The first start of each version installs the runtime into /data (about 1.1 GB; it shows its progress).\n'
             'Documents, saves, Steam games and your settings stay; files earlier versions shipped are replaced.\n'
-            'If it reports INSTALL FAILED, free the space it names or start once in ROOT mode, then start again.\n'
+            'If it reports INSTALL FAILED, free the space it names (or report the screen), then start again.\n'
             'Experimental build: package/import checks only; desktop smoke and physical acceptance are pending.\n')
     else:
         # Only the producer's fresh runtime is archived, never /data from a console.

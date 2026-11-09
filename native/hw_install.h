@@ -440,7 +440,7 @@ static int hw_install_runtime(char *detail,size_t detail_size)
             int e=errno;failed=1;
             if(e==ENOSPC)snprintf(detail,detail_size,"NOT ENOUGH SPACE");
             else if(e==EILSEQ)snprintf(detail,detail_size,"PACKAGE FILE DAMAGED - REINSTALL");
-            else if(e==EACCES||e==EPERM)snprintf(detail,detail_size,"PERMISSION DENIED - START ONCE IN ROOT MODE");
+            else if(e==EACCES||e==EPERM)snprintf(detail,detail_size,"PERMISSION DENIED (%d) - REPORT THIS SCREEN",e);
             else snprintf(detail,detail_size,"COPY FAILED (%d)",e);
             errno=e;
             note(HW_BUILD " PWINSTALL failed copy %s errno=%d\n",f->path,errno);break;

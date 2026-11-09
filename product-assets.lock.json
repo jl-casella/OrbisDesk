@@ -120,6 +120,11 @@
       "path": ".deps/steam/downloads/gbe_fork-2026_09_27/gbe_fork-release-2026_09_27-source.tar.gz",
       "url": "https://github.com/Detanup01/gbe_fork/archive/refs/tags/release-2026_09_27.tar.gz",
       "sha256": "ce3ce7aee0439f1b7aff2404106fe68184185a8d0b7ca5ab2677a046ea464cbd"
+    },
+    "seamonkey": {
+      "path": ".deps/downloads/seamonkey-2.53.24/seamonkey-2.53.24.en-US.win64.zip",
+      "url": "https://archive.seamonkey-project.org/releases/2.53.24/win64/en-US/seamonkey-2.53.24.en-US.win64.zip",
+      "sha256": "2b6eefd9a1f5c7d7e39d43d4a92221dd9bfb4e1b1de885687ae75560f3a61262"
     }
   }
 }
