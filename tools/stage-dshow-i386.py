@@ -35,6 +35,7 @@ copies the Wine modules to wine/lib/wine/i386-windows and syswow64, pwmpeg1.ax t
 appends system.reg.add to system.reg.
 """
 import hashlib,json,pathlib,re,struct,subprocess,tarfile
+from wine_staging import verify_module_copy
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build';out=ROOT/'out/dshow-i386';work=ROOT/'build/dshow-i386'
 PLMPEG=ROOT/'.deps/downloads/pl_mpeg-c871f2be';PLMPEG_SHA='3a8cb30c83c2a1147719c30fe0c8b93da2987aa43140077c575b39aaa75fc2c9'
@@ -182,11 +183,19 @@ def reg_data(data):
     raise SystemExit('kind '+kind)
 
 # ---- what the 32-bit view already has ----
-present=set();sealed_keys=set()
+present=set();sealed_keys=set();verified_overlays={}
 with tarfile.open(ROOT/'reports/increment15/prefix-package/prefix.tar.gz') as archive:
     for member in archive:
         if not member.isfile():continue
         if '/syswow64/' in member.name:present.add(pathlib.PurePosixPath(member.name).name.lower())
+        name=pathlib.PurePosixPath(member.name).name.lower()
+        if (pathlib.PurePosixPath(member.name).parent.as_posix().lower()=='prefix/drive_c/windows/syswow64'
+                and name in TARGETS):
+            if name in verified_overlays:raise SystemExit('Duplicate prefix module: '+member.name)
+            source=locate(name)
+            if source is None:raise SystemExit('Not built: '+name)
+            verified_overlays[name]=[verify_module_copy(
+                ARCH,name,source,archive.extractfile(member).read(),'prefix:'+member.name)]
         if pathlib.PurePosixPath(member.name).name=='system.reg':
             sealed=archive.extractfile(member).read().decode('utf-8','replace')
             sealed_keys={m.group(1).lower() for m in re.finditer(r'^\[(.*)\](?: \d+)?$',sealed,re.M)}
@@ -195,13 +204,23 @@ for key in json.loads((ROOT/'out/wine-extras/manifest.json').read_text())['modul
 present|={n.lower() for n in json.loads((ROOT/'out/wine-i386/manifest.json').read_text())['modules']}
 present|={n.lower() for n in json.loads((ROOT/'out/dmsynth-i386/manifest.json').read_text())['modules']}
 present|={n.lower() for n in json.loads((ROOT/'out/mshtml-hw/manifest.json').read_text())['modules'][ARCH]}
+providers=[(ROOT/'out/wine-extras',{key.split('/',1)[1]:entry for key,entry in
+            json.loads((ROOT/'out/wine-extras/manifest.json').read_text())['modules'].items() if key.startswith('i386/')}),
+           (ROOT/'out/wine-i386',json.loads((ROOT/'out/wine-i386/manifest.json').read_text())['modules']),
+           (ROOT/'out/dmsynth-i386',json.loads((ROOT/'out/dmsynth-i386/manifest.json').read_text())['modules']),
+           (ROOT/'out/mshtml-hw',json.loads((ROOT/'out/mshtml-hw/manifest.json').read_text())['modules'][ARCH])]
 
 # ---- 1. Wine modules and their closure ----
 found={}
 for name in TARGETS:
     path=locate(name)
     if not path:raise SystemExit('Not built: %s (make dlls/%s/%s/%s)'%(name,name[:-4],ARCH,name))
-    if name in present:raise SystemExit(name+' is already staged elsewhere')
+    for directory,entries in providers:
+        if name not in entries:continue
+        entry=entries[name];provider=directory/entry['path']
+        verified_overlays.setdefault(name,[]).append(verify_module_copy(
+            ARCH,name,path,provider.read_bytes(),str(provider.relative_to(ROOT)),entry['sha256']))
+    if name in present and name not in verified_overlays:raise SystemExit(name+' has no verified overlap provider')
     found[name]=path
 closure={};pending=list(found.values());edges={};unresolved=set()
 while pending:
@@ -337,6 +356,7 @@ for key,name in order:
     text+='\n['+path+'] '+STAMP+'\n'+TIME+'\n'+''.join(line+'\n' for line in lines);count+=1
 (out/'system.reg.add').write_text(text)
 manifest={'schema_version':1,'wine_commit':commit,'builder_sha256':sha(__file__),'modules':modules,
+          'verified_overlays':verified_overlays,
           'import_edges':edges,'registration_scripts':scripts,
           'registry':{'path':'system.reg.add','sha256':sha(out/'system.reg.add'),'keys':count},
           'pl_mpeg':{'path':str(PLMPEG.relative_to(ROOT)),'commit':'c871f2be022ece7ef4f64230b4fb8e1fb9eb6023',

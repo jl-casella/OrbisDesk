@@ -152,6 +152,18 @@ Clean CI Wine builds now use `build-wine.py --jobs 2 --release-build`: native C/
 
 Local tests exercise cleanup refusal/boundaries without deleting tools, actual process termination/reaping and timeout enforcement, low-space snapshot rejection, and real native/PE object compilation with and without DWARF. No cleanup ran on the workstation and no full hosted build has yet validated the new disk budget. Retry the branch workflow with `cache_mode=reuse`, publication disabled; if the reserve is still insufficient, use its disk/phase evidence to choose further pruning or separate hosted jobs.
 
+## Populated-prefix staging overlap: run 42554479679
+
+Run `42554479679` at `faf302da3b7d461b1af04e5376f7e54196be85f5` completed the expanded host Wine closure (1,053 PE modules; 3,185.175 seconds), its Unix libraries, native prefix checks, PS4 Unix/server compilation and the PE64/GUI/program stagers. The runner cleanup increased free space from approximately 14.1 GiB to 33.6 GiB; approximately 21.4 GiB remained at the final staging failure. Both dependency snapshots were sealed: graphics 587,005,298 bytes and Wine 292,976,872 bytes compressed. These files prove snapshot creation, not remote Actions cache-upload success.
+
+The i386 stager failed because its historical W261 list assumed every additional module was absent from the prefix. Native wineboot now sees the expanded build tree and installs many of those same modules. This was an overlap rejection, not another missing-DLL compilation failure or disk exhaustion.
+
+W261 now accepts deliberate overlays only after validating the existing prefix/provider PE architecture, matching the configured build's exact SHA-256 and, for staged providers, verifying their manifest hash. It still strips and stages the declared extras and runs their existing import/registration checks. Explicit exclusions, assignments to other adapters, unknown overlap providers, altered files and architecture mismatches remain errors. `w261_verified_overlays` records the verified provenance. DirectShow's required module overlay uses the same check instead of rejecting an identical prefix copy. No stager is imported as a Python module during testing or seed selection.
+
+The manifest also records excluded W261 names already present in the native-produced prefix as `w261_left_out_present_in_prefix`. W261 exclusions describe files omitted by this stager; they do not assert that a broader incoming prefix contains none of those files or that their console Unix backends work. A completed package, import-closure checks and hardware acceptance remain pending.
+
+Focused local tests compile real PE32/PE64 fixture DLLs, execute the actual W261 staging loop against a private populated-prefix fixture, and reject corrupted, wrong-architecture, bad-manifest and explicitly excluded cases. This validates the overlap policy, not native wineboot or PS4 execution of that test prefix. Retry the branch workflow with `cache_mode=reuse`, publication disabled. The graphics fingerprint is unchanged; the stagers are Wine snapshot inputs, so Wine's fingerprint changes conservatively and its block must rebuild.
+
 ## Installation and the dev → main flow
 
 A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.

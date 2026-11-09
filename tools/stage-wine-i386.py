@@ -7,8 +7,10 @@ W119, phase 2 of the PE32 plan. The DLLs are built as PE32 in the pinned host Wi
 tree; modules the sealed prefix already has in syswow64 are left out. Nothing is patched.
 Output: out/wine-i386/i386-windows/*.dll and manifest.json; tools/build-wine-hardware.py
 copies them to C:\\windows\\syswow64 and wine/lib/wine/i386-windows.
+W261 extras may overlay populated prefixes only after exact source/PE identity checks.
 """
 import hashlib,json,pathlib,re,struct,subprocess,tarfile
+from wine_staging import verify_module_copy
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build';out=ROOT/'out/wine-i386'
 (out/'i386-windows').mkdir(parents=True,exist_ok=True);(out/'x86_64-windows').mkdir(parents=True,exist_ok=True)
@@ -426,11 +428,22 @@ def w261_reg_data(data):
     return 'hex:'+','.join('%02x'%b for b in value)
 with tarfile.open(ROOT/'reports/increment15/prefix-package/prefix.tar.gz') as archive:
     w261_sealed={'i386-windows':set(),'x86_64-windows':set()};w261_sealed_keys=set()
+    w261_existing={'i386-windows':{},'x86_64-windows':{}}
+    requested={'i386-windows':set(W261_I386),'x86_64-windows':set(W261_X64)}
     for member in archive:
         if not member.isfile():continue
         name=pathlib.PurePosixPath(member.name).name
         if '/syswow64/' in member.name:w261_sealed['i386-windows'].add(name.lower())
         elif '/system32/' in member.name:w261_sealed['x86_64-windows'].add(name.lower())
+        for arch,windows in (('i386-windows','syswow64'),('x86_64-windows','system32')):
+            if pathlib.PurePosixPath(member.name).parent.as_posix().lower()!='prefix/drive_c/windows/'+windows:continue
+            if name.lower() not in requested[arch]:continue
+            if name.lower() in w261_existing[arch]:raise SystemExit('Duplicate prefix module: '+member.name)
+            source=next((p for p in (BUILD/'dlls'/name.lower().rsplit('.',1)[0]/arch/name.lower(),
+                                    BUILD/'dlls'/name.lower()/arch/name.lower()) if p.is_file()),None)
+            if source is None:raise SystemExit('No configured build output for '+member.name)
+            w261_existing[arch][name.lower()]=[verify_module_copy(
+                arch,name.lower(),source,archive.extractfile(member).read(),'prefix:'+member.name)]
         if name=='system.reg':
             sealed_text=archive.extractfile(member).read().decode('utf-8','replace')
             w261_sealed_keys={m.group(1).lower() for m in re.finditer(r'^\[(.*)\](?: \d+)?$',sealed_text,re.M)}
@@ -452,11 +465,22 @@ for arch,names,view in (('i386-windows',W261_I386,w261_sealed['i386-windows']|pr
     folder=out/'w261'/arch;folder.mkdir(parents=True,exist_ok=True)
     for old in folder.iterdir():old.unlink()
     listed=set(names);view=view|W261_OTHERS[arch];w261[arch]={}
-    clash=sorted(listed&(view|w261_left))
-    if clash:raise SystemExit('W261 '+arch+': listed and also in the view or left out: '+', '.join(clash))
+    clash=sorted(listed&(w261_left|W261_OTHERS[arch]))
+    if clash:raise SystemExit('W261 '+arch+': listed and also explicitly assigned elsewhere or left out: '+', '.join(clash))
+    providers=[(out,staged if arch=='i386-windows' else staged64)]
+    if arch=='x86_64-windows':
+        providers += [(ROOT/pathlib.Path(path).parent,json.loads((ROOT/path).read_text())['modules'])
+                      for path in ('out/wine-pe64/manifest.json','out/wine-gui/manifest.json','out/wine-programs/manifest.json')]
     for name in names:
         source=next((p for p in (BUILD/'dlls'/name.rsplit('.',1)[0]/arch/name,BUILD/'dlls'/name/arch/name) if p.is_file()),None)
         if not source:raise SystemExit('Not built: dlls/%s/%s/%s'%(name.rsplit('.',1)[0],arch,name))
+        for directory,modules in providers:
+            if name not in modules:continue
+            entry=modules[name];path=directory/entry['path']
+            w261_existing[arch].setdefault(name,[]).append(verify_module_copy(
+                arch,name,source,path.read_bytes(),str(path.relative_to(ROOT)),entry['sha256']))
+        if name in view and name not in w261_existing[arch]:
+            raise SystemExit('W261 '+arch+': overlap has no verified provider: '+name)
         for imported in imports(source):
             if imported in view or imported in listed or re.match(r'^(api|ext)-ms-',imported):continue
             w261_problems.append('%s %s imports %s (%s)'%(arch,name,imported,'left out' if imported in w261_left else 'not in the view'))
@@ -496,6 +520,8 @@ manifest={'schema_version':1,'modules_x64':staged64,'wine_commit':wine_commit,'t
           'builder_sha256':sha(pathlib.Path(__file__)),
           # W261: syswow64/system32 only (tools/build-wine-hardware.py), their registration, what is left out
           'w261':w261,'w261_left_out':W261_LEFT_OUT,'w261_registered':w261_registered,
+          'w261_verified_overlays':w261_existing,
+          'w261_left_out_present_in_prefix':{arch:sorted(names&w261_left) for arch,names in w261_sealed.items()},
           'registry':{'path':'system.reg.add','sha256':sha(out/'system.reg.add'),'keys':w261_keys,'sealed_values_kept':w261_kept}}
 (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
 print(json.dumps({'w261':{arch:len(m) for arch,m in w261.items()},'w261_registry_keys':w261_keys,
