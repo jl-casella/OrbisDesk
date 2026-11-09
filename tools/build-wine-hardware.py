@@ -544,8 +544,10 @@ for proof in ('out/explorer-hw/manifest.json','out/wfm/manifest.json'):
 for target in (data/'wine/lib/wine/x86_64-windows/explorer.exe',prefix/'drive_c/windows/explorer.exe',
                prefix/'drive_c/windows/system32/explorer.exe'):
     copy_verified(ROOT/'out/explorer-hw'/explorer['path'],target,explorer['sha256'])
-# W058: WFM, the Winlator File Manager (tools/build-wfm.py), with its libcdio.dll, in system32.
-for name,e in json.loads((ROOT/'out/wfm/manifest.json').read_text())['files'].items():
+# W058: WFM, the Winlator File Manager (tools/build-wfm.py), in system32 (alpha-1: without libcdio.dll).
+wfm_files=json.loads((ROOT/'out/wfm/manifest.json').read_text())['files']
+if 'libcdio.dll' in wfm_files:raise SystemExit('out/wfm still has libcdio.dll: rerun tools/build-wfm.py (alpha-1 licences)')
+for name,e in wfm_files.items():
     if name.endswith(('.exe','.dll')):copy_verified(ROOT/'out/wfm'/e['path'],prefix/'drive_c/windows/system32'/name,e['sha256'])
 # W112: DOSBox Pure PE64 guest; sources/license travel with the runtime, no game included.
 dos=json.loads((ROOT/'out/wine-dos/manifest.json').read_text())
@@ -767,6 +769,10 @@ system_text+=mshtml_reg.read_text()
 dshow_reg=ROOT/'out/dshow-i386'/dshow['registry']['path']
 if sha(dshow_reg)!=dshow['registry']['sha256']:raise SystemExit('DirectShow registry differs from its manifest')
 system_text+=dshow_reg.read_text()
+# alpha-1: the build PC's name out of the shipped registry (the prefix was made on the host)
+for old,new in (('"ComputerName"="JCASELLA"','"ComputerName"="ORBISDESK"'),('"Hostname"="jcasella"','"Hostname"="orbisdesk"')):
+    if old not in system_text:raise SystemExit('system.reg: expected '+old)
+    system_text=system_text.replace(old,new)
 system_reg.write_text(system_text)
 # W226: the same registry as a file Wine never rewrites; the launcher appends the keys the console's
 # system.reg lacks before Wine starts (native/wine_hardware.c merge_system_reg). W225's keys were lost
@@ -848,6 +854,9 @@ theme=text.index('[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\ThemeMa
 end=text.index('\n\n',theme)
 if text[theme:end].count('"ThemeActive"="1"')!=1:raise SystemExit('user.reg: ThemeManager is not as expected')
 text=text[:theme]+text[theme:end].replace('"ThemeActive"="1"','"ThemeActive"="0"')+text[end:]
+for old,new in (('"LOGONSERVER"="\\\\\\\\JCASELLA"','"LOGONSERVER"="\\\\\\\\ORBISDESK"'),('"USERDOMAIN"="JCASELLA"','"USERDOMAIN"="ORBISDESK"')):
+    if old not in text:raise SystemExit('user.reg: expected '+old)
+    text=text.replace(old,new)
 user_reg.write_text(text)
 # W048: Wine runs on hardware as user "orbis" (native/wine_boot.c), but the prefix was made
 # on the host for another user, so C:\users\orbis (the user's Start menu, AppData) did
@@ -878,6 +887,25 @@ for name in ('Programs/Accessories/File Manager.lnk',):
 for name,digest in steam_build['prefix_files'].items():
     steam_target=prefix/'drive_c'/name;steam_target.parent.mkdir(parents=True,exist_ok=True)
     copy_verified(ROOT/'build/steam-hosted/prefix'/name,steam_target,digest)
+# alpha-1 (docs/RELEASE_LICENSES.md): the licence texts, the copyright notices MIT/BSD/zlib ask
+# for (LICENSES/NOTICE.txt), THIRD_PARTY.md and where to get the corresponding source, in C:\orbis\licenses.
+SOURCE_REPOSITORY='https://github.com/jl-casella/OrbisDesk'
+licenses=prefix/'drive_c/orbis/licenses';licenses.mkdir(parents=True,exist_ok=True)
+license_inputs=sorted((ROOT/'LICENSES').glob('*.txt'))+[ROOT/'THIRD_PARTY.md']
+if not any(p.name=='NOTICE.txt' for p in license_inputs):raise SystemExit('LICENSES/NOTICE.txt is missing')
+for source in license_inputs:shutil.copyfile(source,licenses/source.name)
+head=subprocess.run(['git','-C',str(ROOT),'rev-parse','HEAD'],capture_output=True,text=True,check=True).stdout.strip()
+dirty=bool(subprocess.run(['git','-C',str(ROOT),'status','--porcelain','--untracked-files=no'],
+                          capture_output=True,text=True,check=True).stdout.strip())
+(licenses/'SOURCE.txt').write_text(
+    'OrbisDesk W302 (04.01): corresponding source\r\n\r\n'
+    'OrbisDesk is free software under the GNU GPL version 3 or later (GPL-3.0.txt).\r\n'
+    'Source code: '+SOURCE_REPOSITORY+', tag orbisdesk-04.01 (commit '+head+(' plus local changes' if dirty else '')+').\r\n'
+    'Third-party sources (Wine, Mesa, VLC, Wine Gecko, DOSBox Pure, gbe_fork, curl, Mbed TLS and others)\r\n'
+    'are attached to the same release as orbisdesk-04.01-third-party-sources, listed with their SHA-256 in\r\n'
+    'THIRD_PARTY.md. For three years from the release date the same sources are also available on request\r\n'
+    'through the repository\'s issue tracker.\r\n')
+manifest_licenses={p.name:sha(p) for p in sorted(licenses.iterdir())}
 # Phase 9: the SeaMonkey profile the Start menu shortcut passes with -profile (fixtures/browser).
 # SeaMonkey 2.53 is the browser (the user's choice; W177-W215 staged two Pale Moon profiles, whose
 # user.js on the console are obsolete_files below). SeaMonkey itself is the user's own copy, not in
@@ -945,6 +973,7 @@ manifest={'build':'W288','app_version':args.app_version,'title_id':'ORBW00002','
 # fixture output is the same console32-bare contract used by the Linux runner.
 manifest['expected_result']='reports/increment25-windows-reference/text-result.txt'
 manifest['program']='C:\\windows\\explorer.exe /desktop=shell,1280x720'
+manifest['licenses']={'folder':'wine-prefix/drive_c/orbis/licenses','files':manifest_licenses,'source_commit':head,'source_dirty':dirty}
 manifest['runs_until_closed']=True
 # W170: the console keeps /data/wine-prefix between builds and the upload only adds files, so a
 # file a build stops shipping stays. W168's shortcut in the common Desktop showed File Manager
@@ -966,6 +995,9 @@ manifest['obsolete_files']=['wine-prefix/drive_c/users/Public/Desktop/File Manag
 # W243: the VLC plugins stage-vlc.py leaves out. W241 shipped 290 and VLC loads whatever is in its
 # plugins folder (W241 ran out of descriptors), so the console's copies go too.
 manifest['obsolete_files']+=['wine-prefix/drive_c/Program Files/VLC/'+name for name in vlc['left_out_plugins']]
+# alpha-1 licences: libcdio.dll (GPL-3.0, prebuilt, no known source) is no longer shipped; builds since W058
+# put it in system32, so the console's copy goes too.
+manifest['obsolete_files'].append('wine-prefix/drive_c/windows/system32/libcdio.dll')
 manifest['result_name']='text-result.txt'
 manifest['expected_prefix']='passed=1;family_tahoma=1;'
 # W112 retains W103's private system.o override and rebuilds native telemetry.
