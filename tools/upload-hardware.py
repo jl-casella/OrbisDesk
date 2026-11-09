@@ -10,12 +10,19 @@ parser.add_argument('--build',choices=sorted(BUILDS),required=True)
 parser.add_argument('--host',default='192.168.68.107');parser.add_argument('--port',type=int,default=2121)
 parser.add_argument('--timeout',type=int,default=60,help='FTP timeout in seconds, per connection/read')
 parser.add_argument('--skip-runtime',action='store_true',help='upload only the PKG')
+parser.add_argument('--pkg-only',action='store_true',
+    help='alpha-1: upload only a PKG that carries the runtime; the app installs it into /data on its first start '
+         '(native/hw_install.h). Old packages are removed after the PKG is verified.')
 parser.add_argument('--keep-old-packages',action='store_true',help='retain previous OrbisDesk Wine PKGs (default: remove after verified full upload)')
 args=parser.parse_args()
 if args.timeout<=0:parser.error('--timeout must be positive')
 out_dir,report_dir=(ROOT/p for p in BUILDS[args.build])
 manifest=json.loads((out_dir/'manifest.json').read_text())
 pkg=ROOT/manifest['package'];runtime=ROOT/manifest['runtime_root']
+if args.pkg_only:
+    if not manifest.get('runtime_embedded',{}).get('embedded'):
+        raise SystemExit('--pkg-only needs a package with the runtime inside (built without --runtime-outside-package)')
+    args.skip_runtime=True
 sha=lambda data:hashlib.sha256(data).hexdigest()
 # Writable state for Wine: the prefix registry and the home directory.
 WRITABLE=('wine-prefix','wine-home')
@@ -184,7 +191,7 @@ if not args.skip_runtime:
 # verified upload. Never delete logs, runtime files, local releases, other PKGs,
 # a newer build, or a path outside exactly /data/pkg. NLST is untrusted input.
 cleanup={'deleted':[],'failed':[],'kept':remote_pkg}
-if not args.keep_old_packages and not args.skip_runtime:
+if not args.keep_old_packages and (args.pkg_only or not args.skip_runtime):
     def list_packages():return ftp.nlst('/data/pkg')
     def delete_package(path):return ftp.delete(path)
     for entry in retrying(list_packages):
