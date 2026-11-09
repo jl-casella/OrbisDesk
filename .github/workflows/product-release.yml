@@ -74,6 +74,9 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
         with:
           dotnet-version: '8.0.x'
+      - name: Reclaim unused hosted toolchains and verify disk budget
+        timeout-minutes: 10
+        run: python3 tools/ci/runner_disk.py prepare
       - name: Install clean runner prerequisites
         timeout-minutes: 20
         run: bash tools/ci/install-product.sh
@@ -137,6 +140,9 @@ jobs:
           key: product-wine-v1-${{ steps.product-key.outputs.wine_key }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Verify and assemble exact product assets
         run: python3 tools/ci/release.py assemble
+      - name: Record final runner disk usage
+        if: always()
+        run: python3 tools/ci/runner_disk.py record
       - name: Preserve build evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

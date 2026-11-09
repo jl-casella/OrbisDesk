@@ -53,5 +53,6 @@ def phase(name):
         print(json.dumps(record), flush=True)
 
 
-def run(command, log, timeout=2700, env=None):
-    return run_logged(command, log, cwd=ROOT, timeout=timeout, env=env, process_group=os.name == 'posix')
+def run(command, log, timeout=2700, env=None, minimum_free_bytes=0):
+    return run_logged(command, log, cwd=ROOT, timeout=timeout, env=env,
+                      process_group=os.name == 'posix', minimum_free_bytes=minimum_free_bytes)

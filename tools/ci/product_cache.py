@@ -135,12 +135,22 @@ def excluded_graphics(name):
              ('llvm.tar.xz', 'Vulkan-Headers', 'Vulkan-Loader', 'Vulkan-Tools')))
 
 
+def require_disk_space(path, payload_bytes, purpose):
+    reserve = 2 * 1024 ** 3
+    free = shutil.disk_usage(path).free
+    if free < payload_bytes + reserve:
+        raise OSError(f'Insufficient disk to {purpose}: {free} bytes free; '
+                      f'need {payload_bytes} bytes plus {reserve} bytes reserve')
+
+
 def seal(bundle, key_record, destinations, permitted_links, exclude=None):
     unlinked_location(bundle)
     bundle.mkdir(parents=True, exist_ok=True)
     if list(bundle.iterdir()):
         raise ValueError('Refusing to overwrite an existing product snapshot')
     entries = inventory(destinations, permitted_links, exclude)
+    # Use the uncompressed size as a conservative upper bound; leave logs/headroom.
+    require_disk_space(bundle, sum(e.get('size', 0) + 1024 for e in entries.values()), 'seal snapshot')
     archive = bundle / 'payload.tar.gz'
     with tarfile.open(archive, 'w:gz', compresslevel=1) as target:
         for name, entry in entries.items():
@@ -192,6 +202,9 @@ def restore(bundle, key_record, destinations, permitted_links):
             raise ValueError('Snapshot would overwrite an existing output: ' + str(path))
         if entry['kind'] == 'symlink' and not inside((path.parent / entry['target']).resolve(), permitted_links):
             raise ValueError('Snapshot symlink escapes permitted inputs/outputs')
+    bytes_needed = sum(e.get('size', 0) + 1024 for e in entries.values())
+    require_disk_space(bundle, bytes_needed, 'restore snapshot outputs')
+    require_disk_space(Path(tempfile.gettempdir()), bytes_needed, 'stage snapshot verification')
     # No archive metadata is applied to live destinations. Validate all regular
     # files first in a private staging area; links are created only after files.
     with tempfile.TemporaryDirectory(prefix='orbisdesk-cache-') as temporary:
@@ -254,7 +267,7 @@ def make_keys():
     assets = json.loads((ROOT / 'product-assets.lock.json').read_text())['downloads']
     shared = ['tools/ci/product_cache.py', 'tools/ci/build-product.py', 'tools/ci/install-product.sh',
               'tools/ci/install-runner.sh', 'tools/ci/common.py', 'tools/logged_process.py',
-              'tools/restore-dependencies.py']
+              'tools/restore-dependencies.py', 'tools/ci/runner_disk.py']
     tracked = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files'], text=True).splitlines()
     records = {}
     for block in BLOCKS:

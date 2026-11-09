@@ -10,6 +10,7 @@ import sys
 import tarfile
 from common import ROOT, RESULTS, phase, run, revision, sha, write_json
 from product_cache import ProductCache, normalize_wine_source, product_download as download
+from runner_disk import record as record_disk, GIB
 
 
 LLVM_RUNTIME_SUBTREES = (
@@ -26,15 +27,18 @@ def llvm_runtime_member(name):
 
 
 def step(name, command, env=None):
+    record_disk('before-' + name, minimum_gib=3)
     print('Starting product-' + name, flush=True)
     with phase('product-' + name):
         log = RESULTS / ('product-' + name + '.log')
         try:
-            run(command, log, timeout=14400, env=env)
+            run(command, log, timeout=14400, env=env, minimum_free_bytes=2 * GIB)
         except Exception:
             if log.exists():
                 print('\n'.join(log.read_text(errors='replace').splitlines()[-60:]), flush=True)
             raise
+        finally:
+            record_disk('after-' + name)
 
 
 def python(name, *args):
@@ -102,7 +106,7 @@ def build(version, cache_mode='reuse'):
     python('build', '--fixtures-only')
     normalize_wine_source()
     if not cache.use('wine'):
-        python('build-wine', '--jobs', '2')
+        python('build-wine', '--jobs', '2', '--release-build')
         python('build-host-wine-closure', '--jobs', '2', '--product-staging')
         python('build-host-wine-unix')
         cache.save('wine')

@@ -18,9 +18,21 @@ HOST_CONFIGURE_ARGS = ('--enable-archs=i386,x86_64 --disable-tests --without-x '
                        '--without-freetype --enable-wineusb-sys')
 
 
+def build_environment(release_build=False):
+    env = dict(os.environ, LC_ALL='C', TZ='UTC')
+    if release_build:
+        # Wine's PE flags use CROSSCFLAGS, independently of the native CFLAGS.
+        for key in ('CFLAGS', 'CXXFLAGS', 'CROSSCFLAGS', 'i386_CFLAGS',
+                    'i386_CXXFLAGS', 'x86_64_CFLAGS', 'x86_64_CXXFLAGS'):
+            env[key] = '-O2 -g0'
+    return env
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--jobs', type=int, default=8)
+    parser.add_argument('--release-build', action='store_true',
+                        help='Omit host/PE debug symbols to limit hosted runner disk use')
     args = parser.parse_args()
     lock = json.loads((ROOT / 'sources.lock.json').read_text())['sources']['wine']
     source = ROOT / '.deps/wine/source'
@@ -50,13 +62,13 @@ def main():
                '--out', str(ROOT / 'out/wine'), '--jobs', str(args.jobs)]
     with (runtime / 'driver.log').open('w') as log:
         result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
-                                env=dict(os.environ, LC_ALL='C', TZ='UTC'))
+                                env=build_environment(args.release_build))
     report = {'schema_version': 1, 'wine_commit': head, 'status': 'built' if not result.returncode else 'blocked',
               'environment': 'WSL cross-built PE modules; PS4 execution unvalidated',
               'builder_sha256': hashlib.sha256(builder.read_bytes()).hexdigest(),
               'driver_sha256': hashlib.sha256(driver.read_bytes()).hexdigest(),
               'exit_code': result.returncode, 'logs': '.deps/wine/runtime/',
-              'hardware_status': 'pending'}
+              'hardware_status': 'pending', 'debug_symbols': not args.release_build}
     (ROOT / 'out/wine-build.json').write_text(json.dumps(report, indent=2)+'\n')
     print(json.dumps(report), flush=True)
     raise SystemExit(result.returncode)

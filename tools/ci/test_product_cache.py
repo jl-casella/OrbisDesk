@@ -42,6 +42,19 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual((self.output / 'compiler').stat().st_mode & 0o777, 0o755)
         self.assertEqual((self.output / 'compiler').stat().st_mtime_ns, file.stat().st_mtime_ns)
 
+    def test_low_space_refuses_snapshot_creation_and_extraction(self):
+        from types import SimpleNamespace
+        (self.source / 'input').write_bytes(b'input')
+        with patch.object(cache.shutil, 'disk_usage', return_value=SimpleNamespace(free=1024)):
+            with self.assertRaisesRegex(OSError, 'Insufficient disk'):
+                self.seal()
+        self.assertFalse((self.bundle / 'payload.tar.gz').exists())
+        self.seal()
+        with patch.object(cache.shutil, 'disk_usage', return_value=SimpleNamespace(free=1024)):
+            with self.assertRaisesRegex(OSError, 'Insufficient disk'):
+                cache.restore(self.bundle, self.key, {'tree': self.output}, [self.output])
+        self.assertFalse(self.output.exists())
+
     def test_corrupted_payload_and_changed_inputs_are_rejected(self):
         (self.source / 'file').write_text('content')
         self.seal()
@@ -176,7 +189,8 @@ class KeyTests(unittest.TestCase):
                 shutil.copyfile(real / name, root / name)
             names = ['tools/ci/product_cache.py', 'tools/ci/build-product.py', 'tools/ci/install-product.sh',
                      'tools/ci/install-runner.sh', 'tools/ci/common.py', 'tools/logged_process.py',
-                     'tools/restore-dependencies.py', 'tools/build-wine.py', 'tools/build-host-wine-closure.py',
+                     'tools/restore-dependencies.py', 'tools/ci/runner_disk.py',
+                     'tools/build-wine.py', 'tools/build-host-wine-closure.py',
                      'tools/build-host-wine-unix.py', 'tools/wine_module_names.py', 'tools/vk-h0/patch.py',
                      'tools/wine_product_seeds.py', 'tools/stage-wine-i386.py',
                      'tools/stage-wine-programs.py', 'tools/stage-wine-extras.py',

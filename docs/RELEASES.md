@@ -142,6 +142,16 @@ Auditing the expanded delayed-import graph also found wmvcore's dependency on ho
 
 Local validation passed 61 CI unit tests and a read-only audit found configured targets for all 879 declared PE seeds and all nine resource/library targets in the prepared Wine Makefile. This is target/ordering validation, not a successful build of those 879 modules on a clean runner. The orchestration and cache recipes changed, so both dependency fingerprints change conservatively; the next manual branch run with `cache_mode=reuse` will rebuild and refill them. Keep publication disabled until the complete package and runtime pass their gates.
 
+## Hosted runner disk exhaustion
+
+The supplied `Worker_20261109-011857-utc.log` error reports `No space left on device` inside the Actions runner itself. It establishes disk exhaustion, but the stack trace alone does not identify the product phase or the largest directory. Expanded Wine compilation, build trees, archives and cached snapshots all contribute to the peak; no complete disk inventory was supplied.
+
+The product workflow now reclaims an explicit list of unused preinstalled Android/Swift/Haskell/CodeQL trees and cleans the apt download cache before installing prerequisites. This cleanup refuses local/self-hosted runners, skips linked paths and preserves .NET, Python, Clang, SDKs and repository files. It requires 25 GiB free after cleanup. `reports/ci/product-disk.jsonl` records available space before/after each product command and at workflow completion. Commands require 3 GiB before starting and monitor a 2 GiB reserve every ten seconds, terminating their process group on exhaustion instead of letting compilers continue after the driver fails. Snapshot creation/extraction separately checks the uncompressed payload size plus a 2 GiB reserve.
+
+Clean CI Wine builds now use `build-wine.py --jobs 2 --release-build`: native C/C++ and both PE architectures receive `-O2 -g0`, including Wine's separate cross flags. This omits DWARF debug data in the large host/product PE block; it does not strip exports or disable runtime checks. The workstation default remains unchanged. The mode is recorded in `out/wine-build.json`; changed recipes invalidate existing dependency fingerprints. This reduces disk demand at the cost of source-level debugging information for that CI block.
+
+Local tests exercise cleanup refusal/boundaries without deleting tools, actual process termination/reaping and timeout enforcement, low-space snapshot rejection, and real native/PE object compilation with and without DWARF. No cleanup ran on the workstation and no full hosted build has yet validated the new disk budget. Retry the branch workflow with `cache_mode=reuse`, publication disabled; if the reserve is still insufficient, use its disk/phase evidence to choose further pruning or separate hosted jobs.
+
 ## Installation and the dev → main flow
 
 A PKG alone is insufficient: its matching runtime must also be staged into `/data`. Follow the candidate's installation notes, back up existing registries/documents/settings/saves and use a merge-aware update procedure for an existing installation. The archive represents a fresh runtime; blindly replacing an installed prefix can lose user state. No FTP upload or console installation occurs in Actions.
