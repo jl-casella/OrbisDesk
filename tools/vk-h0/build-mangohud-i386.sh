@@ -22,7 +22,8 @@ for check in 'src/win/main.cpp:OrbisDesk: no hook thread' 'src/vulkan.cpp:OrbisD
              'src/vulkan.cpp:OrbisDesk W099: join outside the UI lock.' 'src/overlay.cpp:OrbisDesk W102: sample on the frame thread' \
              'src/fps_metrics.h:OrbisDesk W102: calculate on the frame thread' 'src/fps_metrics.h:#include <sstream>'; do
   file=${check%%:*}; marker=${check#*:}
-  grep -qF "$marker" "$W/$file" || { echo "missing in $file: $marker (run build-mangohud.sh)"; exit 1; }
+  # or its historical spelling, in a working copy patched before the rename (tools/project_brand.py normalize_marker)
+  grep -qF "$marker" "$W/$file" || grep -qF "${marker/OrbisDesk/Orbis-win}" "$W/$file" || { echo "missing in $file: $marker (run build-mangohud.sh)"; exit 1; }
 done
 [ -f $W/src/orbis_metrics.h ] && [ -f $W/src/orbis_telemetry.h ] || { echo 'Orbis metrics patch missing (run build-mangohud.sh)'; exit 1; }
 # ADL's allocation callback is __stdcall (AMD's ADL SDK, ADL_MAIN_MALLOC_CALLBACK; adl.cpp defines it so); the

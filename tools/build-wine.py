@@ -62,6 +62,14 @@ def main():
     # every DLL. Reproducibility rebuilds are a separate, explicit validation.
     script = script.replace('make -B -j', 'make -j')
     runtime = ROOT / '.deps/wine/runtime'
+    # Configure through the relative path (srcdir = ../../source in the Makefile), as the tree was first made:
+    # the module builders' "make -n -W ../../source/..." recipes match source paths textually (W303 found
+    # an absolute srcdir silently empties them).
+    configure = '(cd "$build_dir" && "$source_dir/configure" $CONFIGURE_ARGS)'
+    if script.count(configure) != 1:
+        raise SystemExit('Unexpected configure line in ' + str(builder))
+    relative = os.path.relpath(source, runtime / 'build')
+    script = script.replace(configure, '(cd "$build_dir" && ' + __import__('shlex').quote(relative + '/configure') + ' $CONFIGURE_ARGS)')
     runtime.mkdir(parents=True, exist_ok=True)
     # The driver configures only without a Makefile. A tree configured before the
     # prefix map (or for another checkout/$HOME) is reconfigured; objects compiled

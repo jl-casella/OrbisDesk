@@ -20,9 +20,10 @@ grep -q '#include <sstream>' $W/src/fps_metrics.h || sed -i '1i #include <sstrea
 # is not installed. Here every program runs inside explorer's process, so in W093 that thread
 # opened a "MangoHud" console and an "Assertion failed" dialog (win/d3d11_hook.cpp:126) for
 # explorer.exe.
-grep -q 'OrbisDesk: no hook thread' $W/src/win/main.cpp || \
+# (a working copy patched before the rename carries the historical marker: tools/project_brand.py normalize_marker)
+grep -qE 'Orbis(Desk|-win): no hook thread' $W/src/win/main.cpp || \
   sed -i 's|        CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)MainThread, NULL, 0, NULL);|        /* OrbisDesk: no hook thread for the Vulkan layer (tools/vk-h0/build-mangohud.sh) */|' $W/src/win/main.cpp
-grep -c 'OrbisDesk: no hook thread' $W/src/win/main.cpp
+grep -cE 'Orbis(Desk|-win): no hook thread' $W/src/win/main.cpp
 # W096: protect shared UI globals across concurrently rendering Wine guests.
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-shared-process.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-teardown.py "$W"

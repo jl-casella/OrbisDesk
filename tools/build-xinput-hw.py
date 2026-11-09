@@ -376,6 +376,9 @@ for command in commands:
     run=subprocess.run(command,shell=True,cwd=BUILD,capture_output=True,text=True)
     if run.returncode:raise SystemExit(command[:300]+'\n'+run.stdout+run.stderr)
 modules={}
+# W303: xinput9_1_0 is the pinned tree's own (unpatched); build it, a clean host tree has not made it yet
+subprocess.run(['make','-j4',*['dlls/xinput9_1_0/%s-windows/xinput9_1_0.dll'%a for a in ARCHES]],cwd=BUILD,
+               capture_output=True,text=True,check=True)
 for a in ARCHES:
     (out/(a+'-windows')).mkdir(parents=True)
     for m in MODULES+('xinput9_1_0',):

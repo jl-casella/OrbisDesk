@@ -113,18 +113,55 @@
          len = sizeof(spi);
          if (size >= len)
          {
-@@ -3439,6 +3452,10 @@
+@@ -3439,6 +3452,47 @@
  
      case SystemProcessorPerformanceInformation:  /* 8 */
      {
 +#ifdef __ORBIS__
-+        ret = STATUS_NOT_SUPPORTED;
++        {
++            SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION *sppi = info;
++            unsigned int n = min( peb->NumberOfProcessors, size / sizeof(*sppi) ), i;
++            struct timespec uptime;
++            struct rusage usage;
++
++            if (!n)
++            {
++                len = 0;
++                ret = STATUS_INFO_LENGTH_MISMATCH;
++                break;
++            }
++            if (!info)
++            {
++                ret = STATUS_ACCESS_VIOLATION;
++                break;
++            }
++            if (clock_gettime( CLOCK_MONOTONIC_RAW, &uptime ) || getrusage( RUSAGE_SELF, &usage ))
++            {
++                ret = STATUS_NOT_SUPPORTED;
++                break;
++            }
++            {
++                ULONGLONG total = (ULONGLONG)uptime.tv_sec * 10000000 + uptime.tv_nsec / 100;
++                ULONGLONG user = ((ULONGLONG)usage.ru_utime.tv_sec * 1000000 + usage.ru_utime.tv_usec) * 10 / n;
++                ULONGLONG sys = ((ULONGLONG)usage.ru_stime.tv_sec * 1000000 + usage.ru_stime.tv_usec) * 10 / n;
++                ULONGLONG idle = total > user + sys ? total - user - sys : 0;
++
++                memset( sppi, 0, n * sizeof(*sppi) );
++                for (i = 0; i < n; i++)
++                {
++                    sppi[i].IdleTime.QuadPart = idle;
++                    sppi[i].KernelTime.QuadPart = sys + idle;
++                    sppi[i].UserTime.QuadPart = user;
++                }
++            }
++            len = n * sizeof(*sppi);
++        }
 +        break;
 +#else
          SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION *sppi = NULL;
          unsigned int cpus = 0;
          int out_cpus = size / sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION);
-@@ -3569,6 +3586,7 @@
+@@ -3569,6 +3623,7 @@
  
          free( sppi );
          break;
@@ -132,7 +169,7 @@
      }
  
      case SystemModuleInformation:  /* 11 */
-@@ -4567,6 +4585,11 @@
+@@ -4567,6 +4622,11 @@
      return STATUS_SUCCESS;
  }
  
@@ -144,7 +181,7 @@
  #elif defined(__FreeBSD__)
  
  #include <dev/acpica/acpiio.h>
-@@ -4689,6 +4712,9 @@
+@@ -4689,6 +4749,9 @@
      }
  
      case ProcessorInformation:
@@ -154,7 +191,7 @@
      {
          const int cannedMHz = 1000; /* We fake a 1GHz processor if we can't conjure up real values */
          PROCESSOR_POWER_INFORMATION* cpu_power = output;
-@@ -4740,7 +4766,7 @@
+@@ -4740,7 +4803,7 @@
                  cpu_power[i].CurrentIdleState = 0; /* FIXME */
              }
          }
