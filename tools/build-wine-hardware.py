@@ -1025,8 +1025,19 @@ install={'schema_version':1,'build':HW_BUILD_ID,'app_version':args.app_version,'
     'host_profile':host_profiles[0].name,'bytes':sum(e['bytes'] for e in runtime_files.values())}
 install_json=work/'install.json'
 install_json.write_text(json.dumps(install,indent=1,ensure_ascii=False)+'\n',encoding='utf-8')
+# the same list as lines for the launcher (native/hw_install.h hw_install_parse); paths last, they hold spaces
+def install_line(kind,value):
+    if '\n' in value or '\r' in value:raise SystemExit('install list: line break in '+repr(value))
+    return kind+' '+value+'\n'
+install_text='ORBISDESK-INSTALL 1\n'+install_line('B',HW_BUILD_ID)+install_line('H',host_profiles[0].name)+install_line('T',str(install['bytes']))
+install_text+=''.join(install_line('W',w) for w in install['writable'])
+install_text+=''.join(install_line('K',k) for k in CONSOLE_OWNED)+''.join(install_line('R',k) for k in user_reg_reset)
+install_text+=''.join(install_line('D',d) for d in runtime_directories)
+install_text+=''.join(install_line('F','%s %d %s'%(e['sha256'],e['bytes'],path)) for path,e in runtime_files.items())
+install_text+=''.join(install_line('O',o) for o in obsolete_files)
+install_txt=work/'install.txt';install_txt.write_bytes(install_text.encode('utf-8'))
 embedded={} if args.runtime_outside_package else {
-    **{'runtime/'+path:data/path for path in runtime_files},'runtime/install.json':install_json}
+    **{'runtime/'+path:data/path for path in runtime_files},'runtime/install.json':install_json,'runtime/install.txt':install_txt}
 # alpha-1: nothing of the build PC in what ships. Its checkout and home paths (compilers' __FILE__ and debug
 # strings: -ffile-prefix-map in the builders) and its user's profile, in the runtime and the ELF.
 build_identity=sorted({str(ROOT),str(ROOT).replace('/','\\'),str(pathlib.Path.home())}-{'','/','\\'})
@@ -1048,7 +1059,7 @@ manifest={'build':'W302','app_version':args.app_version,'title_id':'ORBW00002','
     'runtime_root':str(data.relative_to(ROOT)),
     'directories':runtime_directories,'runtime_files':runtime_files,
     'source_hashes':{str(p.relative_to(ROOT)):sha(p) for p in (ROOT/'native/wine_hardware.c',ROOT/'native/hw_text.h',ROOT/'platform/ps4/pw_wine_fs.c',ROOT/'platform/ps4/pw_wine_platform.c',
-        ROOT/'native/wine_boot.c',ROOT/'native/hw_pad.c',ROOT/'native/hw_overlay.c',ROOT/'platform/ps4/pw_wine_sink_ps4.c',ROOT/'tools/build-wine-hardware.py',ROOT/'tools/orbis_package.py')},
+        ROOT/'native/wine_boot.c',ROOT/'native/hw_pad.c',ROOT/'native/hw_overlay.c',ROOT/'platform/ps4/pw_wine_sink_ps4.c',ROOT/'tools/build-wine-hardware.py',ROOT/'tools/orbis_package.py',ROOT/'native/hw_install.h',ROOT/'tools/console_state.py')},
     'link_command':command,'eboot_base':hex(EBOOT_BASE),'drive_mounts':{'dosdevices/c:':'../drive_c','dosdevices/z:':'../..'},
     'expected_result':'reports/increment15/native-prefix-console32/result.txt'}
 # Reference directory naming differs in older evidence; the canonical increment11

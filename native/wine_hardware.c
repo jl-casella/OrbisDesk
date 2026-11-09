@@ -996,6 +996,7 @@ static void merge_system_reg(void)
     free(out);free(table);free(build);free(live);
 }
 
+#include "hw_install.h"  /* alpha-1: the first-run installer (uses note, read_whole and the loading screen) */
 int main(void)
 {
     pw_brand_prepare_state();
@@ -1045,6 +1046,12 @@ int main(void)
         if(moved){panel("RESULT ARCHIVE FAILED","READ THE FTP LOG");for(;;)sceKernelUsleep(1000000);}
     }
     if(boot_root) pw_hw_jailbreak();  /* phase 10: Root on the loading screen */
+    /* alpha-1: the runtime the package carries, into /data on the first start of a build (native/hw_install.h);
+     * after the jailbreak, so a Root start can replace files an FTP upload left read-only to the sandbox */
+    {
+        char detail[96]={0};
+        if(hw_install_runtime(detail,sizeof(detail))) {panel("INSTALL FAILED",detail);for(;;)sceKernelUsleep(1000000);}
+    }
     merge_system_reg();
     /* W015: first GUI program on hardware, the PE64 window fixture of increment 24. */
     /* W038: the program comes from /data/orbisdesk/launch.txt when present: the first line
