@@ -118,6 +118,12 @@ struct hw_jailbreak_backup
 static struct hw_jailbreak_backup jailbreak_backup;
 static volatile int jailbroken;
 static int boot_root;  /* Root chosen (boot_choose) */
+/* the Steam client inside the title (native/steam/steam_client.cpp) logs whether GoldHEN's jailbreak is on */
+int pw_hw_root_mode(void);
+int pw_hw_root_mode(void) {return jailbroken;}
+/* W292: the mode chosen at start, for explorer's Reset item (native/hw_pad.c "<root-mode>") */
+int pw_hw_boot_root(void);
+int pw_hw_boot_root(void) {return boot_root;}
 extern int pw_wine_sigaction(int,const struct sigaction *,struct sigaction *);
 static long goldhen_cmd(uint64_t cmd,void *data,int *error)
 {
@@ -736,7 +742,8 @@ static char program_cwd[400],program_dir_env[430];
 
 /* Phase 10: a Windows path as a Unix one: C: is the prefix's drive_c, D:..K: the USB disks at
  * /mnt/usb0..7 and L: the optical disc at /mnt/disc (platform/ps4/pw_wine_fs.c, seen after the
- * jailbreak). 0 for any other drive. */
+ * jailbreak); S5: Z: is the prefix's parent, /data, where the Steam title (ORBS00001) installs games
+ * as Z:\orbisdesk\steam-games\<app>\. 0 for any other drive. */
 static int windows_unix_path(const char *windows_path,char *out,size_t size)
 {
     char drive=(char)(windows_path[0]|0x20);size_t n;

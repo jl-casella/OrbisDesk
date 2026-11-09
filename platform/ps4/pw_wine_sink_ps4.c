@@ -278,6 +278,8 @@ void pw_hw_sink_stats(unsigned *vk_tenths,int *vk_fresh,unsigned *frames_tenths,
     pthread_mutex_unlock(&lock);
 }
 extern void pw_hw_overlay_draw(uint32_t *pixels,unsigned pitch,unsigned width,unsigned height);
+/* the Steam client inside the title (native/steam/steam_ui.c): its page over the whole frame while open */
+extern int pw_hw_steam_draw(uint32_t *pixels,unsigned pitch,unsigned width,unsigned height);
 #endif
 static int show(void)
 {
@@ -343,6 +345,7 @@ flip:;
 #endif
 #ifdef PW_SINK_EXTERNAL_INPUT
     draw_fps(target,sceKernelGetProcessTime());
+    pw_hw_steam_draw(target,pitch,OUT_WIDTH,OUT_HEIGHT);
     pw_hw_overlay_draw(target,pitch,OUT_WIDTH,OUT_HEIGHT);  /* W236 */
 #endif
     int rc=sceVideoOutSubmitFlip(handle,(int32_t)(flips%OUT_BUFFERS),FLIP_VSYNC,(int64_t)flips);

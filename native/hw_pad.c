@@ -109,6 +109,10 @@ extern void pw_hw_cursor_moved(void);
 extern int pw_hw_fps_toggle(void);  /* W165: platform/ps4/pw_wine_sink_ps4.c; 0 when the key is not taken */
 /* W236: the control overlay (native/hw_overlay.c): 1 while it has the pad */
 extern int pw_hw_overlay_pad(const OrbisPadData *data);
+/* The Steam client inside the title (native/steam/steam_ui.c, STEAM_UI_HOSTED): its screen takes the pad
+ * while open, and "<steam-open>" (C:\orbis\steam-open.exe) opens it (native/steam/steam_client.cpp) */
+extern int pw_hw_steam_pad(const OrbisPadData *data);
+extern const char *pw_hw_steam_open(void);
 
 static void push(uint32_t type,uint32_t code,uint32_t down,const char *source)
 {
@@ -333,6 +337,8 @@ extern void pw_hw_overlay_exit_result(const char *result);
 extern void pw_hw_overlay_program(const char *exe,int load);
 void pw_wine_pad_profile(const char *exe,int load)
 {
+    /* Steam: the answer ("opened", "busy" or "error ...") goes back in the call's 260-byte buffer */
+    if(exe && !strcmp(exe,"<steam-open>")) {snprintf((char *)exe,260,"%s",pw_hw_steam_open());return;}
     if(exe && !strcmp(exe,"<mangohud>")) {pw_hw_overlay_mangohud(load);return;}
     if(exe && !strcmp(exe,"<overlay-desktop>")) {pw_hw_overlay_desktop(load);return;}
     /* W242: "exit" or "-", then the windows Vulkan presented to in the last 2 s, in hex (the closer
@@ -405,7 +411,7 @@ static int poll_controller(unsigned reads,uint32_t *previous,int *moved)
     if(rc) return 0;
     /* W236: while the overlay has the pad (L3+R3), programs and the emulation read it neutral: connected,
      * nothing pressed, sticks centred, no finger. What they held is released below, as on any release. */
-    if(pw_hw_overlay_pad(&data)) {
+    if(pw_hw_overlay_pad(&data) || pw_hw_steam_pad(&data)) {
         data.buttons=0;data.leftStick.x=data.leftStick.y=data.rightStick.x=data.rightStick.y=128;
         data.analogButtons.l2=data.analogButtons.r2=0;data.touch.fingers=0;
     }

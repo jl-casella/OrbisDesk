@@ -178,6 +178,12 @@ for replaced,entry in world_build['replaces'].items():
     command=[str(ROOT/entry['object']) if arg==str(ROOT/replaced) else arg for arg in command]
 # Keep the proven library search order: build/wine-boot/lib/libc.a must win over the SDK
 # libc.a, whose readlink/lstat are raw FreeBSD syscalls (ENOSYS for W001 on hardware).
+# The Steam client inside the title (tools/build-steam-hosted.py): one object whose only globals are
+# pw_hw_steam_open/draw/pad/active (native/hw_pad.c, the sink), and its files for C:\orbis (below)
+steam_build=json.loads((ROOT/'build/steam-hosted/manifest.json').read_text())
+steam_object=ROOT/steam_build['object']
+if sha(steam_object)!=steam_build['object_sha256']:raise SystemExit('Steam object differs from its build')
+command[1:1]=[str(steam_object)]
 command[1:1]=['--wrap=exit','--wrap=_exit','--wrap=sceKernelDebugOutText','--wrap=write','--wrap=vfprintf','--wrap=fprintf','--wrap=fputs','--wrap=fwrite',str(wrapper),str(pad),str(overlay_obj)];command+=['-lSceSysmodule','-lSceSystemService','-lScePad','-lSceUserService','-lSceRtc','-lSceAudioOut']
 run(command)
 def symbols(elf,flag):
@@ -867,6 +873,11 @@ for name,e in start_menu['shortcuts'].items():
 for name in ('Programs/Accessories/File Manager.lnk',):
     copy_verified(ROOT/'out/start-menu'/name,prefix/'drive_c/users/orbis/Desktop'/pathlib.PurePosixPath(name).name,
                   start_menu['shortcuts'][name]['sha256'])
+# The Steam client: C:\orbis\steam (CA bundle, gbe_fork's DLLs with their licence and source note),
+# C:\orbis\steam-open.exe (the Start menu item's and Desktop link's request) and the Desktop link
+for name,digest in steam_build['prefix_files'].items():
+    steam_target=prefix/'drive_c'/name;steam_target.parent.mkdir(parents=True,exist_ok=True)
+    copy_verified(ROOT/'build/steam-hosted/prefix'/name,steam_target,digest)
 # Phase 9: the SeaMonkey profile the Start menu shortcut passes with -profile (fixtures/browser).
 # SeaMonkey 2.53 is the browser (the user's choice; W177-W215 staged two Pale Moon profiles, whose
 # user.js on the console are obsolete_files below). SeaMonkey itself is the user's own copy, not in

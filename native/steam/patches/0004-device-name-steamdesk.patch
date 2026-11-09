@@ -1,0 +1,103 @@
+diff -ru a/src/steam/backend/app_info_http.cpp b/src/steam/backend/app_info_http.cpp
+--- a/src/steam/backend/app_info_http.cpp	2026-11-08 20:22:35.571328154 -0300
++++ b/src/steam/backend/app_info_http.cpp	2026-11-08 20:22:35.923328164 -0300
+@@ -78,7 +78,7 @@
+       }
+       HttpRequest request;
+       request.url = AppInfoHttpUrl(host, id, app->sha);
+-      request.headers = {{"User-Agent", "Playden/1.0"}};
++      request.headers = {{"User-Agent", "SteamDesk/1.0"}};
+       request.max_response_bytes = kMaxGunzipBytes;
+       request.timeout_ms = kTimeoutMs;
+       const HttpResponse response = perform(request, cancel);
+diff -ru a/src/steam/backend/auth_client.cpp b/src/steam/backend/auth_client.cpp
+--- a/src/steam/backend/auth_client.cpp	2026-11-08 20:22:35.887328163 -0300
++++ b/src/steam/backend/auth_client.cpp	2026-11-08 20:22:35.923328164 -0300
+@@ -131,10 +131,10 @@
+   req.timeout_ms = std::min(timeout_ms, kRequestTimeoutMs); req.max_response_bytes = kBodyLimit;
+   const auto form = FormBase64(message);
+   if (get) {
+-    req.headers = {{"User-Agent", "Playden/1.0"}};
++    req.headers = {{"User-Agent", "SteamDesk/1.0"}};
+     req.url += "?" + form;
+   } else {
+-    req.headers = {{"Content-Type", "application/x-www-form-urlencoded"}, {"User-Agent", "Playden/1.0"}};
++    req.headers = {{"Content-Type", "application/x-www-form-urlencoded"}, {"User-Agent", "SteamDesk/1.0"}};
+     req.body.assign(form.begin(), form.end());
+   }
+   HttpResponse response;
+@@ -185,7 +185,7 @@
+     return Failure(AuthError::kProtocol);
+   const auto started = hooks_.monotonic_ms();
+   auth::BeginAuthSessionViaQrRequest begin;
+-  begin.device_details.device_friendly_name = "Playden (PS5)";
++  begin.device_details.device_friendly_name = "SteamDesk (PS4)";
+   if (hooks_.machine_id) begin.device_details.machine_id = hooks_.machine_id();
+   std::vector<std::uint8_t> request, response;
+   if (!auth::Encode(begin, &request).ok()) return Failure(AuthError::kProtocol);
+@@ -287,7 +287,7 @@
+   auth::GetPasswordRsaPublicKeyResponse key;
+   if (!auth::Decode(response, &key).ok() || !key.timestamp) return Failure(AuthError::kProtocol);
+   auth::BeginAuthSessionViaCredentialsRequest begin;
+-  begin.device_details.device_friendly_name = "Playden (PS5)";
++  begin.device_details.device_friendly_name = "SteamDesk (PS4)";
+   if (hooks_.machine_id) begin.device_details.machine_id = hooks_.machine_id();
+   begin.account_name = credentials.account_name;
+   begin.encryption_timestamp = key.timestamp;
+diff -ru a/src/steam/backend/cloud_sync.h b/src/steam/backend/cloud_sync.h
+--- a/src/steam/backend/cloud_sync.h	2026-11-08 20:22:35.535328153 -0300
++++ b/src/steam/backend/cloud_sync.h	2026-11-08 20:22:35.923328164 -0300
+@@ -99,7 +99,7 @@
+ 
+ inline constexpr std::size_t kMaxLocalSaveFiles = 10'000;
+ inline constexpr std::uint64_t kMaxLocalSaveBytes = 512ULL * 1024 * 1024;
+-inline constexpr const char* kMachineName = "Playden";
++inline constexpr const char* kMachineName = "SteamDesk";
+ 
+ std::string AccountKey(std::uint64_t steam_id);
+ 
+diff -ru a/src/steam/backend/cm_client.cpp b/src/steam/backend/cm_client.cpp
+--- a/src/steam/backend/cm_client.cpp	2026-11-08 20:22:35.879328163 -0300
++++ b/src/steam/backend/cm_client.cpp	2026-11-08 20:22:35.927328165 -0300
+@@ -296,7 +296,7 @@
+                     static_cast<std::uint32_t>(digest[1]) << 16 |
+                     static_cast<std::uint32_t>(digest[2]) << 8 | static_cast<std::uint32_t>(digest[3]);
+   if (device.login_id == 0) device.login_id = 1;
+-  device.machine_name = "Playden";
++  device.machine_name = "SteamDesk";
+   auto append = [&device](std::string_view text) {
+     device.machine_id.insert(device.machine_id.end(), text.begin(), text.end());
+   };
+@@ -858,7 +858,7 @@
+   request.url =
+       "https://api.steampowered.com/ISteamDirectory/GetCMListForConnect/v1/"
+       "?cmtype=websockets&maxcount=16&format=json";
+-  request.headers = {{"User-Agent", "Playden/1.0"}};
++  request.headers = {{"User-Agent", "SteamDesk/1.0"}};
+   request.timeout_ms = std::max<std::uint32_t>(1, std::min<std::uint32_t>(10'000, RemainingMs(deadline)));
+   request.max_response_bytes = kDirectoryBodyLimit;
+   HttpResponse response;
+diff -ru a/src/steam/backend/family_groups.cpp b/src/steam/backend/family_groups.cpp
+--- a/src/steam/backend/family_groups.cpp	2026-11-08 20:22:35.391328148 -0300
++++ b/src/steam/backend/family_groups.cpp	2026-11-08 20:22:35.927328165 -0300
+@@ -79,7 +79,7 @@
+   HttpRequest request;
+   request.method = HttpMethod::kGet;
+   request.url = url;
+-  request.headers = {{"User-Agent", "Playden/1.0"}};
++  request.headers = {{"User-Agent", "SteamDesk/1.0"}};
+   request.timeout_ms = kRequestTimeoutMs;
+   request.max_response_bytes = kBodyLimit;
+   auto response = perform(request, cancel);
+diff -ru a/src/steam/backend/library_client.cpp b/src/steam/backend/library_client.cpp
+--- a/src/steam/backend/library_client.cpp	2026-11-08 20:22:35.443328150 -0300
++++ b/src/steam/backend/library_client.cpp	2026-11-08 20:22:35.931328165 -0300
+@@ -130,7 +130,7 @@
+       "?access_token=" + PercentEncode(session.access_token) +
+       "&steamid=" + std::to_string(session.steam_id) +
+       "&include_appinfo=true&include_played_free_games=true&format=json";
+-  request.headers = {{"User-Agent", "Playden/1.0"}};
++  request.headers = {{"User-Agent", "SteamDesk/1.0"}};
+   request.timeout_ms = kRequestTimeoutMs;
+   request.max_response_bytes = kBodyLimit;
+ 
