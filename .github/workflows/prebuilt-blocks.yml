@@ -1,0 +1,162 @@
+name: Prebuilt dependency blocks
+run-name: Prebuilt blocks ${{ github.event_name }} · ${{ github.ref_name }} · ${{ github.sha }}
+# Builds the graphics and host Wine blocks in parallel when their input key differs from
+# prebuilt-blocks.lock.json, publishes each as prerelease assets and proposes the new lock in a PR.
+# Product builds then restore them instead of rebuilding (tools/ci/prebuilt.py, docs/RELEASES.md).
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild and republish even when the lock already matches the computed key'
+        type: boolean
+        default: false
+  schedule:
+    # hosted image updates can change the toolchain part of the keys; refresh only what went stale
+    - cron: '17 4 * * 1'
+  push:
+    branches: [main, dev]
+    paths:
+      - 'tools/ci/product_cache.py'
+      - 'tools/ci/product_blocks.py'
+      - 'tools/ci/install-product.sh'
+      - 'tools/ci/install-runner.sh'
+      - 'tools/ci/common.py'
+      - 'tools/ci/runner_disk.py'
+      - 'tools/logged_process.py'
+      - 'tools/restore-dependencies.py'
+      - 'tools/vk-h0/**'
+      - 'patches/shadPS4/**'
+      - 'platform/ps4/pw_telemetry.h'
+      - 'tools/project_brand.py'
+      - 'tools/build-wine.py'
+      - 'tools/build-host-wine-*.py'
+      - 'tools/wine_module_names.py'
+      - 'tools/wine_product_seeds.py'
+      - 'tools/stage-wine-i386.py'
+      - 'tools/stage-wine-programs.py'
+      - 'tools/stage-wine-extras.py'
+      - 'tools/stage-mshtml-hw.py'
+      - 'tools/stage-dshow-i386.py'
+      - 'tools/build.py'
+      - 'tools/verify_artifacts.py'
+      - 'tools/prepare-host-prefix.py'
+      - 'tools/package-wine-prefix.py'
+      - 'tools/wine_prefix.py'
+      - 'fixtures/win32/**'
+      - 'dependencies.lock.json'
+      - 'sources.lock.json'
+      - 'artifacts.lock.json'
+      - 'fork.lock.json'
+      - 'product-assets.lock.json'
+      - '.github/actions/product-runner/**'
+permissions:
+  contents: read
+concurrency:
+  group: orbisdesk-prebuilt-blocks-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  block:
+    name: Block ${{ matrix.block }}
+    if: github.event_name != 'workflow_dispatch' || github.actor == github.repository_owner
+    strategy:
+      fail-fast: false
+      matrix:
+        block: [graphics, wine]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prepare the product runner (same setup as product builds)
+        timeout-minutes: 30
+        uses: ./.github/actions/product-runner
+      - name: Compare the computed key with the lock
+        id: plan
+        env:
+          FORCE: ${{ inputs.force && '--force' || '' }}
+        run: python3 tools/ci/prebuilt.py plan --block "${{ matrix.block }}" $FORCE
+      - name: Build and seal the block from a clean workspace
+        if: steps.plan.outputs.needed == 'true'
+        run: python3 tools/ci/build-block.py --block "${{ matrix.block }}"
+      - name: Publish the sealed block as prerelease assets
+        if: steps.plan.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/prebuilt.py publish --block "${{ matrix.block }}"
+      - name: Lock fragment
+        if: steps.plan.outputs.needed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: prebuilt-fragment-${{ matrix.block }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: error
+          path: reports/ci/prebuilt/${{ matrix.block }}.lock-fragment.json
+      - name: Record final runner disk usage
+        if: always()
+        run: python3 tools/ci/runner_disk.py record
+      - name: Preserve block evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: prebuilt-evidence-${{ matrix.block }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          path: |
+            reports/ci/*.json
+            reports/ci/*.jsonl
+            reports/ci/*.log
+            .deps/wine/runtime/driver.log
+            .deps/wine/runtime/configure.log
+            .deps/wine/runtime/make-*.log
+            .deps/wine/runtime/build/config.log
+            reports/increment15/host-build/*.log
+            reports/increment15/host-build/*.json
+            reports/increment15/prefix-producer/*/*.log
+            reports/increment15/prefix-producer/*/report.json
+  lock:
+    name: Propose the new lock
+    needs: block
+    if: always() && !cancelled()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: prebuilt-fragment-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fragments
+          merge-multiple: true
+      - name: Commit the lock on a branch and open a PR to ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.ref_name }}
+        run: |
+          shopt -s nullglob
+          fragments=(fragments/*.lock-fragment.json)
+          if [ ${#fragments[@]} -eq 0 ]; then echo 'No block was published; the lock is unchanged.'; exit 0; fi
+          python3 tools/ci/prebuilt.py merge "${fragments[@]}"
+          if git diff --quiet -- prebuilt-blocks.lock.json; then echo 'Lock unchanged.'; exit 0; fi
+          branch="prebuilt-lock/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add prebuilt-blocks.lock.json
+          git commit -m "prebuilt-blocks.lock.json: blocks of run ${GITHUB_RUN_ID}" \
+            -m "Published by the Prebuilt dependency blocks workflow at ${GITHUB_SHA}."
+          git push origin "$branch"
+          gh pr create --base "$BASE" --head "$branch" \
+            --title "Prebuilt blocks lock (run ${GITHUB_RUN_ID})" \
+            --body "Pins the dependency blocks published by run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} (key, tag, SHA-256 of every asset). Product builds use an asset only when its key equals the key they compute." \
+            || echo "::warning::Pushed ${branch}; open its PR to ${BASE} manually (Actions may not be allowed to create PRs)."

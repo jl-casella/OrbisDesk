@@ -187,25 +187,25 @@ class KeyTests(unittest.TestCase):
             for name in ('dependencies.lock.json', 'artifacts.lock.json', 'sources.lock.json',
                          'product-assets.lock.json', 'fork.lock.json'):
                 shutil.copyfile(real / name, root / name)
-            names = ['tools/ci/product_cache.py', 'tools/ci/build-product.py', 'tools/ci/install-product.sh',
+            names = ['tools/ci/product_cache.py', 'tools/ci/product_blocks.py', 'tools/ci/build-product.py',
+                     'tools/ci/install-product.sh',
                      'tools/ci/install-runner.sh', 'tools/ci/common.py', 'tools/logged_process.py',
                      'tools/restore-dependencies.py', 'tools/ci/runner_disk.py',
-                     'tools/build-wine.py', 'tools/build-host-wine-closure.py',
-                     'tools/build-host-wine-unix.py', 'tools/wine_module_names.py', 'tools/vk-h0/patch.py',
-                     'tools/wine_product_seeds.py', 'tools/stage-wine-i386.py',
-                     'tools/stage-wine-programs.py', 'tools/stage-wine-extras.py',
-                     'tools/stage-mshtml-hw.py', 'tools/stage-dshow-i386.py',
+                     *cache.WINE_RECIPE_INPUTS, 'fixtures/win32/console.c', 'tools/vk-h0/patch.py',
                      'native/wine_hardware.c', 'platform/ps4/pw_telemetry.h',
                      '.deps/linux-tools/cmake/data/bin/cmake', '.deps/linux-tools/bin/ninja', 'fake-compiler']
             for name in names:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('input')
+            packages = ''
+
             def check_output(command, **kwargs):
                 if command[0] == 'dpkg-query':
-                    return 'compiler=1\n'
+                    return 'compiler=1\n' + packages
                 if 'ls-files' in command:
-                    return 'tools/vk-h0/patch.py\nnative/wine_hardware.c\nplatform/ps4/pw_telemetry.h\n'
+                    return ('tools/vk-h0/patch.py\nnative/wine_hardware.c\nplatform/ps4/pw_telemetry.h\n'
+                            'fixtures/win32/console.c\n')
                 return 'compiler-version'
             with patch.object(cache, 'ROOT', root), patch.object(cache, 'INPUTS', root / 'inputs.json'), \
                     patch.object(cache, 'output'), patch.object(cache.shutil, 'which', return_value=str(root / 'fake-compiler')), \
@@ -231,6 +231,28 @@ class KeyTests(unittest.TestCase):
                 (root / 'platform/ps4/pw_telemetry.h').write_text('changed telemetry schema')
                 telemetry_changed = cache.make_keys()
                 self.assertNotEqual(launcher_changed['graphics']['key'], telemetry_changed['graphics']['key'])
+                # the prefix is part of the Wine block: its producer, packager and fixture are Wine inputs
+                for name in ('tools/prepare-host-prefix.py', 'tools/package-wine-prefix.py',
+                             'tools/build-host-wine-tree.py', 'fixtures/win32/console.c'):
+                    before = cache.make_keys()
+                    (root / name).write_text('changed ' + name)
+                    after = cache.make_keys()
+                    self.assertNotEqual(before['wine']['key'], after['wine']['key'], name)
+                    self.assertEqual(before['graphics']['key'], after['graphics']['key'], name)
+                # later PS4 steps of the product recipe do not invalidate either block
+                before = cache.make_keys()
+                (root / 'tools/ci/build-product.py').write_text('changed PS4 steps')
+                after = cache.make_keys()
+                self.assertEqual(before['wine']['key'], after['wine']['key'])
+                self.assertEqual(before['graphics']['key'], after['graphics']['key'])
+                # unrelated hosted-image packages do not; development packages and toolchains do
+                packages = 'google-chrome-stable=2\nlinux-image-azure=3\n'
+                unrelated = cache.make_keys()
+                self.assertEqual(after['wine']['key'], unrelated['wine']['key'])
+                packages += 'libfreetype-dev:amd64=4\n'
+                development = cache.make_keys()
+                self.assertNotEqual(unrelated['wine']['key'], development['wine']['key'])
+                self.assertNotEqual(unrelated['graphics']['key'], development['graphics']['key'])
 
 
 class DownloadTests(unittest.TestCase):
