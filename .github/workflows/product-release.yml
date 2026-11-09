@@ -149,6 +149,10 @@ jobs:
             build/**/build.log
             build/**/configure.log
             build/**/package.log
+            build/wine-boot/*.log
+            build/wine-boot/*.json
+            build/wine-server/*.log
+            build/wine-server/*.json
             .deps/wine/runtime/driver.log
             .deps/wine/runtime/configure.log
             .deps/wine/runtime/make-*.log

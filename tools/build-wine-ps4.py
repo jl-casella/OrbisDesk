@@ -65,7 +65,17 @@ def main():
         selected=ROOT/'native/wine_virtual_harness.c' if name=='harness' else ROOT/'native/wine_loader_harness.c' if name=='loader-harness' else overlay/'dlls/ntdll/unix'/(name+'.c')
         if name not in ('harness','loader-harness') and ('dlls/ntdll/unix/'+name+'.c') not in manifest['files']: selected=pathlib.Path(original)
         if args.server: selected=overlay/subdir/(recipe_name+'.c') if subdir+'/'+recipe_name+'.c' in manifest['files'] else pathlib.Path(original)
-        if generated: selected=work/original
+        generation=None
+        if generated:
+            selected=work/original
+            selected.parent.mkdir(parents=True,exist_ok=True)
+            # Configure creates recipes, not every generated source. Use Wine's
+            # own target before invoking its compile recipe directly.
+            generation=['make',original]
+            with (output/(name+'.generate.log')).open('w') as log:
+                subprocess.run(generation,cwd=work,stdout=log,stderr=subprocess.STDOUT,check=True)
+        if not selected.is_file():raise SystemExit('Wine source not prepared: '+str(selected))
+        source_sha256=hashlib.sha256(selected.read_bytes()).hexdigest()
         command=[str(selected) if arg==original else arg for arg in command]
         command+=['-D__ORBIS__','-I'+str(ROOT/'platform/ps4'),'-I'+str(ROOT/'.deps/wine/source/dlls/ntdll/unix'),'-ffunction-sections','-fdata-sections']
         if args.server: command+=['-DWINE_INPROCESS_SERVER','-DPW_WINE_SERVER_SIDE','-I'+str(ROOT/'.deps/wine/source/server')]
@@ -89,7 +99,8 @@ def main():
         results.append({'unit':name,'exit_code':run.returncode,'status':'compiled' if not run.returncode else 'blocked',
                         'command':command,'duration_seconds':round(time.monotonic()-start,3),
                         'diagnostic_reduction':reduction,
-                        'source_sha256':hashlib.sha256(selected.read_bytes()).hexdigest(),
+                        'source_generation':generation,
+                        'source_sha256':source_sha256,
                         'diagnostic_sha256':hashlib.sha256(reduced.read_bytes()).hexdigest() if reduction else None,
                         'object_sha256':hashlib.sha256(obj.read_bytes()).hexdigest() if not run.returncode else None})
         print(name+': '+results[-1]['status'],flush=True)
