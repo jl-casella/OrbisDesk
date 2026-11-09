@@ -21,7 +21,7 @@ Ignore `/upstream/`, `/.deps/`, `/build/`, `/out/`, `/private-notes/` and all `/
 | `.deps/shadPS4/`, `.deps/shadPS4-linux/` | Official emulator downloads | Ignore; releases/hashes in artifact locks |
 | `.deps/sdk/`, `.deps/windows-tools/`, `.deps/linux-tools/`, `.deps/linux-runtime/` | SDK, compilers and private runtimes | Ignore; keep artifact locks |
 | `.deps/vk/` | Mesa/libdrm archives, llvm-mingw, MangoHud and reference MangoJuice | Ignore; keep pins and `tools/vk-h0/` recipes |
-| `.deps/dosbox-pure/`, `.deps/wfm/`, `.deps/reactos-games/`, `.deps/sdl2/`, `.deps/sdl2-mixer/`, `.deps/spacecadetpinball/` | Optional application/runtime sources | Ignore; keep pins and adapters |
+| `.deps/dosbox-pure/`, `.deps/wfm/`, `.deps/reactos-games/` | Optional application/runtime sources | Ignore; keep pins and adapters |
 | `.deps/downloads/`, `.deps/steam/`, `.deps/games/`, `.deps/wallpaper-cc0/` | Downloaded assets, browsers, Vulkan/Direct3D components, game inputs and Steam dependencies | Ignore; versions/hashes remain in locks and staging recipes |
 | `.deps/doc-translation/`, `.deps/doc-translate-venv/` | Local translation models and Python environment | Ignore; not application build inputs |
 | `~/vk-h0/` in WSL (`/home/jose/vk-h0/` here) | Graphics source copies, toolchain, virtualenv, sysroot and builds | Outside this Git root; reconstruct separately |
@@ -42,9 +42,6 @@ The machine-readable catalogue is `dependencies.lock.json`. Paths beginning with
 | dosbox-pure | `.deps/dosbox-pure` | `ba6dcaee84aa2c22d709c3dfdacb7aca5ebc3042` |
 | wfm | `.deps/wfm` | `6b1860895885a6d65c37815308260293341acb5f` |
 | reactos-games | `.deps/reactos-games` | `5f6ef754f90eef792e4ef90561bcff2cac4d3afb` |
-| sdl2 | `.deps/sdl2` | `98d1f3a45aae568ccd6ed5fec179330f47d4d356` |
-| sdl2-mixer | `.deps/sdl2-mixer` | `171eb2d420d5643e4ee11514a06e04a41a463bbd` |
-| spacecadetpinball | `.deps/spacecadetpinball` | `cb9b7b886244a27773f66b0b19fdc2998392565e` |
 | mangohud | `.deps/vk/mangohud-win/repo` | `52592550824ae11d5c68a6826f07db5f60220d23` |
 | mangojuice | `.deps/vk/mangojuice-win` | `e2ec0755f83975be5f0b593ee59cee62e793ed4a` |
 | playden-ps5 | `upstream/playden-ps5` | `fb74dbfd6bb96fc19a96afc1f48a4e40a885216b` |

@@ -98,10 +98,6 @@ MULTIMEDIA=[('DVD Player',VLC,'Play the DVD in drive L: (VLC, Direct3D 9 video)'
             ('VLC media player',VLC,'Play video and music files (VLC)',VLC_OPTIONS+' --vout=direct3d9,wingdi',VLC),
             ('VLC plugin cache',VLC_DIR+'vlc-cache-gen.exe','Optional, once after each update: VLC then starts faster',
              '"'+VLC_DIR+'plugins"',VLC)]
-# W114: 3D Pinball only when tools/build-games.py --pinball staged it (game data not included).
-games=ROOT/'out/games/manifest.json'
-if games.is_file() and 'SpaceCadetPinball.exe' in json.loads(games.read_text())['system32']:
-    MENU['Programs/Games'].append(('3D Pinball','SpaceCadetPinball.exe','Space Cadet pinball (needs PINBALL.DAT)'))
 LINK_CLSID=bytes.fromhex('0114020000000000c000000000000046')  # {00021401-0000-0000-C000-000000000046}
 HAS_LINK_INFO,HAS_NAME,HAS_WORKING_DIR,HAS_ARGUMENTS,HAS_ICON_LOCATION,IS_UNICODE=0x2,0x4,0x10,0x20,0x40,0x80
 def string(text):return struct.pack('<H',len(text))+text.encode('utf-16-le')
