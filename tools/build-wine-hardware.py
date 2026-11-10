@@ -1110,11 +1110,24 @@ print(json.dumps({'stripped_modules':stripped['modules'],'mib_before':stripped['
 # drivers, winsxs and i386-guest, and the modules llvm-strip refused above): assembler units (compiler-rt,
 # SymCrypt .S) keep their full source and build paths despite -ffile-prefix-map. Stripped here, with the
 # architecture's MinGW strip when llvm-strip refuses; what still names the build PC fails the check below.
-build_paths=[s.encode() for s in {str(ROOT),str(pathlib.Path.home())}]
+build_identity=sorted({str(ROOT),str(ROOT).replace('/','\\'),str(pathlib.Path.home())}-{'','/','\\'})
+# Prebuilt third-party toolchains carry their own builders' GitHub Actions paths: llvm-mingw's libc++/libunwind
+# (MinGW DLLs and EXEs) and the OpenOrbis SDK's libunwind (the ELF). On a GitHub runner, whose home is also
+# /home/runner, those would read as this build's; they are not, so they are not counted.
+FOREIGN_BUILD_PATHS=('/home/runner/work/llvm-mingw/','/home/runner/work/llvm-project/')
+def names_build_pc(blob):
+    for identity in build_identity:
+        for encoding in ('utf-8','utf-16-le'):
+            needle=identity.encode(encoding)
+            count=blob.count(needle)
+            if not count:continue
+            foreign=sum(blob.count(f.encode(encoding)) for f in FOREIGN_BUILD_PATHS if f.startswith(identity))
+            if count>foreign:return True
+    return False
 stripped['identity']=[]
 for module in sorted(p for p in data.rglob('*') if p.is_file()):
     blob=module.read_bytes()
-    if blob[:2]!=b'MZ' or not any(s in blob for s in build_paths):continue
+    if blob[:2]!=b'MZ' or not names_build_pc(blob):continue
     machine=struct.unpack_from('<H',blob,struct.unpack_from('<I',blob,0x3c)[0]+4)[0] if len(blob)>0x40 else 0
     temporary=module.with_name(module.name+'.stripped')
     for tool in ('llvm-strip-19',{0x8664:'x86_64-w64-mingw32-strip',0x14c:'i686-w64-mingw32-strip'}.get(machine)):
@@ -1181,13 +1194,9 @@ embedded={} if args.runtime_outside_package else {
     **{'runtime/'+path:data/path for path in runtime_files},'runtime/install.json':install_json,'runtime/install.txt':install_txt}
 # alpha-1: nothing of the build PC in what ships. Its checkout and home paths (compilers' __FILE__ and debug
 # strings: -ffile-prefix-map in the builders) and its user's profile, in the runtime and the ELF.
-build_identity=sorted({str(ROOT),str(ROOT).replace('/','\\'),str(pathlib.Path.home())}-{'','/','\\'})
-build_identity_utf16=[s.encode('utf-16-le') for s in build_identity]
 identity_hits=[]
 for path in [app/'eboot.bin',*(p for p in data.rglob('*') if p.is_file())]:
-    blob=path.read_bytes()
-    if any(s.encode() in blob for s in build_identity) or any(s in blob for s in build_identity_utf16):
-        identity_hits.append(str(path.relative_to(work)))
+    if names_build_pc(path.read_bytes()):identity_hits.append(str(path.relative_to(work)))
 if (prefix/'drive_c/users'/host_profiles[0].name).exists():identity_hits.append('host profile folder')
 if identity_hits and not args.allow_build_paths:
     raise SystemExit('build PC paths in %d shipped files (first: %s); rebuild them with -ffile-prefix-map, '
