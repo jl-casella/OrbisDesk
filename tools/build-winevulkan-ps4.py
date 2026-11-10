@@ -8,6 +8,8 @@ platform/ps4/pw_wine_unixlibs.c, through which ntdll finds them instead of dlope
 win32u gives it the RADV linked into the same ELF (build-win32u-ps4.py, W071)."""
 import hashlib,json,pathlib,shlex,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 SOURCE=ROOT/'.deps/wine/source';UNIX=ROOT/'.deps/wine/ps4-unix';work=ROOT/'build/winevulkan-ps4'
 work.mkdir(parents=True,exist_ok=True)
 def sha(path):return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
@@ -24,7 +26,7 @@ def recipe(target):
         line=makefile[index];parts.append(line.rstrip().removesuffix('\\'))
         if not line.rstrip().endswith('\\'):break
         index+=1
-    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2')
+    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2 '+PREFIX_MAP)
 report={'schema_version':1,'wine_commit':commit,'results':[],'objects':{}}
 objects=[]
 # W166: from the tree tools/build-winevulkan-batch.py stages (prospero-win's 32-bit Vulkan call

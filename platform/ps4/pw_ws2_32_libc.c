@@ -28,6 +28,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include "pw_trace.h"
 #include <time.h>
 #include <unistd.h>
 
@@ -83,7 +84,8 @@ static int console_resolve(const char *name,int family,struct address answers[2]
         }
     }
     sceNetResolverDestroy(resolver);sceNetPoolDestroy(pool);
-    fprintf(stderr,"PWNET resolve name=%s family=%d found=%d rc4=0x%08x rc6=0x%08x\n",name,family,found,(unsigned)rc4,(unsigned)rc6);
+    /* alpha-1: a line per lookup (browsers, Steam); failures always, the rest with traces (pw_trace.h) */
+    if(!found || pw_trace_on()) fprintf(stderr,"PWNET resolve name=%s family=%d found=%d rc4=0x%08x rc6=0x%08x\n",name,family,found,(unsigned)rc4,(unsigned)rc6);
     *count=found;
     return found?0:EAI_NONAME;
 }

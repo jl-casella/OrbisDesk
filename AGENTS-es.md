@@ -74,7 +74,7 @@ python3 tools/restore-dependencies.py --fetch
 python3 tools/restore-dependencies.py --only wine-build-source --only shadps4-fork --only wfm --only dosbox-pure --only mangohud --archives
 ```
 
-[dependencies.lock.json](dependencies.lock.json) cataloga 19 identidades de fuentes y hashes de archivos gráficos. [sources.lock.json](sources.lock.json) fija las bases originales. La fuente fijada de Wine indica 11.17; manda el commit, no sólo esa etiqueta. El restaurador no reemplaza directorios existentes diferentes o sin Git. Algunas comprobaciones sólo verifican HEAD y aclaran que no evalúan modificaciones locales: inspeccionar el diff cuando se necesite una base limpia.
+[dependencies.lock.json](dependencies.lock.json) cataloga 16 identidades de fuentes y hashes de archivos gráficos. [sources.lock.json](sources.lock.json) fija las bases originales. La fuente fijada de Wine indica 11.17; manda el commit, no sólo esa etiqueta. El restaurador no reemplaza directorios existentes diferentes o sin Git. Algunas comprobaciones sólo verifican HEAD y aclaran que no evalúan modificaciones locales: inspeccionar el diff cuando se necesite una base limpia.
 
 La recuperación del emulador usa [fork.lock.json](fork.lock.json): base upstream `529ceb32f5546b820588f194b903cc39d08015fe`, 17 parches ordenados y el [overlay 0018](patches/shadPS4/pending/0018-fixed-executable-and-kernel-signals.patch), con hash separado. El lock de dependencias registra el árbol esperado previo al overlay. Los datos del committer pueden cambiar los IDs al reconstruir commits; las comprobaciones de contenido/árbol y overlay evitan declarar idénticas fuentes diferentes. El checkout de shadPS4 de referencia no es la base del fork.
 

@@ -5,6 +5,8 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--reuse-core',action='store_true',help='Reuse only a core with matching recipe, commit and binary hash')
 args=parser.parse_args()
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 lock=json.loads((ROOT/'dos.lock.json').read_text());source=ROOT/'.deps/dosbox-pure'
 commit=subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()
 if commit!=lock['commit']:raise SystemExit('DOSBox Pure revision differs from lock')
@@ -14,7 +16,7 @@ work.mkdir(parents=True,exist_ok=True);out.mkdir(parents=True,exist_ok=True)
 if not copy.exists():shutil.copytree(source,copy,ignore=shutil.ignore_patterns('.git','build'))
 llvm=pathlib.Path.home()/'vk-h0/llvm-mingw/bin'
 command=['make','-B','-j12','ISWIN=1','CXX='+str(llvm/'x86_64-w64-mingw32-clang++'),
-         'STRIP='+str(llvm/'llvm-strip'),'MAKE_CPUFLAGS=-DDISABLE_DYNAREC=1 -include new',
+         'STRIP='+str(llvm/'llvm-strip'),'MAKE_CPUFLAGS=-DDISABLE_DYNAREC=1 -include new '+PREFIX_MAP,
          'LDFLAGS=-shared -Wl,--gc-sections -static','LDLIBS=-lwinpthread']
 if args.reuse_core:
     proof=json.loads((out/'manifest.json').read_text())
@@ -24,7 +26,7 @@ if args.reuse_core:
 else:
     with (work/'core-build.log').open('w') as log:subprocess.run(command,cwd=copy,stdout=log,stderr=subprocess.STDOUT,check=True)
     shutil.copy2(copy/'dosbox_pure_libretro.dll',out/'dosbox_pure_libretro.dll')
-host_command=['x86_64-w64-mingw32-gcc','-std=c11','-O2','-Wall','-municode','-mwindows',
+host_command=['x86_64-w64-mingw32-gcc','-std=c11','-O2','-Wall','-municode','-mwindows',*PREFIX_MAP.split(),
               '-I'+str(source/'libretro-common/include'),'-I'+str(ROOT/'platform/ps4'),
               str(ROOT/'native/doshost_win32.c'),'-o',str(out/'doshost.exe'),'-luser32','-lgdi32','-lshell32',
               '-Wl,--no-insert-timestamp']

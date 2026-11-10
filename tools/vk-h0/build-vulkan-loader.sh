@@ -7,7 +7,10 @@
 # W088: built with WIN32 defined, as MSVC defines it: the loader sends its log to
 # OutputDebugString only under that macro (loader/log.c), and MinGW defines only _WIN32.
 set -euo pipefail
+ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+prefix_map="-ffile-prefix-map=${ORBISDESK_ROOT}=. -ffile-prefix-map=$H=vk-h0"
 L=$H/llvm-mingw
 TAG=v1.4.335
 mkdir -p $H/src && cd $H/src
@@ -27,6 +30,6 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 TC
 cmake -G Ninja -S Vulkan-Loader -B $H/build/vk-loader -DCMAKE_TOOLCHAIN_FILE=$H/build/mingw-toolchain.cmake \
   -DCMAKE_BUILD_TYPE=Release -DVulkanHeaders_DIR=$H/vk-headers/share/cmake/VulkanHeaders \
-  -DCMAKE_C_FLAGS=-DWIN32 -DCMAKE_PREFIX_PATH=$H/vk-headers -DUSE_MASM=OFF -DBUILD_TESTS=OFF 2>&1 | tail -5
+  -DCMAKE_C_FLAGS="-DWIN32 $prefix_map" -DCMAKE_PREFIX_PATH=$H/vk-headers -DUSE_MASM=OFF -DBUILD_TESTS=OFF 2>&1 | tail -5
 ninja -C $H/build/vk-loader 2>&1 | tail -3
 find $H/build/vk-loader -name "vulkan-1.dll" -exec ls -la {} \;

@@ -2,6 +2,7 @@
 #include "pw_wine_fs.h"
 #include "pw_wine_platform.h"
 #include "pw_dirent_record.h"
+#include "pw_trace.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -408,14 +409,15 @@ int pw_wine_unlink(int side,const char *path)
 {
     char full[PATH_BYTES];if(resolve(side,path,full)) return -1;
     int rc=unlink(full),saved=errno;
-    fprintf(stderr,"PWDELETE unlink path=%s rc=%d errno=%d\n",full,rc,rc?saved:0);
+    /* alpha-1: every delete of an installer or a temp folder; failures always, the rest with traces (pw_trace.h) */
+    if(rc || pw_trace_on()) fprintf(stderr,"PWDELETE unlink path=%s rc=%d errno=%d\n",full,rc,rc?saved:0);
     errno=saved;return rc;
 }
 int pw_wine_rmdir(int side,const char *path)
 {
     char full[PATH_BYTES];if(resolve(side,path,full)) return -1;
     int rc=rmdir(full),saved=errno;
-    fprintf(stderr,"PWDELETE rmdir path=%s rc=%d errno=%d\n",full,rc,rc?saved:0);
+    if(rc || pw_trace_on()) fprintf(stderr,"PWDELETE rmdir path=%s rc=%d errno=%d\n",full,rc,rc?saved:0);
     errno=saved;return rc;
 }
 int pw_wine_rename(int side,const char *old,const char *new)
@@ -461,7 +463,7 @@ int pw_wine_rename(int side,const char *old,const char *new)
         }
     }
     pthread_mutex_unlock(&lock);
-    fprintf(stderr,"PWFS directory_rename from=%s to=%s rc=%d errno=%d\n",source,target,result,result?saved:0);
+    if(result || pw_trace_on()) fprintf(stderr,"PWFS directory_rename from=%s to=%s rc=%d errno=%d\n",source,target,result,result?saved:0);
     errno=saved;return result;
 }
 int pw_wine_access(int side,const char *path,int mode)
@@ -568,7 +570,7 @@ next_record:
     }
     if(!state) {
         int saved=errno;
-        fprintf(stderr,"PWDIRENUM skipped_unused fd=%d position=%zu length=%u inode=%u type=%u\n",directory->fd,directory->position,header.length,header.inode,header.type);
+        if(pw_trace_on()) fprintf(stderr,"PWDIRENUM skipped_unused fd=%d position=%zu length=%u inode=%u type=%u\n",directory->fd,directory->position,header.length,header.inode,header.type);
         errno=saved;
         directory->position+=header.length;
         goto next_record;

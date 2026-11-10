@@ -61,24 +61,6 @@
       "commit": "5f6ef754f90eef792e4ef90561bcff2cac4d3afb",
       "role": "optional games"
     },
-    "sdl2": {
-      "path": ".deps/sdl2",
-      "url": "https://github.com/libsdl-org/SDL",
-      "commit": "98d1f3a45aae568ccd6ed5fec179330f47d4d356",
-      "role": "optional games"
-    },
-    "sdl2-mixer": {
-      "path": ".deps/sdl2-mixer",
-      "url": "https://github.com/libsdl-org/SDL_mixer",
-      "commit": "171eb2d420d5643e4ee11514a06e04a41a463bbd",
-      "role": "optional games"
-    },
-    "spacecadetpinball": {
-      "path": ".deps/spacecadetpinball",
-      "url": "https://github.com/k4zmu2a/SpaceCadetPinball",
-      "commit": "cb9b7b886244a27773f66b0b19fdc2998392565e",
-      "role": "optional game engine"
-    },
     "mangohud": {
       "path": ".deps/vk/mangohud-win/repo",
       "url": "https://github.com/Leclowndu93150/MangoHud-Windows.git",

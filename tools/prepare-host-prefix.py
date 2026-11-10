@@ -7,6 +7,13 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--wine-debug',default='-all,err+all,+wineboot,+setupapi')
 parser.add_argument('--boot-timeout',type=int,default=120)
 args=parser.parse_args()
+programs=[BUILD/name for name in ('loader/wine','loader/wine-preloader','server/wineserver')]
+inputs=[BUILD/'loader/wine.inf',BUILD/'programs/wineboot/x86_64-windows/wineboot.exe',ROOT/'out/console32-bare.exe']
+missing=[str(path.relative_to(ROOT)) for path in [*programs,*inputs] if not path.is_file()]
+not_executable=[str(path.relative_to(ROOT)) for path in programs if path.is_file() and not os.access(path,os.X_OK)]
+if missing or not_executable:
+    raise SystemExit('Host prefix inputs missing or not executable; build the host PE/Unix closure first: '+
+                     repr({'missing':missing,'not_executable':not_executable}))
 stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
 out=ROOT/'reports/increment15/prefix-producer'/stamp;out.mkdir(parents=True)
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()

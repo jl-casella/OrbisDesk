@@ -16,6 +16,8 @@ import time
 from sdk_libc import derive_libc
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--harness-only',action='store_true')
@@ -57,7 +59,7 @@ def main():
             line=lines[index];parts.append(line.rstrip().removesuffix('\\'))
             if not line.rstrip().endswith('\\'): break
             index+=1
-        command=' '.join(parts).replace('$(CC)',str(work/'orbis-cc')).replace('$(CFLAGS)','-g -O2')
+        command=' '.join(parts).replace('$(CC)',str(work/'orbis-cc')).replace('$(CFLAGS)','-g -O2 '+PREFIX_MAP)
         command=shlex.split(command.replace('$@',str(output/(name+'.o'))))
         original=str(ROOT/'.deps/wine/source'/subdir/ (recipe_name+'.c'))
         generated=not pathlib.Path(original).is_file()
@@ -65,7 +67,17 @@ def main():
         selected=ROOT/'native/wine_virtual_harness.c' if name=='harness' else ROOT/'native/wine_loader_harness.c' if name=='loader-harness' else overlay/'dlls/ntdll/unix'/(name+'.c')
         if name not in ('harness','loader-harness') and ('dlls/ntdll/unix/'+name+'.c') not in manifest['files']: selected=pathlib.Path(original)
         if args.server: selected=overlay/subdir/(recipe_name+'.c') if subdir+'/'+recipe_name+'.c' in manifest['files'] else pathlib.Path(original)
-        if generated: selected=work/original
+        generation=None
+        if generated:
+            selected=work/original
+            selected.parent.mkdir(parents=True,exist_ok=True)
+            # Configure creates recipes, not every generated source. Use Wine's
+            # own target before invoking its compile recipe directly.
+            generation=['make',original]
+            with (output/(name+'.generate.log')).open('w') as log:
+                subprocess.run(generation,cwd=work,stdout=log,stderr=subprocess.STDOUT,check=True)
+        if not selected.is_file():raise SystemExit('Wine source not prepared: '+str(selected))
+        source_sha256=hashlib.sha256(selected.read_bytes()).hexdigest()
         command=[str(selected) if arg==original else arg for arg in command]
         command+=['-D__ORBIS__','-I'+str(ROOT/'platform/ps4'),'-I'+str(ROOT/'.deps/wine/source/dlls/ntdll/unix'),'-ffunction-sections','-fdata-sections']
         if args.server: command+=['-DWINE_INPROCESS_SERVER','-DPW_WINE_SERVER_SIDE','-I'+str(ROOT/'.deps/wine/source/server')]
@@ -89,7 +101,8 @@ def main():
         results.append({'unit':name,'exit_code':run.returncode,'status':'compiled' if not run.returncode else 'blocked',
                         'command':command,'duration_seconds':round(time.monotonic()-start,3),
                         'diagnostic_reduction':reduction,
-                        'source_sha256':hashlib.sha256(selected.read_bytes()).hexdigest(),
+                        'source_generation':generation,
+                        'source_sha256':source_sha256,
                         'diagnostic_sha256':hashlib.sha256(reduced.read_bytes()).hexdigest() if reduction else None,
                         'object_sha256':hashlib.sha256(obj.read_bytes()).hexdigest() if not run.returncode else None})
         print(name+': '+results[-1]['status'],flush=True)

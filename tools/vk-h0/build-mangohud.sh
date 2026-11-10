@@ -5,6 +5,8 @@
 set -euo pipefail
 ORBISDESK_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 H=~/vk-h0
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+prefix_map="'-ffile-prefix-map=${ORBISDESK_ROOT}=.', '-ffile-prefix-map=$H=vk-h0'"
 L=$H/llvm-mingw/bin
 SRC=${ORBISDESK_ROOT}/.deps/vk/mangohud-win/repo
 W=$H/src/mangohud-win
@@ -18,14 +20,17 @@ grep -q '#include <sstream>' $W/src/fps_metrics.h || sed -i '1i #include <sstrea
 # is not installed. Here every program runs inside explorer's process, so in W093 that thread
 # opened a "MangoHud" console and an "Assertion failed" dialog (win/d3d11_hook.cpp:126) for
 # explorer.exe.
-grep -q 'OrbisDesk: no hook thread' $W/src/win/main.cpp || \
+# (a working copy patched before the rename carries the historical marker: tools/project_brand.py normalize_marker)
+grep -qE 'Orbis(Desk|-win): no hook thread' $W/src/win/main.cpp || \
   sed -i 's|        CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)MainThread, NULL, 0, NULL);|        /* OrbisDesk: no hook thread for the Vulkan layer (tools/vk-h0/build-mangohud.sh) */|' $W/src/win/main.cpp
-grep -c 'OrbisDesk: no hook thread' $W/src/win/main.cpp
+grep -cE 'Orbis(Desk|-win): no hook thread' $W/src/win/main.cpp
 # W096: protect shared UI globals across concurrently rendering Wine guests.
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-shared-process.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-teardown.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-frame-sampling.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-orbis-metrics.py "$W"
+cross=$build-cross.ini
+old_cross=$(cat $cross 2>/dev/null || true)
 cat > $build-cross.ini <<INI
 [binaries]
 c = '$L/x86_64-w64-mingw32-clang'
@@ -39,13 +44,17 @@ sh = '/usr/bin/sh'
 [properties]
 needs_exe_wrapper = true
 
+[built-in options]
+c_args = [$prefix_map]
+cpp_args = [$prefix_map]
+
 [host_machine]
 system = 'windows'
 cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'
 INI
-if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ]; then
+if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ] || [ "$old_cross" != "$(cat $cross)" ]; then
   rm -rf $build
   (cd $W && meson setup $build --cross-file $build-cross.ini --buildtype=release -Dwith_nvml=disabled -Dtests=disabled 2>&1 | tail -25)
 fi

@@ -155,7 +155,8 @@ replace('thread','''    if ((status = virtual_alloc_teb( data ))) goto done;
     teb = data->teb;
     set_thread_id( data );
     /* W236: also the threads 32-bit code starts in the world (W235: gui-window32's thread was silent) */
-    if (pw_wow || (wow_peb && is_wow64() && is_machine_64bit( main_image_info.Machine )))
+    if ((pw_wow || (wow_peb && is_wow64() && is_machine_64bit( main_image_info.Machine ))) &&
+        ({ extern int pw_trace_enabled( void ); pw_trace_enabled(); }))  /* alpha-1: traces only (pw_trace.h) */
         fprintf( stderr, "PWWOW thread tid=%04x teb=%p teb32=%p start=%p flags=%#x from=%s\\n",
                  (unsigned int)data->tid, teb, get_wow_teb( teb ), start, (unsigned int)flags, pw_wow ? "64" : "32" );
 ''')
@@ -807,6 +808,22 @@ replace('virtual','''done:
 #endif
     status = create_view( view_ret, ptr, size, vprot );
 ''')
+
+# alpha-1 (W299: 1510 image_read_fallback lines in one release run, every one a full read): a PE image read in
+# place of a mapping logs only a short or failed read, and a DLL placed away from the server's base (the normal
+# path here) only with OrbisDesk's trace switch (platform/ps4/pw_trace.h, pw_trace_enabled in pw_wine_platform.c).
+replace('virtual','''        fprintf( stderr, "PWBOOT image_read_fallback offset=%llx requested=%zu copied=%zd errno=%d\\n",
+                 (unsigned long long)offset, size, copied, copied < 0 ? errno : 0 );''','''        extern int pw_trace_enabled( void );  /* OrbisDesk alpha-1 */
+
+        if (copied != (ssize_t)size || pw_trace_enabled())
+            fprintf( stderr, "PWBOOT image_read_fallback offset=%llx requested=%zu copied=%zd errno=%d\\n",
+                     (unsigned long long)offset, size, copied, copied < 0 ? errno : 0 );''')
+replace('virtual','''        fprintf( stderr, "PWBOOT image_map_addr_unavailable requested=%llx mapped=%p\\n",
+                 (unsigned long long)pe_mapping->image.map_addr, view->base );''','''        extern int pw_trace_enabled( void );  /* OrbisDesk alpha-1 */
+
+        if (pw_trace_enabled())
+            fprintf( stderr, "PWBOOT image_map_addr_unavailable requested=%llx mapped=%p\\n",
+                     (unsigned long long)pe_mapping->image.map_addr, view->base );''')
 
 # W255 (W253: Vice City ended with no signal and no CE- code): Wine's own exits leave a line.
 replace('thread','''void abort_process( int status )

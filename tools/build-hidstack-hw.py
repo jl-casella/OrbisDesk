@@ -20,10 +20,15 @@ Output: out/hidstack-hw/ (x86_64-windows/*, winebus-unix.o, pwhidhost.dll, manif
 """
 import hashlib,json,pathlib,shlex,shutil,struct,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build';UNIX=ROOT/'.deps/wine/ps4-unix'
 work=ROOT/'build/hidstack-hw';overlay=work/'ntoskrnl-overlay';out=ROOT/'out/hidstack-hw'
-# what the boot runtime is checked against for missing imports (the last hardware build)
-RUNTIME=sorted((ROOT/'build').glob('wine-hardware-w*/runtime/wine/lib/wine/x86_64-windows'))[-1]
+# what the runtime already ships (an import found there is not staged again): the x64 modules of the
+# staging manifests the product recipe builds before this one (tools/ci/build-product.py), not a
+# previous hardware build, which a clean build does not have. W303's runtime gave the same closure.
+PRESENT_MANIFESTS=('out/wine-pe64/manifest.json','out/wine-gui/manifest.json','out/wine-programs/manifest.json',
+                   'out/wine-i386/manifest.json','out/wine-extras/manifest.json','out/mshtml-hw/manifest.json')
 DRIVERS=('hidclass.sys','hidparse.sys','winebus.sys','winehid.sys','winexinput.sys')
 CONT=chr(92)+chr(10)  # a make -n line continuation
 def sha(path):return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
@@ -222,7 +227,14 @@ def built(name):
 modules={'ntoskrnl.exe':built_overlays['ntoskrnl.exe']}
 for name in DRIVERS:modules[name]=built_overlays.get(name) or built(name)
 pending=list(modules)
-present={p.name.lower() for p in RUNTIME.iterdir()}
+present=set()
+for path in PRESENT_MANIFESTS:
+    listed=json.loads((ROOT/path).read_text())
+    if path=='out/wine-i386/manifest.json':names=listed['modules_x64']
+    elif path=='out/wine-extras/manifest.json':names=[k.split('/')[1] for k in listed['modules'] if k.startswith('x86_64')]
+    elif path=='out/mshtml-hw/manifest.json':names=listed['modules']['x86_64-windows']
+    else:names=listed['modules']
+    present|={n.lower() for n in names}
 while pending:
     for name in sorted(imports(modules[pending.pop()])):
         if name in modules or name in present or name.startswith(('api-ms-','ext-ms-')):continue
@@ -246,7 +258,7 @@ def recipe(target):
         line=makefile[index];parts.append(line.rstrip().removesuffix('\\'))
         if not line.rstrip().endswith('\\'):break
         index+=1
-    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2')
+    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2 '+PREFIX_MAP)
 units=[]
 for unit,source in (('unixlib',None),('hid',None),('bus_udev',None),('bus_iohid',None),
                     ('bus_sdl',ROOT/'native/winebus_orbis.c')):
@@ -267,11 +279,11 @@ undefined=subprocess.run(['nm','-u',str(final)],capture_output=True,text=True,ch
 
 # pwhidhost.dll
 host=out/'pwhidhost.dll'
-run(['x86_64-w64-mingw32-gcc','-std=c11','-O2','-Wall','-municode','-shared',str(ROOT/'native/pwhidhost.c'),
+run(['x86_64-w64-mingw32-gcc','-std=c11','-O2','-Wall','-municode','-shared',*PREFIX_MAP.split(),str(ROOT/'native/pwhidhost.c'),
      '-o',str(host),'-ladvapi32','-Wl,--no-insert-timestamp','-s'])
 
 manifest={'schema_version':1,'wine_commit':commit,'builder_sha256':sha(__file__),
-          'runtime_checked':str(RUNTIME.relative_to(ROOT)),'modules':staged,
+          'present_from':list(PRESENT_MANIFESTS),'modules':staged,
           'unix_object':{'path':'winebus-unix.o','sha256':sha(final),'tables':['pw_winebus_unix_call_funcs'],
                          'needs':['pw_wine_pad_available','pw_wine_pad_peek','pw_wine_set_rumble'],
                          'undefined':[s for s in undefined if s.startswith('pw_')]},

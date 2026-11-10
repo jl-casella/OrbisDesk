@@ -10,6 +10,8 @@ pinned host Wine tree. Every adaptation keeps the original and records both hash
 """
 import hashlib,json,pathlib,shlex,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 UP=ROOT/'upstream/prospero-win';MODULE=UP/'wine/wowprospero'
 WINE=ROOT/'.deps/wine/source';HOST=ROOT/'.deps/wine/runtime/build';UNIX=ROOT/'.deps/wine/ps4-unix'
 SDK=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
@@ -45,7 +47,7 @@ adaptations.append(adapt(MODULE/'unix.c',unix_c,[
 wine_flags=['-I'+str(WINE/'include'),'-Iinclude','-D__WINESRC__','-D_NTSYSTEM_','-DWINE_UNIX_LIB','-D_REENTRANT',
             '-Wall','-fcf-protection=none','-fvisibility=hidden','-fno-stack-protector','-fno-strict-aliasing',
             '-gdwarf-4','-fasynchronous-unwind-tables','-g','-O2','-D__ORBIS__','-I'+str(ROOT/'platform/ps4'),
-            '-ffunction-sections','-fdata-sections','-include',str(ROOT/'platform/ps4/pw_wine_posix.h')]
+            '-ffunction-sections','-fdata-sections','-include',str(ROOT/'platform/ps4/pw_wine_posix.h'),*PREFIX_MAP]
 module_flags=['-I'+str(MODULE),'-I'+str(UP/'src'),'-I'+str(UP/'include'),
               '-D__wine_unix_call_funcs=pw_wowprospero_unix_call_funcs']
 unix_objects=[work/'unix/unix.o']
@@ -54,7 +56,7 @@ dbt=['pw_x86_engine.c','pw_x86_block.c','pw_x86_cache.c','pw_x86_hostexec.c','pw
      'pw_x87.c','pw_guest_fp.c','pw_vm.c']
 dbt_flags=['--target=x86_64-pc-freebsd12-elf','-fPIC','-funwind-tables','-march=btver2','-O2','-g','-Wall',
            '-isysroot',str(SDK),'-isystem',str(SDK/'include'),'-I'+str(UP/'src'),'-I'+str(UP/'include'),
-           '-ffunction-sections','-fdata-sections','-fvisibility=hidden']
+           '-ffunction-sections','-fdata-sections','-fvisibility=hidden',*PREFIX_MAP]
 for name in dbt:
     obj=work/'unix'/(name[:-2]+'.o');unix_objects.append(obj)
     run(['clang',*dbt_flags,'-c',UP/'src'/name,'-o',obj])
@@ -62,7 +64,7 @@ for name in dbt:
 # PE side: wowprospero.dll, as tools/build_wowprospero.sh links it.
 pe_flags=['-I'+str(MODULE),'-I'+str(HOST/'include'),'-I'+str(WINE/'include'),'-I'+str(WINE/'include/msvcrt'),
           '-D_MSVCR_VER=0','-D__WINESRC__','-D__WINE_PE_BUILD','-Wall','-fno-strict-aliasing',
-          '-mcx16','-mcmodel=small','-O2','-g','-fno-builtin','-fshort-wchar']
+          '-mcx16','-mcmodel=small','-O2','-g','-fno-builtin','-fshort-wchar',*PREFIX_MAP]
 run(['x86_64-w64-mingw32-gcc','-c','-o',work/'pe/cpu.o',MODULE/'cpu.c',*pe_flags])
 dll=out/'x86_64-windows/wowprospero.dll'
 run([HOST/'tools/winegcc/winegcc','-o',dll,'--wine-objdir','.','--cc-cmd=x86_64-w64-mingw32-gcc','-b','x86_64-w64-mingw32',

@@ -4,6 +4,8 @@
 import hashlib,json,pathlib,shutil,subprocess
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 source=ROOT/'.deps/shadPS4-fork/externals/freetype'
 work=ROOT/'build/freetype-ps4';work.mkdir(parents=True,exist_ok=True)
 sdk=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
@@ -24,7 +26,7 @@ inputs={str(p.relative_to(source)):sha(p) for p in sorted(source.rglob('*'))
         if p.is_file() and '.git' not in p.relative_to(source).parts}
 flags=(f'--target=x86_64-pc-freebsd12-elf -fPIC -march=btver2 -isysroot {sdk} -isystem {sdk}/include '
        f'-include {ROOT}/platform/ps4/pw_freetype_posix.h -I{ROOT}/platform/ps4 '
-       '-DFT_CONFIG_OPTIONS_H=\\\"pw_freetype_options.h\\\"')
+       '-DFT_CONFIG_OPTIONS_H=\\\"pw_freetype_options.h\\\" '+PREFIX_MAP)
 configure=['cmake','-S',str(source),'-B',str(work),'-G','Ninja','-DCMAKE_SYSTEM_NAME=FreeBSD',
            '-DCMAKE_SYSTEM_PROCESSOR=x86_64','-DCMAKE_C_COMPILER=clang','-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY',
            '-DCMAKE_C_FLAGS='+flags,'-DCMAKE_BUILD_TYPE=Release','-DBUILD_SHARED_LIBS=OFF',

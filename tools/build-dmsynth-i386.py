@@ -14,6 +14,8 @@ Output: out/dmsynth-i386/i386-windows/dmsynth.dll and manifest.json.
 """
 import hashlib,json,pathlib,re,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build'
 work=ROOT/'build/dmsynth-i386';out=ROOT/'out/dmsynth-i386'
 for path in (work,out/'i386-windows'):path.mkdir(parents=True,exist_ok=True)
@@ -28,7 +30,7 @@ if commit!=json.loads((ROOT/'sources.lock.json').read_text())['sources']['wine']
     raise SystemExit('dmsynth requires the pinned Wine revision')
 src='../../source'
 wine_inc=['-Iinclude','-I'+src+'/include','-I'+src+'/include/msvcrt','-D_UCRT','-D__WINE_PE_BUILD']
-i386_flags=['-fno-strict-aliasing','-ffunction-sections','-fno-omit-frame-pointer','-msse2','-gdwarf-4','-g','-O2']
+i386_flags=['-fno-strict-aliasing','-ffunction-sections','-fno-omit-frame-pointer','-msse2','-gdwarf-4','-g','-O2',*PREFIX_MAP]
 
 # FluidSynth (libs/fluidsynth/Makefile.in: its SOURCES, EXTRADEFS and EXTRAINCL)
 makefile=(SOURCE/'libs/fluidsynth/Makefile.in').read_text()

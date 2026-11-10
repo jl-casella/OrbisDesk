@@ -940,9 +940,13 @@ revise('swapchain.c','''    wined3d_swapchain_vk_set_swap_interval(swapchain_vk,
 
     if (!swapchain_vk->vk_swapchain)
     {
-        /* OrbisDesk W262: its remake failed (a format no Vulkan swapchain holds, WINED3DFMT_P8_UINT) */
-        ERR("PWD3D swapchain %p has no Vulkan swapchain for %s: GDI present.\\n",
-                swapchain_vk, debug_d3dformat(desc->backbuffer_format));
+        /* OrbisDesk W262: its remake failed (a format no Vulkan swapchain holds, WINED3DFMT_P8_UINT).
+         * alpha-1: this runs on every present of such a game (AoE2); the first 4, then every 1000th */
+        static LONG gdi_presents;
+        LONG n = InterlockedIncrement(&gdi_presents);
+        if (n <= 4 || !(n % 1000))
+            ERR("PWD3D swapchain %p has no Vulkan swapchain for %s: GDI present (n=%ld).\\n",
+                    swapchain_vk, debug_d3dformat(desc->backbuffer_format), n);
         return VK_ERROR_SURFACE_LOST_KHR;
     }
     present_idx = swapchain_vk->current++ % swapchain_vk->image_count;''','No acquire from a swapchain that is not there (W262).')

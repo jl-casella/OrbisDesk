@@ -30,10 +30,12 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 ## Cliente Steam nativo, juegos y atribuciones
 
 - [GAMES-es.md](GAMES-es.md) — W114: juegos en Start → Programs → Games
+- [STEAM_HOSTED-es.md](STEAM_HOSTED-es.md) — El cliente de Steam dentro de OrbisDesk
 - [STEAM_S1-es.md](STEAM_S1-es.md) — S1: HTTPS nativo para el cliente de Steam (ORBS00001)
 - [STEAM_S2-es.md](STEAM_S2-es.md) — S2: descarga anónima de un depot de Steam
 - [STEAM_S3-es.md](STEAM_S3-es.md) — S3: login del usuario por QR y biblioteca
 - [STEAM_S4-es.md](STEAM_S4-es.md) — S4: instalar un juego de la biblioteca
+- [STEAM_S5-es.md](STEAM_S5-es.md) — S5: lanzar desde el Explorer de OrbisDesk un juego instalado (en curso)
 - [THIRD_PARTY_FONTS-es.md](THIRD_PARTY_FONTS-es.md) — FreeType y fuentes del runtime
 
 ## Incrementos de plataforma y Wine (históricos)
@@ -202,6 +204,12 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [HARDWARE_W215-loader-lock-borrador-es.md](HARDWARE_W215-loader-lock-borrador-es.md) — W215: el loader lock se toma aunque un hilo que lo esperaba haya sido terminado (borrador)
 - [HARDWARE_W216-invitado-terminado-borrador-es.md](HARDWARE_W216-invitado-terminado-borrador-es.md) — W216: el último hilo de un invitado terminado sale sin DLL_THREAD_DETACH (borrador)
 - [HARDWARE_W220-winecfg-solo-borrador-es.md](HARDWARE_W220-winecfg-solo-borrador-es.md) — W220: casilla "Run alone" en la pestaña Applications de winecfg (borrador)
+- [HARDWARE_W290-escritorio-borrador-es.md](HARDWARE_W290-escritorio-borrador-es.md) — W290: el escritorio sigue los cambios de la carpeta Desktop, y los íconos tienen menú de clic derecho (borrador)
+- [HARDWARE_W290-fuentes-tema-borrador-es.md](HARDWARE_W290-fuentes-tema-borrador-es.md) — W290: las fuentes del sistema conservan su tamaño al cambiar el estilo visual (borrador)
+- [HARDWARE_W292-escritorio-columnas-borrador-es.md](HARDWARE_W292-escritorio-columnas-borrador-es.md) — W292: íconos del escritorio en columnas, con File Manager y Steam primero (borrador)
+- [HARDWARE_W292-fondos-borrador-es.md](HARDWARE_W292-fondos-borrador-es.md) — W292: elegir el fondo de escritorio, con tres fondos más (borrador)
+- [HARDWARE_W292-reset-root-borrador-es.md](HARDWARE_W292-reset-root-borrador-es.md) — W292: "Reset as Root" y "Reset as Sandbox" en el menú Start (borrador)
+- [HARDWARE_W293-wfm-accesos-borrador-es.md](HARDWARE_W293-wfm-accesos-borrador-es.md) — W293: los accesos directos en WFM muestran su propio ícono, con la flecha (borrador)
 - [HARDWARE_Wxxx-navegador-borrador-es.md](HARDWARE_Wxxx-navegador-borrador-es.md) — Wxxx: Pale Moon sin log de red (fase 9, borrador)
 - [HARDWARE_Wxxx-palemoon-invitado-2-borrador-es.md](HARDWARE_Wxxx-palemoon-invitado-2-borrador-es.md) — Wxxx: Pale Moon como invitado, segunda ronda de diagnóstico (borrador)
 - [HARDWARE_Wxxx-palemoon-invitado-borrador-es.md](HARDWARE_Wxxx-palemoon-invitado-borrador-es.md) — Wxxx: Pale Moon como invitado congela el escritorio (diagnóstico, borrador)
@@ -213,3 +221,5 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 
 - [CI-es.md](CI-es.md) — Ejecutar CI y medir la matriz de plataforma
 - [RELEASES-es.md](RELEASES-es.md) — Construcción del producto, releases y rama de desarrollo
+- [RELEASE_LICENSES-es.md](RELEASE_LICENSES-es.md) — Licencias del release (alpha-1)
+- [RELEASE_TRACES-es.md](RELEASE_TRACES-es.md) — Trazas en release: un solo interruptor para el alpha-1

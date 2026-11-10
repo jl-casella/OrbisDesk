@@ -66,6 +66,60 @@ class ReleaseInputTests(unittest.TestCase):
         with patch.dict(release.os.environ, env, clear=True), self.assertRaises(ValueError):
             release.publish()
 
+    def test_large_assets_split_in_order(self):
+        archive = self.root / 'big.tar'
+        archive.write_bytes(b'abcdefghij')
+        with patch.object(release, 'ASSET_LIMIT', 4):
+            parts = release.split_asset(archive)
+        self.assertEqual([p.name for p in parts], ['big.tar.part000', 'big.tar.part001', 'big.tar.part002'])
+        self.assertEqual(b''.join(p.read_bytes() for p in parts), b'abcdefghij')
+        self.assertFalse(archive.exists())
+        small = self.root / 'small.tar'
+        small.write_bytes(b'ab')
+        self.assertEqual(release.split_asset(small), [small])
+
+    def test_download_must_match_its_pin(self):
+        source = self.root / 'source.c'
+        url = source.as_uri()
+        release.fetch(url, release.sha(source), self.root / 'copy', 6)
+        with self.assertRaises(ValueError):
+            release.fetch(url, '0' * 64, self.root / 'copy')
+        with self.assertRaises(ValueError):
+            release.fetch(url, release.sha(source), self.root / 'copy', 7)
+
+    def test_sources_lock_names_pinned_inputs(self):
+        lock = json.loads((release.ROOT / 'third-party-sources.lock.json').read_text())
+        assets = json.loads((release.ROOT / 'product-assets.lock.json').read_text())['downloads']
+        dependencies = json.loads((release.ROOT / 'dependencies.lock.json').read_text())
+        for entry in lock['downloads'].values():
+            self.assertRegex(entry['sha256'], '^[0-9a-f]{64}$')
+            self.assertTrue(entry['url'].startswith('https://'))
+        for key in lock['product_assets']:
+            self.assertIn(key, assets)
+        for key in lock['dependency_archives']:
+            self.assertIn(key, dependencies['archives'])
+        for key in lock['repositories']:
+            self.assertRegex(dependencies['repositories'][key]['commit'], '^[0-9a-f]{40}$')
+
+    def test_sources_archive_lists_every_source(self):
+        candidate = self.root / 'candidate'
+        candidate.mkdir()
+
+        def fake_fetch(url, digest, path, size=None):
+            path.write_text(url)
+
+        def fake_archive(name, url, commit, path):
+            path.write_text(commit)
+        with patch.object(release, 'fetch', fake_fetch), patch.object(release, 'git_archive', fake_archive):
+            files = release.third_party_sources(candidate, 'orbisdesk-04.02-0123456789ab', self.root / 'work')
+        self.assertEqual([p.name for p in files], ['orbisdesk-04.02-0123456789ab-third-party-sources.tar'])
+        with release.tarfile.open(files[0]) as tar:
+            names = tar.getnames()
+            listing = tar.extractfile('orbisdesk-04.02-0123456789ab-third-party-sources/SOURCES.txt').read().decode()
+        self.assertIn('orbisdesk-04.02-0123456789ab-third-party-sources/vlc-source/vlc-3.0.24.tar.xz', names)
+        self.assertIn('repositories/wine-490f6d5dcbb2.tar.gz', listing)
+        self.assertFalse((self.root / 'work/orbisdesk-04.02-0123456789ab-third-party-sources').exists())
+
     def test_non_main_cannot_publish(self):
         with patch.dict(release.os.environ, {'GITHUB_REF': 'refs/heads/dev'}, clear=True):
             with self.assertRaises(ValueError):

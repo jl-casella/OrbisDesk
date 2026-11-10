@@ -17,6 +17,8 @@ Output: out/wmvcore-hw/{i386-windows,x86_64-windows}/wmvcore.dll and manifest.js
 """
 import hashlib,json,pathlib,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build'
 work=ROOT/'build/wmvcore-hw';out=ROOT/'out/wmvcore-hw'
 ARCHES={'i386-windows':'i686-w64-mingw32','x86_64-windows':'x86_64-w64-mingw32'}
@@ -87,7 +89,7 @@ common=['-Idlls/wmvcore','-I'+src+'/dlls/wmvcore','-Iinclude','-I'+src+'/include
         '-Wvla','-Wwrite-strings','-Wpointer-arith','-Wlogical-op','-ffunction-sections']
 arch_flags={'i386-windows':['-fno-omit-frame-pointer','-mpreferred-stack-boundary=2','-mlong-double-64','-msse2'],
             'x86_64-windows':['-Wformat-overflow','-Wnonnull','-mlong-double-64','-mcx16','-mcmodel=small']}
-tail=['-gdwarf-4','-Wdeclaration-after-statement','-Wstrict-prototypes','-Wabsolute-value','-g','-O2']
+tail=['-gdwarf-4','-Wdeclaration-after-statement','-Wstrict-prototypes','-Wabsolute-value','-g','-O2',*PREFIX_MAP]
 version=BUILD/'dlls/wmvcore/version.res'
 modules={}
 for arch,triple in ARCHES.items():

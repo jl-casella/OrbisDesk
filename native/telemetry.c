@@ -11,6 +11,7 @@
 #include <time.h>
 #include <sys/resource.h>
 #include "pw_telemetry.h"
+#include "pw_trace.h"
 extern void *scePthreadSelf(void);
 extern void scePthreadGetaffinity(void *, uint64_t *);
 extern uint64_t sceKernelGetProcessTime(void);
@@ -105,7 +106,8 @@ uint32_t pw_ps4_telemetry_query(void *info,uint32_t bytes,uint32_t *returned)
             else cached.gpu_status=3; /* counter window inconsistency, don't clamp it to 100 */
         }
         if (lost!=previous_lost) cached.gpu_status=2;
-        fprintf(stderr,"PWTELEM sample wall_ns=%llu cpu_ns=%llu cores=%u cpu_mp=%u cpu_rc=%d gpu_busy=%llu gpu_span=%llu gpu_mp=%u gpu_rc=%d lost=%llu flags=%x\n",
+        /* alpha-1: up to two lines a second while MangoHud or Task Manager asks; traces only (pw_trace.h) */
+        if (pw_trace_on()) fprintf(stderr,"PWTELEM sample wall_ns=%llu cpu_ns=%llu cores=%u cpu_mp=%u cpu_rc=%d gpu_busy=%llu gpu_span=%llu gpu_mp=%u gpu_rc=%d lost=%llu flags=%x\n",
                 (unsigned long long)now,(unsigned long long)cpu,cores,cached.cpu_millipercent,cached.cpu_status,
                 (unsigned long long)busy,(unsigned long long)span,cached.gpu_millipercent,cached.gpu_status,
                 (unsigned long long)lost,cached.flags);
