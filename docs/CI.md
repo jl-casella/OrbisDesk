@@ -11,6 +11,7 @@ The workflows are:
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
 | `PR checks` | Pull request targeting `dev`, manual or reusable call | Documentation, layout, locks, Python checks and sanitized host VM/parser tests; every PR to `dev` also runs the full platform matrix after those checks pass |
+| `Main promotion policy` | PR opened, reopened, updated, retargeted or marked ready with destination `main` | Metadata-only check `Only dev to main`: accept only `dev` from this repository, reject feature branches and forks |
 | `Manual platform matrix` | Manual or reusable workflow call | Produce fixtures, run the same binaries on Windows, prepare Linux dependencies, build and run the diagnostic contract |
 | `Collect matrix timings` | Completion of the manual matrix or PR checks | Read final job and step timings from GitHub; upload `timings.json` |
 
@@ -19,6 +20,14 @@ These diagnostic workflows do not publish releases, build the complete Wine desk
 The PR job `Platform matrix` calls the same matrix workflow with `profile=platform-v1` and `cache_mode=reuse`, testing the PR merge SHA with fresh diagnostic profiles. It runs on every PR targeting `dev`, including documentation changes, after `metadata` and `host` succeed; failure prevents a successful PR workflow. Manual PR-check runs and the product-release caller retain their existing quick checks; use the separate manual matrix to run diagnostics on demand. Making a check mandatory for merging still requires repository branch protection/ruleset configuration; this change does not alter those settings. Cancelling a superseded PR run also cancels its called matrix. No secrets are passed to the reusable workflow; checkout credentials are not persisted.
 
 The successful hosted pilot [42492292470](https://github.com/jl-casella/OrbisDesk/actions/runs/42492292470) on `10f0e0ddce5f8ee1db2f4a4b00342a01d06518b8` completed in 333 seconds: 30 fork passes plus the exact expected official blocker, 52.206 seconds of matrix execution and verified emulator binary reuse in 5.421 seconds. Source preparation took 116.347 seconds. This is a warm-cache observation, not a cold-build or duration guarantee for future PRs; PR cache visibility can differ from branch runs.
+
+## PR targets and main promotions
+
+Set the repository's default branch to `dev` so new PRs target it initially. GitHub still allows contributors to select `main` manually; the promotion workflow checks the source repository and branch, not just the name `dev`. It runs on `pull_request_target` with no token permissions, checkout, secrets or execution of PR code. Keep this workflow metadata-only so a proposed change cannot replace the policy with its own code.
+
+To enforce the result, merge the workflow into `dev`, promote it to `main`, and let the check run on a `dev → main` PR. In **Settings → Rules → Rulesets**, configure an **Active** ruleset targeting only `main`: require a PR and the status check **`Only dev to main`**, with **GitHub Actions** as its source and no bypass. Keep any owner-review exception in a separate ruleset so it does not bypass this policy. Do not make a check mandatory before it is available on the protected branch. This commit adds the workflow; it does not change GitHub settings.
+
+Once required, the policy blocks merging other source branches, including a fork whose branch is named `dev`; it does not prevent opening or retargeting a PR. `edited` reruns the policy when its destination changes. Normal feature PRs to `dev` retain the existing test matrix; this policy is not a replacement for those tests or code-owner approval.
 
 ## First measured run
 
