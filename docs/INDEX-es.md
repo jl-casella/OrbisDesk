@@ -11,7 +11,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [AGENTS-es.md](../AGENTS-es.md) — OrbisDesk: guía para desarrollo asistido por IA
 - [README-es.md](../README-es.md) — OrbisDesk
 - [THIRD_PARTY-es.md](../THIRD_PARTY-es.md) — Licencias y procedencia
-- [CURRENT_STATE-es.md](CURRENT_STATE-es.md) — Punto de retoma: OrbisDesk W288 (03.87), 2026-11-07
+- [CURRENT_STATE-es.md](CURRENT_STATE-es.md) — Punto de retoma: OrbisDesk W303 y build alojada del producto, 2026-11-10
 - [DOCUMENTATION_POLICY-es.md](DOCUMENTATION_POLICY-es.md) — Política de documentación
 - [REBRANDING_ORBISDESK-es.md](REBRANDING_ORBISDESK-es.md) — OrbisDesk: nombre y compatibilidad de actualización
 - [REPOSITORY_LAYOUT-es.md](REPOSITORY_LAYOUT-es.md) — Contenido del repositorio y reconstrucción de dependencias

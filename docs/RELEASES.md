@@ -4,9 +4,9 @@
 
 ## Status and scope
 
-`Build PKG and release` is an **experimental product workflow** supporting cold builds and verified dependency snapshots, separate from the diagnostic matrix. Its first complete GitHub-hosted product build has not yet been demonstrated. It does not copy a developer build tree, run a self-hosted runner or use the home PS4. A missing prerequisite, compilation error, package error or inconsistent runtime fails the run and prevents publication.
+As of 2026-11-10, the **complete GitHub-hosted product build succeeds**. `Build PKG and release` supports cold builds, verified dependency caches and pinned prebuilt release blocks, separately from the diagnostic matrix. The product base is W303, with the runtime embedded in the PKG. It uses hosted runners and does not copy a developer build tree or use the home PS4. A missing prerequisite, compilation error, package error or inconsistent runtime fails the run and prevents publication.
 
-The first pilot may expose further assumptions in the historical recipes. Do not describe this workflow as a proven complete rebuild until the successful run and its artifacts have been inspected. The local validation covered workflow syntax, Python compilation and rejection tests for altered/escaping distribution inputs; it did not build or boot a new product.
+Build success is separate from publication and runtime acceptance. Identify every candidate by the workflow's source SHA, assigned SFO version, `product-evidence-*` and `product-candidate-*` artifacts. W303's clean-install console validation does not transfer to every CI candidate. The dated pilot sections below retain the earlier failures and their resolutions.
 
 ## Manual pilot
 
@@ -38,7 +38,7 @@ Only fixed dependency mounts are snapshotted. Git metadata, private notes, the g
 
 Inspect `reports/ci/product-cache-inputs.json`, `product-cache-status.json`, `product-download-cache.json` and the `product-cache-restore-*` / `product-cache-seal-*` phases. They distinguish reused/rebuilt blocks and record restore times and newly sealed archive sizes. The first run normally populates caches; the following run on the same branch/environment can measure savings. New branches/main cannot necessarily read caches produced by a feature branch, and caches can be evicted. See [GitHub cache scope](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching). Use only trusted build triggers for snapshot publication; these checksums provide integrity checks, not signatures or trust in arbitrary PR artifacts.
 
-Local validation covers filesystem roundtrips, preserved modes/times, allowed SDK links, tamper/path/link rejection, cold behavior, source timestamp checks, independent keys and retaining a completed block after later failure. A read-only audit checked real prepared graphics output paths and link shapes without copying that workstation tree into a release cache. A hosted cold population and subsequent warm hit remain to be measured; no speedup or full product acceptance is asserted yet.
+Local validation covers filesystem roundtrips, preserved modes/times, allowed SDK links, tamper/path/link rejection, cold behavior, source timestamp checks, independent keys and retaining a completed block after later failure. Hosted runs have produced dependency snapshots and demonstrated warm reuse; the dated evidence below records those results. Measure current savings from each run's timings and cache source (`actions-cache`, `prebuilt-release` or rebuilt). Dependency reuse does not establish runtime acceptance.
 
 ## Prebuilt dependency blocks
 
@@ -82,7 +82,7 @@ Release notes use GitHub's generated notes plus the Git commit subjects since th
 
 The recipe uses Ubuntu 22.04, Python 3.12, the checked toolchain versions and .NET 8 for the SDK's managed package tool. Graphics scripts resolve the current checkout instead of the author's Windows path. `~/vk-h0` is populated on the fresh runner from pinned sources, not copied from a workstation. Additional asset URLs/hashes are in [product-assets.lock.json](../product-assets.lock.json); existing dependencies remain in their original locks.
 
-The historical Windows System.Drawing wallpaper conversion is replaced by a recorded Pillow RGB/crop/bicubic conversion in the clean recipe; it uses the same pinned CC0 photograph but its BMP hash may differ. Package identities remain `ORBW00002` and the existing Content ID. The internal builder/runtime build ID (W288 at first, W302 since the alpha-1 merge) names `out/wine-hardware-wNNN` and is kept as a recipe/evidence identity; the clean recipe finds that single manifest instead of assuming one ID. Release provenance records the actual Git SHA and SFO version, which also fills `C:orbisicensesSOURCE.txt`. Local builds use the builder's default version (04.01) unless `--app-version` is given.
+The historical Windows System.Drawing wallpaper conversion is replaced by a recorded Pillow RGB/crop/bicubic conversion in the clean recipe; it uses the same pinned CC0 photograph but its BMP hash may differ. Package identities remain `ORBW00002` and the existing Content ID. The current internal builder/runtime build ID is W303; it names `out/wine-hardware-wNNN` and remains a recipe/evidence identity. The clean recipe finds that single manifest instead of assuming an ID. Release provenance records the actual Git SHA and SFO version, which also fills `C:\orbis\licenses\SOURCE.txt`. Local builds use the builder's default version (04.02) unless `--app-version` is given; CI assigns its own SFO version.
 
 The Steam client inside the title (alpha-1) is built in the same run: Playden is restored at its pinned commit, the Steam libraries and assets come from the `steam-*` entries of [product-assets.lock.json](../product-assets.lock.json) (URL and SHA-256), then `build-steam-deps.py --target ps4` and `build-steam-hosted.py` run after `link-wine-boot.py`. In a clean workspace the hosted object is checked against `build/wine-boot/bootstrap.elf`, because no earlier hardware ELF exists.
 
@@ -189,7 +189,7 @@ Focused local tests compile real PE32/PE64 fixture DLLs, execute the actual W261
 
 ## First-start install
 
-Since alpha-1 (branch `feature/embedded-runtime`, not yet tested on the console), `build-wine-hardware.py` packs the runtime into `OrbisDesk.pkg` as `/app0/runtime`, about 1.1 GB, with two lists of the same content:
+The W303 alpha-1 product base includes the embedded runtime and clean-install console validation (commit `208803d`). `build-wine-hardware.py` packs the runtime into `OrbisDesk.pkg` as `/app0/runtime`, about 1.3 GB uncompressed in the inspected W303 manifest, with two lists of the same content:
 - `install.json` for people and CI;
 - `install.txt` for the launcher.
 

@@ -11,7 +11,7 @@ This is the entry point for an AI agent or a developer joining this repository. 
 3. Inspect the relevant builder, its input manifests, the output manifest and the latest run/transfer evidence **before** choosing a build ID or claiming a feature works. File timestamps and the highest number in a filename are not sufficient.
 4. Read `git status --short`, check for concurrent work, and preserve unrelated edits. Many builders share output directories; do not run conflicting builders concurrently.
 
-At the time this guide was last updated (2026-11-07), [current state](docs/CURRENT_STATE.md) records W288 as the latest uploaded build and W287 as the latest with physical evidence ([W285–W288](docs/HARDWARE_W285_W288.md)). Reconcile this with actual manifests, transfer evidence and user feedback on each session.
+As of 2026-11-10, the product base is **W303 / 04.02**, with an embedded runtime and clean-install console validation. The complete GitHub-hosted product build now succeeds. Read [current state](docs/CURRENT_STATE.md) and [product builds and releases](docs/RELEASES.md) first. CI assigns its own SFO version; identify each candidate by its source SHA, manifest and run evidence rather than assuming W303's local default version or transferring its hardware acceptance to a new build. W285–W288 and the older increments are historical evidence.
 
 ## 2. Project model and invariants
 
