@@ -88,9 +88,10 @@ El cliente de Steam dentro del título (alpha-1) se construye en la misma corrid
 
 El candidato contiene:
 
-- `OrbisDesk.pkg` y su `OrbisDesk-runtime.tar.gz` nuevo y correspondiente (contenido dentro de `data/`).
+- `OrbisDesk.pkg`. Un paquete que trae el runtime adentro lo instala en el primer arranque; las recetas anteriores agregan su `OrbisDesk-runtime.tar.gz` nuevo y correspondiente (contenido dentro de `data/`).
 - Manifiestos de producto/construcción/release con identidad de fuentes, inventario y hashes.
 - `SHA256SUMS`, `THIRD_PARTY.md`, `LICENSES.tar.gz` e instrucciones de instalación.
+- Lo agrega el job de publicación antes de crear el tag: `<tag>-third-party-sources.tar` (las fuentes de terceros correspondientes, fijadas en [third-party-sources.lock.json](../third-party-sources.lock.json) y verificadas contra su hash o commit; ver la sección 5 de [licencias del release](RELEASE_LICENSES-es.md)).
 
 Los runtimes grandes se dividen en `.partNNN` ordenados por debajo del límite individual de assets de GitHub. No se recolectan registros de consola, documentos, credenciales, checkouts descargados ni notas privadas de una PC. Las fuentes y avisos requeridos que el builder incorpora explícitamente al runtime siguen formando parte del producto.
 

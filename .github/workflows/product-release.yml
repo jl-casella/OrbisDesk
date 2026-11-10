@@ -173,7 +173,8 @@ jobs:
     needs: [authorize, checks, build]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish)
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    # fetches and checks about 1.5 GB of third-party sources (third-party-sources.lock.json) before uploading
+    timeout-minutes: 120
     permissions:
       contents: write
     steps:

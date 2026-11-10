@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "scope": "Sources tools/ci/release.py publish attaches to each release as <tag>-third-party-sources.tar (docs/RELEASE_LICENSES.md section 5). Kept apart from product-assets.lock.json so that adding a source does not change the prebuilt block keys.",
+  "downloads": {
+    "vlc-source": {
+      "url": "https://download.videolan.org/pub/videolan/vlc/3.0.24/vlc-3.0.24.tar.xz",
+      "sha256": "e7cab503d1d7d5849b89d2cf0e1ee60d0ef6d012407791b644b9cfc0cc225fdf",
+      "bytes": 27620304
+    },
+    "wine-gecko-source": {
+      "url": "https://dl.winehq.org/wine/wine-gecko/2.47.4/wine-gecko-2.47.4-src.tar.xz",
+      "sha256": "bf31b6619570ce289f07298bdd670081635cd12104010050f06c16e44ccd153f",
+      "bytes": 197407844
+    },
+    "seamonkey-source": {
+      "url": "https://archive.seamonkey-project.org/releases/2.53.24/source/seamonkey-2.53.24.source.tar.xz",
+      "sha256": "52907d9241643c0c0c1ab05ea261b063b37d9fc49f16181a6a038b8ec6e4b6bc",
+      "bytes": 247752556
+    },
+    "openorbis-toolchain-source": {
+      "url": "https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/archive/refs/tags/v0.5.4.tar.gz",
+      "sha256": "f68bd347463f4a152933f972cf2a2830855a90fdc6d07b477367eb5070970e4a",
+      "bytes": 80316849
+    }
+  },
+  "product_assets": [
+    "llvm-source", "pl-mpeg-header", "steam-mbedtls", "steam-curl", "steam-zstd",
+    "steam-lzma-lzmadec-c", "steam-lzma-lzmadec", "steam-lzma-7ztypes", "steam-lzma-precomp", "steam-lzma-compiler",
+    "steam-stb-image", "steam-qrcodegen-c", "steam-qrcodegen-h", "steam-qrcodegen-readme", "steam-gbe-fork-source"
+  ],
+  "dependency_archives": ["mesa", "libdrm"],
+  "repositories": [
+    "wine", "prospero-win", "DolphinPS4", "Crema", "Resonance", "dosbox-pure", "wfm", "reactos-games",
+    "mangohud", "mangojuice", "playden-ps5", "Vulkan-Headers", "Vulkan-Loader", "Vulkan-Tools"
+  ]
+}

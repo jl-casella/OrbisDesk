@@ -88,9 +88,10 @@ The Steam client inside the title (alpha-1) is built in the same run: Playden is
 
 The candidate contains:
 
-- `OrbisDesk.pkg` and the matching fresh `OrbisDesk-runtime.tar.gz` (contents rooted at `data/`).
+- `OrbisDesk.pkg`. A package that embeds its runtime installs it on first start; older recipes add the matching fresh `OrbisDesk-runtime.tar.gz` (contents rooted at `data/`).
 - Product/build/release manifests with source identity, runtime inventory and hashes.
 - `SHA256SUMS`, `THIRD_PARTY.md`, `LICENSES.tar.gz` and installation notes.
+- Added by the publish job before tagging: `<tag>-third-party-sources.tar` (the corresponding third-party sources pinned in [third-party-sources.lock.json](../third-party-sources.lock.json), each checked against its hash or commit; see [release licences](RELEASE_LICENSES.md) section 5).
 
 Large runtime archives are split into ordered `.partNNN` files below GitHub's per-asset size limit. No console registries, documents, credentials, downloaded source checkouts or private notes are collected from a developer machine. Existing required source/notice material explicitly staged into the product runtime remains part of that runtime.
 
