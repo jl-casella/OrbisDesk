@@ -12,12 +12,11 @@ Windows desktop and applications for PS4, based on Wine, WoW64 and native graphi
 Since W283, the interface, packages and project code use the OrbisDesk name.
 See [renaming and compatibility](docs/REBRANDING_ORBISDESK.md).
 
-**Current status, 2026-11-07: OrbisDesk** built as `OrbisDesk.pkg` (W284).
-The version is visible only in the normal/root selector. See [clean package naming](docs/HARDWARE_W284.md).
-The rename covers code, interface, documentation and packages; PS4 identifiers are
-preserved so the existing installation can be updated. Steam S1/S2 have also been
-rebuilt. See [current state](docs/CURRENT_STATE.md) and
-[rename verification](docs/REBRANDING_ORBISDESK.md).
+**Current status, 2026-11-10:** the product base is **W303 / 04.02**, with the runtime
+embedded in `OrbisDesk.pkg` and clean-install console validation. The complete
+GitHub-hosted product build now succeeds; CI assigns each candidate's own SFO
+version. The visible version stays on the NORMAL/ROOT selector. See
+[current state](docs/CURRENT_STATE.md) and [builds, installation and releases](docs/RELEASES.md).
 The earlier build statuses retained below are historical.
 
 Experimental base for porting prospero-win to PS4 and measuring its requirements in shadPS4.
@@ -33,7 +32,7 @@ on physical PS4 hardware is detailed below.
 
 ## Verified State
 
-Current iteration: [W112](docs/HARDWARE_W112.md), first runtime DOSBox Pure PE64 for games DOS from WFM; compiled, physical validation pending. The core, front, bridge AudioOut and sources travel with distribution, without games.
+Historical W112 checkpoint: [W112](docs/HARDWARE_W112.md) introduced the DOSBox Pure PE64 runtime for DOS games from WFM. At that checkpoint it was compiled with physical validation pending. The core, frontend, AudioOut bridge and sources travel with the distribution, without games. Use the current-state links above for today's handoff.
 
 W105 list units and files in WFM. Previous correction: [W111](docs/HARDWARE_W111.md), filter BSD records of deleted inputs that produce residual names and error 145 when checking empty folders. In PS4 actual rmdir, missing and renamed folder with spaces were already verified. The user also confirmed the complete deletion of the tree with active content. W106 opens EXE and W107 already opened texts with Notepad in PS4. Independent calibration CPU/GPU postponed by the user.
 

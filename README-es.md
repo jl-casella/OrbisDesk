@@ -11,13 +11,13 @@ Empezar con IA: [guía de trabajo](AGENTS-es.md) e [índice completo](docs/INDEX
 Escritorio y aplicaciones Windows para PS4, basado en Wine, WoW64 y gráficos nativos. Desde W283, la interfaz, los paquetes y el código propio usan OrbisDesk. Ver [cambio de nombre y compatibilidad](docs/REBRANDING_ORBISDESK-es.md).
 
 
-**Estado actual, 2026-11-07: OrbisDesk** compilada como `OrbisDesk.pkg` (W284). La versión visible queda sólo en el selector normal/root. Ver [paquete limpio](docs/HARDWARE_W284-es.md). Cambio de nombre en código, interfaz, documentación y paquetes; se conservan los identificadores PS4 para actualizar la instalación existente. Steam S1/S2 ya recompilados. Ver [estado actualizado](docs/CURRENT_STATE-es.md) y [verificación del cambio de nombre](docs/REBRANDING_ORBISDESK-es.md). Los estados de builds anteriores conservados más abajo son históricos.
+**Estado actual, 2026-11-10:** la base del producto es **W303 / 04.02**, con el runtime integrado en `OrbisDesk.pkg` y validación de instalaciones limpias en consola. La construcción completa del producto en GitHub ya pasa; CI asigna su propia versión SFO a cada candidato. La versión visible queda en el selector NORMAL/ROOT. Ver [estado actual](docs/CURRENT_STATE-es.md) y [builds, instalación y releases](docs/RELEASES-es.md). Los estados de builds anteriores conservados más abajo son históricos.
 
 Base experimental para portar prospero-win a PS4 y medir sus requisitos en shadPS4. **Ya ejecuta un EXE PE32 que llama a una DLL propia por su IAT en el fork local de shadPS4**, con retorno 42 y relocaciones verificadas. El ELF incorpora el traductor x86 real de prospero-win y adaptadores de memoria, TLS y proceso para PS4. Se compilan DLL PE32 reales de Wine. En el fork Linux, Wine arranca dentro del proceso y ejecuta console32-bare.exe con el traductor como proveedor WoW64 (incremento 23); el oficial sigue bloqueado en esa campaña histórica. Ya hay validación posterior en PS4 real, detallada a continuación.
 
 ## Estado verificado
 
-Iteración actual: [W112](docs/HARDWARE_W112-es.md), primer runtime DOSBox Pure PE64 para juegos DOS desde WFM; compilado, validación física pendiente. El núcleo, frontend, puente AudioOut y fuentes viajan con la distribución, sin juegos.
+Hito histórico W112: [W112](docs/HARDWARE_W112-es.md) introdujo el runtime DOSBox Pure PE64 para juegos DOS desde WFM. En esa etapa estaba compilado y su validación física seguía pendiente. El núcleo, frontend, puente AudioOut y fuentes viajan con la distribución, sin juegos. Para retomar hoy, usar los enlaces al estado actual de arriba.
 
 W105 lista unidades y archivos en WFM. Corrección anterior: [W111](docs/HARDWARE_W111-es.md), filtrar registros BSD de entradas borradas que producen nombres residuales y error 145 al comprobar carpetas vacías. En PS4 ya se verificaron rmdir real, carpeta ausente y renombrado con espacios. El usuario confirmó también el borrado completo del árbol con contenido activo. W106 abre EXE y W107 ya abrió textos con Notepad en PS4. Calibración independiente CPU/GPU aplazada por el usuario.
 

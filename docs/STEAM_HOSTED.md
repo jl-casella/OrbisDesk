@@ -4,7 +4,7 @@
 
 The Steam client of [S1–S5](STEAM_S5.md) used to be a title of its own (ORBS00001). This change puts it inside OrbisDesk's title (ORBW00002), as the user asked: **"Open Steam Client"** in the Start menu, right above "Exit desktop", and a Desktop link with the same name. Either one switches the screen to the Steam UI, and leaving the client returns to the same running desktop. The UI is in English. With this, OrbisDesk's package becomes GPL-3.0-or-later (the user's decision).
 
-**Status:** the object, its files and the patches for OrbisDesk's shared files are built and checked on the PC: it compiles with the title's toolchain, a trial link passes, and the 1280x720 pages render correctly. **It has not been integrated or run on the console.** The standalone ORBS00001 stays buildable (`tools/build-steam-s4.py`) until the integrated client passes.
+**Status, 2026-11-10:** the client is integrated into OrbisDesk's title and its complete hosted product recipe (`build-steam-deps.py --target ps4`, then `build-steam-hosted.py`). It is part of the W303 product base. Login, downloads and game launching require their own evidence for the integrated client; neither successful packaging nor clean-install desktop acceptance establishes those flows. The standalone ORBS00001 remains buildable through `tools/build-steam-s4.py` as a separate diagnostic path. See [current state](CURRENT_STATE.md).
 
 ## How it fits in the title
 

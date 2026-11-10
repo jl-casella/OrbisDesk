@@ -4,9 +4,9 @@
 
 ## Estado y alcance
 
-`Build PKG and release` es un **workflow experimental del producto** que admite builds en frío y snapshots verificados de dependencias, separado de la matriz de diagnósticos. Todavía no se demostró su primera construcción completa en GitHub. No copia un árbol compilado del desarrollador, usa un runner propio ni accede a la PS4 de casa. Una dependencia ausente, error de compilación, error de PKG o runtime inconsistente hace fallar la corrida e impide publicar.
+Al 2026-11-10, la **construcción completa del producto en GitHub ya pasa**. `Build PKG and release` admite builds en frío, cachés verificadas de dependencias y bloques precompilados fijados de releases, por separado de la matriz diagnóstica. La base del producto es W303, con el runtime integrado en el PKG. Usa runners alojados y no copia un árbol compilado del desarrollador ni accede a la PS4 de casa. Una dependencia ausente, error de compilación, error de PKG o runtime inconsistente hace fallar la corrida e impide publicar.
 
-El primer piloto puede revelar más supuestos de las recetas históricas. No describir este workflow como reconstrucción completa demostrada hasta inspeccionar una corrida satisfactoria y sus artefactos. La validación local cubrió sintaxis de workflows, compilación de Python y tests que rechazan entradas de distribución alteradas o inseguras; no compiló ni arrancó un producto nuevo.
+El éxito de compilación es distinto de publicación y aceptación del runtime. Identificar cada candidato por el SHA del workflow, versión SFO asignada y artefactos `product-evidence-*` y `product-candidate-*`. La validación de instalaciones limpias en consola de W303 no se transfiere a todos los candidatos CI. Las secciones fechadas de los pilotos conservan los fallos anteriores y sus soluciones.
 
 ## Piloto manual
 
@@ -38,7 +38,7 @@ Sólo se guardan ubicaciones fijas de dependencias. Se excluyen metadatos Git, n
 
 Revisar `reports/ci/product-cache-inputs.json`, `product-cache-status.json`, `product-download-cache.json` y las fases `product-cache-restore-*` / `product-cache-seal-*`. Distinguen bloques reutilizados/reconstruidos y registran tiempos de restauración y tamaños de archivos nuevos sellados. La primera corrida normalmente genera las cachés; otra con la misma rama/entorno permite medir el ahorro. Ramas nuevas/main no necesariamente pueden leer cachés producidas en una rama de feature, y las cachés pueden ser expulsadas. Ver [alcance de caché GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching). Publicar snapshots sólo desde disparadores de build confiables; estos hashes son controles de integridad, no firmas ni confianza en artefactos arbitrarios de PR.
 
-La validación local cubre guardado/restauración, permisos/fechas, enlaces permitidos al SDK, rechazo de alteraciones/rutas/enlaces, modo frío, control de fechas de fuentes, claves independientes y retención de un bloque terminado tras otro fallo. Una auditoría de sólo lectura comprobó rutas y enlaces de salidas gráficas reales preparadas, sin copiar ese árbol de la computadora a una caché de release. Falta medir la generación en frío y el hit posterior en GitHub; todavía no se afirma un ahorro ni aceptación del producto completo.
+La validación local cubre guardado/restauración, permisos/fechas, enlaces permitidos al SDK, rechazo de alteraciones/rutas/enlaces, modo frío, control de fechas de fuentes, claves independientes y retención de un bloque terminado tras otro fallo. Las corridas alojadas ya produjeron instantáneas de dependencias y demostraron reutilización; la evidencia fechada de abajo registra esos resultados. Medir el ahorro actual mediante los tiempos y la fuente de caché de cada corrida (`actions-cache`, `prebuilt-release` o reconstrucción). Reutilizar dependencias no demuestra aceptación del runtime.
 
 ## Bloques de dependencias precompilados
 
@@ -82,7 +82,7 @@ Las notas usan las notas generadas por GitHub y los asuntos de commits desde la 
 
 La receta usa Ubuntu 22.04, Python 3.12, las versiones de toolchain comprobadas y .NET 8 para el empaquetador administrado del SDK. Los scripts gráficos resuelven el checkout actual en vez de la ruta Windows del autor. `~/vk-h0` se genera en el runner nuevo desde fuentes fijadas, sin copiarlo de una PC. Las URLs/hashes adicionales están en [product-assets.lock.json](../product-assets.lock.json); las dependencias existentes conservan sus locks originales.
 
-La conversión histórica del fondo con System.Drawing en Windows se reemplaza por una conversión Pillow RGB/recorte/bicúbica registrada en la receta limpia; usa la misma foto CC0 fijada, pero puede cambiar el hash BMP. Se mantienen `ORBW00002` y el Content ID existente. El ID interno de build del builder/runtime (W288 al principio, W302 desde el merge del alpha-1) nombra `out/wine-hardware-wNNN` y se conserva como identidad de receta/evidencia; la receta limpia busca ese único manifest en lugar de suponer un ID. La procedencia de release registra el SHA real y la versión SFO, que también completa `C:orbisicensesSOURCE.txt`. Las construcciones locales usan la versión por defecto del builder (04.01) salvo que se indique `--app-version`.
+La conversión histórica del fondo con System.Drawing en Windows se reemplaza por una conversión Pillow RGB/recorte/bicúbica registrada en la receta limpia; usa la misma foto CC0 fijada, pero puede cambiar el hash BMP. Se mantienen `ORBW00002` y el Content ID existente. El ID interno actual del builder/runtime es W303; nombra `out/wine-hardware-wNNN` y se conserva como identidad de receta/evidencia. La receta limpia busca ese único manifiesto en lugar de suponer un ID. La procedencia de release registra el SHA real y la versión SFO, que también completa `C:\orbis\licenses\SOURCE.txt`. Las construcciones locales usan la versión predeterminada del builder (04.02), salvo que se indique `--app-version`; CI asigna su propia versión SFO.
 
 El cliente de Steam dentro del título (alpha-1) se construye en la misma corrida: Playden se restaura en su commit fijado, las bibliotecas y archivos de Steam salen de las entradas `steam-*` de [product-assets.lock.json](../product-assets.lock.json) (URL y SHA-256), y después de `link-wine-boot.py` corren `build-steam-deps.py --target ps4` y `build-steam-hosted.py`. En un workspace limpio el objeto se verifica contra `build/wine-boot/bootstrap.elf`, porque todavía no existe un ELF de hardware anterior.
 
@@ -189,7 +189,7 @@ Las pruebas locales acotadas compilan DLL propias PE32/PE64 reales, ejecutan el 
 
 ## Instalación en el primer arranque
 
-Desde el alpha-1 (rama `feature/embedded-runtime`, todavía sin probar en la consola), `build-wine-hardware.py` mete el runtime dentro de `OrbisDesk.pkg` como `/app0/runtime`, unos 1,1 GB, con dos listas del mismo contenido:
+La base W303 del producto alpha-1 incluye el runtime integrado y validación de instalaciones limpias en consola (commit `208803d`). `build-wine-hardware.py` mete el runtime dentro de `OrbisDesk.pkg` como `/app0/runtime`, unos 1,3 GB descomprimidos en el manifiesto W303 inspeccionado, con dos listas del mismo contenido:
 - `install.json`, para personas y CI;
 - `install.txt`, para el launcher.
 

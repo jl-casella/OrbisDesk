@@ -4,7 +4,7 @@
 
 El cliente de Steam de [S1–S5](STEAM_S5-es.md) era un título aparte (ORBS00001). Este cambio lo pone dentro del título de OrbisDesk (ORBW00002), como pidió el usuario: **"Open Steam Client"** en el menú Inicio, justo arriba de "Exit desktop", y un acceso con el mismo nombre en el Escritorio. Cualquiera de los dos pasa la pantalla a la UI de Steam, y al salir del cliente se vuelve al mismo escritorio en marcha. La UI está en inglés. Con esto, el paquete de OrbisDesk pasa a ser GPL-3.0-or-later (decisión del usuario).
 
-**Estado:** el objeto, sus archivos y los parches para los archivos compartidos de OrbisDesk están armados y comprobados en la PC: compila con la toolchain del título, un enlace de prueba pasa y las páginas de 1280x720 se dibujan bien. **No está integrado ni corrió en la consola.** El título aparte ORBS00001 sigue compilando (`tools/build-steam-s4.py`) hasta que pase el integrado.
+**Estado, 2026-11-10:** el cliente está integrado en el título de OrbisDesk y en su receta alojada completa (`build-steam-deps.py --target ps4`, seguido por `build-steam-hosted.py`). Forma parte de la base W303 del producto. Login, descargas y apertura de juegos requieren su propia evidencia para el cliente integrado; ni el empaquetado exitoso ni la aceptación del escritorio con instalación limpia demuestran esos flujos. El título aparte ORBS00001 sigue compilando mediante `tools/build-steam-s4.py` como vía diagnóstica separada. Ver [estado actual](CURRENT_STATE-es.md).
 
 ## Cómo encaja en el título
 

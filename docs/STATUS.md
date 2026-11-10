@@ -5,7 +5,15 @@
 
 [English](STATUS.md) | [Español](STATUS-es.md)
 
-Last local package: **OrbisDesk.pkg**, W284 / 03.83, with a title OrbisDesk and a visible version only on the selector NORMAL/ROOT. Built and verified; installation and visual testing pending. See [W284](HARDWARE_W284.md). The W283 transfer that follows is previous evidence.
+## Current status, 2026-11-10
+
+The product base is **W303 / 04.02**, with the runtime embedded in `OrbisDesk.pkg` and clean-install console validation recorded in commit `208803d`. The complete GitHub-hosted product build now succeeds. CI assigns the candidate's SFO version separately from the local default.
+
+Use [current state](CURRENT_STATE.md) for the handoff and [product builds and releases](RELEASES.md) for the verified cache/prebuilt flow, installation and candidate checks. Installation, desktop/application behavior and publication are separate acceptance steps; use the exact candidate's SHA, manifests and logs.
+
+## Historical evidence through W284
+
+At the W284 handoff, the local package was **OrbisDesk.pkg**, W284 / 03.83, with installation and visual testing pending. See [W284](HARDWARE_W284.md). The entries below retain the status reported at each historical date.
 
 
 **Delivery W283 completed:** `/data/pkg/orbisdesk-W283-a3a72e1401c2.pkg`, FTP 192.168.68.100:2121. PKG and 1.823 runtime files verified by reading (83 uploaded, 1.740 already present); a previous package removed after verification. No permission failures. Console settings preserved. Installation and physical testing pending. Evidence: `reports/wine-hardware-w283/transfers/20261107T142853Z.json`.
