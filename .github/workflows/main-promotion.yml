@@ -1,0 +1,25 @@
+name: Main promotion policy
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+# Metadata validation only. Never check out or execute code from the PR here.
+permissions: {}
+
+jobs:
+  promotion:
+    name: Only dev to main
+    runs-on: ubuntu-22.04
+    timeout-minutes: 2
+    steps:
+      - name: Validate source branch and repository
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [[ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ||
+                "$GITHUB_HEAD_REF" != "dev" ]]; then
+            echo "::error::Main only accepts PRs from this repository's dev branch."
+            exit 1
+          fi
