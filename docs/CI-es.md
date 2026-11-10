@@ -11,6 +11,7 @@ Los workflows son:
 | Workflow | Disparador | Propósito |
 | --- | --- | --- |
 | `PR checks` | Pull request con destino `dev`, manual o llamada reutilizable | Documentación, estructura, locks, Python y pruebas del host de VM/parser con sanitizadores; cada PR a `dev` también ejecuta la matriz completa tras aprobar esos checks |
+| `Main promotion policy` | PR abierto, reabierto, actualizado, redirigido o marcado listo con destino `main` | Check de metadatos `Only dev to main`: acepta sólo `dev` de este repositorio, rechaza ramas de features y forks |
 | `Manual platform matrix` | Manual o llamada como workflow reutilizable | Producir fixtures, ejecutar los mismos binarios en Windows, preparar dependencias Linux, compilar y ejecutar el contrato de diagnóstico |
 | `Collect matrix timings` | Finalización de la matriz manual o de PR checks | Leer tiempos finales de jobs y pasos desde GitHub; subir `timings.json` |
 
@@ -19,6 +20,14 @@ Estos workflows de diagnóstico no publican releases, compilan el escritorio Win
 El job de PR `Platform matrix` llama al mismo workflow con `profile=platform-v1` y `cache_mode=reuse`, probando el SHA de merge del PR con perfiles diagnósticos nuevos. Se ejecuta en cada PR con destino `dev`, incluidos cambios documentales, después de que aprueben `metadata` y `host`; si falla, el workflow de PR no queda aprobado. Las ejecuciones manuales de PR checks y la llamada del workflow de release conservan sus checks rápidos existentes; para diagnósticos a demanda usar la matriz manual separada. Exigir un check para permitir el merge sigue requiriendo configurar las protecciones/reglas del repositorio; este cambio no modifica esos ajustes. Cancelar una corrida de PR reemplazada también cancela su matriz invocada. No se pasan secretos al workflow reutilizable y checkout no conserva credenciales.
 
 El piloto satisfactorio [42492292470](https://github.com/jl-casella/OrbisDesk/actions/runs/42492292470) en `10f0e0ddce5f8ee1db2f4a4b00342a01d06518b8` terminó en 333 segundos: 30 aprobados del fork y el bloqueo oficial exacto esperado, 52,206 segundos ejecutando la matriz y reutilización verificada del binario del emulador en 5,421 segundos. Preparar las fuentes llevó 116,347 segundos. Es una medición con caché, no una garantía de tiempo en frío ni para futuros PRs; la visibilidad de caché en un PR puede diferir de las corridas de rama.
+
+## Destinos de PR y promociones a main
+
+Configurar `dev` como rama predeterminada del repositorio para que los PR nuevos apunten inicialmente allí. GitHub sigue permitiendo elegir `main` manualmente; el workflow de promoción comprueba repositorio y rama de origen, no sólo el nombre `dev`. Se ejecuta con `pull_request_target`, sin permisos del token, checkout, secretos ni ejecución de código del PR. Mantener este workflow limitado a metadatos para que un cambio propuesto no pueda sustituir la política por su propio código.
+
+Para exigir el resultado, integrar el workflow en `dev`, promoverlo a `main` y dejar correr el check en un PR `dev → main`. En **Settings → Rules → Rulesets**, configurar un ruleset **Active** dirigido sólo a `main`: exigir PR y el status check **`Only dev to main`**, con **GitHub Actions** como origen y sin bypass. Mantener cualquier excepción de revisión del owner en un ruleset separado para que no omita esta política. No exigir un check antes de que esté disponible en la rama protegida. Este commit agrega el workflow; no modifica ajustes de GitHub.
+
+Una vez obligatorio, bloquea el merge desde otras ramas, incluido un fork cuya rama se llame `dev`; no impide abrir ni redirigir un PR. `edited` vuelve a comprobar la política si cambia su destino. Los PR normales de features a `dev` conservan la matriz existente; esta política no reemplaza esas pruebas ni la aprobación del code owner.
 
 ## Primera corrida medida
 

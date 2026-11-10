@@ -1,7 +1,7 @@
 ---
 name: Bug report
 about: Report crashes, compatibility issues or unexpected behavior
-title: '"[Bug] "'
+title: "[Bug] "
 labels: bug
 assignees: ''
 
