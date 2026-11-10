@@ -1058,7 +1058,10 @@ for folder in ('system32','syswow64'):
 # quit, both through DirectWrite), services that do not run, printing, WinRT, 16-bit... W302 had none of them.
 # Keys starting "x86_64 only" apply to system32. Control Panel applets the user keeps (W303) stay.
 from wine_product_seeds import declaration
-KEPT_LEFT_OUT={'appwiz.cpl','desk.cpl','inetcpl.cpl','joy.cpl'}
+# (and the two W302's prefix had: apisetschema.dll, which out/wine-pe64 provides and the prefix preflight requires
+# in system32 (native/wine_prefix_probe.c, dll-pe64; W303's first final build stopped with rc 95 without it), and
+# newdev.dll)
+KEPT_LEFT_OUT={'appwiz.cpl','desk.cpl','inetcpl.cpl','joy.cpl','apisetschema.dll','newdev.dll'}
 left_out_removed=[]
 for reason,names in declaration(ROOT/'tools/stage-wine-i386.py','W261_LEFT_OUT').items():
     for folder in (('system32',) if reason.startswith('x86_64 only') else ('system32','syswow64')):
