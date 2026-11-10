@@ -12,7 +12,7 @@ Licence review for publishing OrbisDesk alpha-1 as one package with its runtime 
 | --- | --- | --- |
 | GPL compatibility of the ELF (Playden GPL-3.0-or-later with Wine, Mesa, Crema, DolphinPS4, own code) | No GPL-2.0-only code found; the combination can be distributed as GPL-3.0-or-later | No |
 | Licence texts, copyright notices and source pointer inside the package/runtime | Missing in W301 (the Steam texts too, since the client moved into the ELF). Builder change applied to `tools/build-wine-hardware.py` after W301; not yet built | **Yes**, until a build ships it |
-| Corresponding source published with the release (own code, Wine, Mesa, VLC, Wine Gecko, DOSBox Pure, gbe_fork and the ELF's libraries) | No release tag or source archive yet | **Yes** |
+| Corresponding source published with the release (own code, Wine, Mesa, VLC, Wine Gecko, DOSBox Pure, gbe_fork and the ELF's libraries) | Publishing from `main` creates the tag and attaches the source archive (section 5); no release published yet | **Yes**, until the first published release |
 | `libcdio.dll` (GPL-3.0-or-later) is a prebuilt binary from the WFM repository with no known corresponding source | Removed (the user's decision): WFM is built without it and loses "Load ISO image"; the upload deletes the console's copy. Not yet built | No, once a build without it ships |
 | Build PC identity in the runtime (`C:\users\jose`, `JCASELLA`, `/mnt/c/Users/...` strings) | Found; the registry names are fixed in the builder (not yet built) | No (privacy/cleanliness) |
 | `THIRD_PARTY.md` entries | Added (MangoHud, VLC, Wine Gecko, Vulkan loader, DXVK, DOSBox Pure, GeneralUser GS, WFM, libcdio, pl_mpeg, mingw-w64, Mesa's bundled code, OpenOrbis package files) | Done |
@@ -95,7 +95,18 @@ Changing only `MangoHud.conf` to `orbis` would break MangoHud's configuration. A
 
 ## 5. Corresponding source per release
 
-Proposed mechanism: a Git tag per version (`orbisdesk-04.00` for alpha-1) on the public repository, and on the same release page as `OrbisDesk.pkg`, an archive `orbisdesk-04.00-third-party-sources` with a SHA-256 list. Offering the source from the same place as the binary satisfies GPL-2 §3 and GPL-3 §6(d) without a written offer; `SOURCE.txt` also offers the sources on request for three years, which covers anyone who got the package elsewhere.
+Mechanism: a Git tag per version on the public repository, and on the same release page as `OrbisDesk.pkg`, an archive of the third-party sources with a SHA-256 list. Offering the source from the same place as the binary satisfies GPL-2 §3 and GPL-3 §6(d) without a written offer; `SOURCE.txt` also offers the sources on request for three years, which covers anyone who got the package elsewhere.
+
+Implemented in `tools/ci/release.py publish`. The tag is `orbisdesk-<version>-<commit[:12]>`, the same name the package's `C:\orbis\licenses\SOURCE.txt` gives (`tools/build-wine-hardware.py`). Before tagging, the publish job fetches every source pinned in [third-party-sources.lock.json](../third-party-sources.lock.json) and checks it against its SHA-256 or commit:
+
+- VLC, Wine Gecko, SeaMonkey and OpenOrbis toolchain source archives;
+- the source downloads of `product-assets.lock.json` (LLVM, the Steam client's libraries, gbe_fork, pl_mpeg);
+- the Mesa and libdrm archives;
+- a `git archive` of each pinned repository in `dependencies.lock.json` except the emulator.
+
+They go into `<tag>-third-party-sources.tar`, split into `.partNNN` files above 1900 MiB, with `SOURCES.txt` inside it listing each file's SHA-256 and origin. The lock is kept apart from `product-assets.lock.json` so that adding a source does not change the prebuilt block keys.
+
+Still not packed: the generated Wine overlays (their generators are in the tag) and VLC's contrib sources.
 
 What the archive (or the tag) must contain:
 

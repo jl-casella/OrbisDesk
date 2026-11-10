@@ -975,14 +975,16 @@ for source in license_inputs:shutil.copyfile(source,licenses/source.name)
 head=subprocess.run(['git','-C',str(ROOT),'rev-parse','HEAD'],capture_output=True,text=True,check=True).stdout.strip()
 dirty=bool(subprocess.run(['git','-C',str(ROOT),'status','--porcelain','--untracked-files=no'],
                           capture_output=True,text=True,check=True).stdout.strip())
+# the tag and asset names tools/ci/release.py publishes: orbisdesk-<version>-<commit[:12]>
+release_tag='orbisdesk-'+args.app_version+'-'+head[:12]
 (licenses/'SOURCE.txt').write_text(
     'OrbisDesk W303 ('+args.app_version+'): corresponding source\r\n\r\n'
     'OrbisDesk is free software under the GNU GPL version 3 or later (GPL-3.0.txt).\r\n'
-    'Source code: '+SOURCE_REPOSITORY+', tag orbisdesk-'+args.app_version+' (commit '+head+(' plus local changes' if dirty else '')+').\r\n'
-    'Third-party sources (Wine, Mesa, VLC, Wine Gecko, DOSBox Pure, gbe_fork, curl, Mbed TLS and others)\r\n'
-    'are attached to the same release as orbisdesk-'+args.app_version+'-third-party-sources, listed with their SHA-256 in\r\n'
-    'THIRD_PARTY.md. For three years from the release date the same sources are also available on request\r\n'
-    'through the repository\'s issue tracker.\r\n')
+    'Source code: '+SOURCE_REPOSITORY+', tag '+release_tag+' (commit '+head+(' plus local changes' if dirty else '')+').\r\n'
+    'Third-party sources (Wine, Mesa, VLC, Wine Gecko, SeaMonkey, DOSBox Pure, gbe_fork, curl, Mbed TLS and others)\r\n'
+    'are attached to the same release as '+release_tag+'-third-party-sources.tar (split into .partNNN files\r\n'
+    'when large), with the SHA-256 of every source inside it in SOURCES.txt. For three years from the release\r\n'
+    'date the same sources are also available on request through the repository\'s issue tracker.\r\n')
 manifest_licenses={p.name:sha(p) for p in sorted(licenses.iterdir())}
 # Phase 9: the SeaMonkey profile the Start menu shortcut passes with -profile (fixtures/browser).
 # SeaMonkey 2.53 is the browser (the user's choice; W177-W215 staged two Pale Moon profiles, whose
