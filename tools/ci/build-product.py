@@ -53,6 +53,8 @@ def build(version, cache_mode='reuse'):
     python('build-steam-hosted')
     # W292: the extra desktop wallpapers build-wine-hardware stages (generated, no download)
     python('make-wallpaper-set')
+    # zlib for the hardware ELF's link: tools/vk-h0/build-probe.sh makes it locally, the graphics block does not
+    step('zlib-ps4', ['bash', ROOT / 'tools/build-zlib-ps4.sh'], env)
     python('build-wine-hardware', '--app-version', version)
     # the builder's build ID (W288, W302, ...) names its output folder; exactly one in a clean workspace
     manifests = list((ROOT / 'out').glob('wine-hardware-w*/manifest.json'))
