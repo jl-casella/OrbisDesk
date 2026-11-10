@@ -12,6 +12,8 @@ with native/steam/orbis/curl_config.h, written by hand, plus Playden's curl-ps5-
 patch (upstream/playden-ps5/scripts/network-deps/patches), which sets libSceNet's SO_NBIO."""
 import argparse,hashlib,pathlib,shutil,subprocess,tarfile
 ROOT=pathlib.Path(__file__).resolve().parents[1];DOWNLOADS=ROOT/'.deps/steam/downloads'
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 SDK=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
 PINS={'mbedtls-3.6.6.tar.bz2':'8fb65fae8dcae5840f793c0a334860a411f884cc537ea290ce1c52bb64ca007a',
       'curl-8.22.0.tar.xz':'f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7',
@@ -42,9 +44,9 @@ for name in ('mbedtls-3.6.6.tar.bz2','curl-8.22.0.tar.xz','zstd-1.5.6.tar.gz'):
 mbedtls_config=['-DMBEDTLS_USER_CONFIG_FILE="mbedtls_user_config.h"','-I',ROOT/'native/steam']
 if args.target=='ps4':
     cc=['clang','--target=x86_64-pc-freebsd12-elf','-fPIC','-funwind-tables','-march=btver2','-O2','-g',
-        '-isysroot',SDK,'-isystem',SDK/'include','-ffile-prefix-map=%s/='%src]
+        '-isysroot',SDK,'-isystem',SDK/'include',*PREFIX_MAP,'-ffile-prefix-map=%s/='%src]
 else:
-    cc=['clang','-O2','-g','-fPIC','-ffile-prefix-map=%s/='%src]
+    cc=['clang','-O2','-g','-fPIC',*PREFIX_MAP,'-ffile-prefix-map=%s/='%src]
 def archive(name,sources,flags,subdir):
     objects=[]
     for source in sources:
@@ -61,7 +63,7 @@ if args.target=='ps4':
             ['-w',*mbedtls_config,'-I',mbedtls/'include','-I',mbedtls/'library'],'mbedtls')
     for folder in ('mbedtls','psa'):shutil.copytree(mbedtls/'include'/folder,prefix/'include'/folder)
 else:
-    cflags='-O2 -g -fPIC -ffile-prefix-map=%s/= -DMBEDTLS_USER_CONFIG_FILE=\\"mbedtls_user_config.h\\" -I%s'%(src,ROOT/'native/steam')
+    cflags=' '.join(PREFIX_MAP)+' -O2 -g -fPIC -ffile-prefix-map=%s/= -DMBEDTLS_USER_CONFIG_FILE=\\"mbedtls_user_config.h\\" -I%s'%(src,ROOT/'native/steam')
     cmake=['cmake','-G','Ninja','-DCMAKE_BUILD_TYPE=Release','-DCMAKE_C_COMPILER=clang','-DCMAKE_C_FLAGS='+cflags,
            '-DCMAKE_INSTALL_PREFIX='+str(prefix),'-DCMAKE_INSTALL_LIBDIR=lib']
     run([*cmake,'-S',mbedtls,'-B',work/'mbedtls','-DENABLE_PROGRAMS=OFF','-DENABLE_TESTING=OFF',

@@ -2,14 +2,22 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Build actual PE dependencies for external prefix preparation, not PS4 code."""
 import argparse,hashlib,json,pathlib,re,struct,subprocess,time
+from wine_module_names import import_library_alias, register_alias, resolve_import_library, forwarded_modules, configured_pe_targets
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 BUILD=ROOT/'.deps/wine/runtime/build'
-parser=argparse.ArgumentParser();parser.add_argument('--jobs',type=int,default=12);args=parser.parse_args()
+parser=argparse.ArgumentParser();parser.add_argument('--jobs',type=int,default=12)
+parser.add_argument('--product-staging',action='store_true',help='Also build the declared product staging modules and resources')
+args=parser.parse_args()
 out=ROOT/'reports/increment15/host-build';out.mkdir(parents=True,exist_ok=True)
 makefile=(BUILD/'Makefile').read_text()
-targets={}
-for match in re.finditer(r'^((?:dlls|programs)/[^/ :]+/(i386|x86_64)-windows/([^/ :]+\.(?:dll|exe|sys|drv))):',makefile,re.M):
-    targets[(match[2],match[3].lower())]=match[1]
+targets=configured_pe_targets(makefile)
+
+aliases={};definitions={}
+for (arch,name),target in targets.items():
+    directory=pathlib.Path(target).parent.parent
+    if directory not in definitions:
+        definitions[directory]=(ROOT/'.deps/wine/source'/directory/'Makefile.in').read_text().replace('\\\n',' ')
+    register_alias(aliases,arch,import_library_alias(definitions[directory]),name)
 def imports(path):
     data=path.read_bytes();pe=struct.unpack_from('<I',data,0x3c)[0]
     if data[:2]!=b'MZ' or data[pe:pe+4]!=b'PE\0\0':raise ValueError('Not PE: '+str(path))
@@ -38,12 +46,20 @@ def imports(path):
             if index==13 and not (struct.unpack_from('<I',entry)[0]&1):name-=imagebase
             found.add(string(name))
     return sorted(found)
-resources=['mscms.dll','hidclass.sys','mouhid.sys','winebth.sys','winebus.sys','winehid.sys','wineusb.sys','winexinput.sys']
+resources=['apisetschema.dll','mscms.dll','hidclass.sys','mouhid.sys','winebth.sys','winebus.sys','winehid.sys','wineusb.sys','winexinput.sys']
 seed=['wineboot.exe','services.exe','rundll32.exe','explorer.exe','rpcss.exe','winedevice.exe','svchost.exe','mountmgr.sys','kernel32.dll','kernelbase.dll','ntdll.dll',*resources]
 missing_seeds=[name for name in seed if ('x86_64',name) not in targets]
 if missing_seeds:raise SystemExit('Missing required PE64 targets: '+repr(missing_seeds))
+if ('i386','apisetschema.dll') not in targets:raise SystemExit('Missing required PE32 API-set schema target')
 pending={(arch,name) for arch in ('i386','x86_64') for name in seed if (arch,name) in targets}
 pending|={('x86_64',name) for name in ('wow64.dll','wow64cpu.dll','wow64win.dll')}
+resource_targets=[]
+if args.product_staging:
+    from wine_product_seeds import product_seeds
+    product_modules,resource_targets=product_seeds(ROOT)
+    missing=sorted(product_modules-set(targets))
+    if missing:raise SystemExit('Product staging requires unconfigured PE targets: '+repr(missing))
+    pending|=product_modules
 done={};commands=[];unknown=[];start=time.monotonic()
 while pending:
     current=sorted(pending-set(done));pending=set()
@@ -56,19 +72,26 @@ while pending:
     for arch,name in current:
         path=BUILD/targets[(arch,name)];dependencies=imports(path)
         directory=path.parent.parent.relative_to(BUILD)
-        definition=(ROOT/'.deps/wine/source'/directory/'Makefile.in').read_text().replace('\\\n',' ')
+        definition=definitions[directory]
         delayed=re.search(r'^DELAYIMPORTS\s*=\s*(.*)$',definition,re.M)
-        source_delayed=sorted({module if '.' in module else module+'.dll' for module in delayed.group(1).split()}) if delayed else []
+        source_delayed=sorted({resolve_import_library(module,arch,aliases) for module in delayed.group(1).split()}) if delayed else []
+        forwarded=sorted({resolve_import_library(module,arch,aliases) for module in forwarded_modules(path)})
         if any('$' in module for module in source_delayed):raise SystemExit('Unexpanded delayed import: '+str(directory))
-        dependencies=sorted(set(dependencies)|set(source_delayed))
-        done[(arch,name)]={'path':str(path.relative_to(ROOT)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'imports':dependencies,'source_delayed_imports':source_delayed}
+        dependencies=sorted(set(dependencies)|set(source_delayed)|set(forwarded))
+        done[(arch,name)]={'path':str(path.relative_to(ROOT)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'imports':dependencies,'source_delayed_imports':source_delayed,'forwarded_imports':forwarded}
         for dependency in dependencies:
             key=(arch,dependency)
             if key in targets and key not in done:pending.add(key)
             elif key not in targets and not dependency.startswith(('api-ms-','ext-ms-')):
                 unknown.append({'arch':arch,'module':name,'import':dependency})
     print('PE modules built:',len(done),'next:',len(pending),flush=True)
+if resource_targets:
+    command=['make','-j'+str(args.jobs),*resource_targets];commands.append(command)
+    with (out/'make-product-resources.log').open('w') as log:
+        subprocess.run(command,cwd=BUILD,stdout=log,stderr=subprocess.STDOUT,check=True)
 report={'scope':'Native Linux Wine PE closure for prefix initialization; not PS4 validation',
+        'product_staging':args.product_staging,
+        'resources':{name:hashlib.sha256((BUILD/name).read_bytes()).hexdigest() for name in resource_targets},
         'status':'passed' if not unknown else 'blocked','modules':{arch+'/'+name:value for (arch,name),value in sorted(done.items())},
         'unknown_imports':unknown,'commands':commands,'duration_seconds':round(time.monotonic()-start,3),
         'wine_commit':subprocess.check_output(['git','-C',str(ROOT/'.deps/wine/source'),'rev-parse','HEAD'],text=True).strip(),

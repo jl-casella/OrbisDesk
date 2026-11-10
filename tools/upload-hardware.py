@@ -4,18 +4,25 @@
 import argparse,datetime,ftplib,hashlib,io,json,pathlib,posixpath,re
 from project_brand import LEGACY_STATE_ROOT, package_build
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-BUILDS={b:('out/wine-hardware-'+b.lower(),'reports/wine-hardware-'+b.lower()) for b in ('W001','W002','W003','W004','W005','W006','W007','W008','W009','W010','W011','W012','W013','W014','W015','W016','W017','W018','W019','W020','W021','W022','W023','W024','W025','W026','W027','W028','W029','W030','W031','W032','W033','W034','W035','W036','W037','W038','W039','W040','W041','W042','W043','W044','W045','W046','W047','W048','W049','W050','W051','W052','W053','W054','W055','W056','W057','W058','W059','W060','W061','W062','W063','W064','W065','W066','W067','W068','W069','W070','W071','W072','W073','W074','W075','W076','W077','W078','W079','W080','W081','W082','W083','W084','W085','W086','W087','W088','W089','W090','W091','W092','W093','W094','W095','W096','W097','W098','W099','W100','W101','W102','W103','W104','W105','W106','W107','W108','W109','W110','W111','W112','W113','W114','W115','W116','W117','W118','W119','W120','W121','W122','W123','W124','W125','W126','W127','W128','W129','W130','W131','W132','W133','W134','W135','W136','W137','W138','W139','W140','W141','W142','W143','W144','W145','W146','W147','W148','W149','W150','W151','W152','W153','W154','W155','W156','W157','W158','W159','W160','W161','W162','W163','W164','W165','W166','W167','W168','W169','W170','W171','W172','W173','W174','W175','W176','W177','W178','W179','W180','W181','W182','W183','W184','W185','W186','W187','W188','W189','W190','W191','W192','W193','W194','W195','W196','W197','W198','W199','W200','W201','W202','W203','W204','W205','W206','W207','W208','W209','W210','W211','W212','W213','W214','W215','W216','W217','W218','W219','W220','W221','W222','W223','W224','W225','W226','W227','W228','W229','W230','W231','W232','W233','W234','W235','W236','W237','W238','W239','W240','W241','W242','W243','W244','W245','W246','W247','W248','W249','W250','W251','W252','W253','W254','W255','W256','W257','W258','W259','W260','W261','W262','W263','W264','W265','W266','W267','W268','W269','W270','W271','W272','W273','W274','W275','W276','W277','W278','W279','W280','W281','W282','W283','W284','W285','W286','W287','W288')}
+BUILDS={b:('out/wine-hardware-'+b.lower(),'reports/wine-hardware-'+b.lower()) for b in ('W001','W002','W003','W004','W005','W006','W007','W008','W009','W010','W011','W012','W013','W014','W015','W016','W017','W018','W019','W020','W021','W022','W023','W024','W025','W026','W027','W028','W029','W030','W031','W032','W033','W034','W035','W036','W037','W038','W039','W040','W041','W042','W043','W044','W045','W046','W047','W048','W049','W050','W051','W052','W053','W054','W055','W056','W057','W058','W059','W060','W061','W062','W063','W064','W065','W066','W067','W068','W069','W070','W071','W072','W073','W074','W075','W076','W077','W078','W079','W080','W081','W082','W083','W084','W085','W086','W087','W088','W089','W090','W091','W092','W093','W094','W095','W096','W097','W098','W099','W100','W101','W102','W103','W104','W105','W106','W107','W108','W109','W110','W111','W112','W113','W114','W115','W116','W117','W118','W119','W120','W121','W122','W123','W124','W125','W126','W127','W128','W129','W130','W131','W132','W133','W134','W135','W136','W137','W138','W139','W140','W141','W142','W143','W144','W145','W146','W147','W148','W149','W150','W151','W152','W153','W154','W155','W156','W157','W158','W159','W160','W161','W162','W163','W164','W165','W166','W167','W168','W169','W170','W171','W172','W173','W174','W175','W176','W177','W178','W179','W180','W181','W182','W183','W184','W185','W186','W187','W188','W189','W190','W191','W192','W193','W194','W195','W196','W197','W198','W199','W200','W201','W202','W203','W204','W205','W206','W207','W208','W209','W210','W211','W212','W213','W214','W215','W216','W217','W218','W219','W220','W221','W222','W223','W224','W225','W226','W227','W228','W229','W230','W231','W232','W233','W234','W235','W236','W237','W238','W239','W240','W241','W242','W243','W244','W245','W246','W247','W248','W249','W250','W251','W252','W253','W254','W255','W256','W257','W258','W259','W260','W261','W262','W263','W264','W265','W266','W267','W268','W269','W270','W271','W272','W273','W274','W275','W276','W277','W278','W279','W280','W281','W282','W283','W284','W285','W286','W287','W288','W289','W290','W291','W292','W293','W294','W295','W296','W297','W298','W299','W300','W301','W302','W303')}
 parser=argparse.ArgumentParser()
 parser.add_argument('--build',choices=sorted(BUILDS),required=True)
 parser.add_argument('--host',default='192.168.68.107');parser.add_argument('--port',type=int,default=2121)
 parser.add_argument('--timeout',type=int,default=60,help='FTP timeout in seconds, per connection/read')
 parser.add_argument('--skip-runtime',action='store_true',help='upload only the PKG')
+parser.add_argument('--pkg-only',action='store_true',
+    help='alpha-1: upload only a PKG that carries the runtime; the app installs it into /data on its first start '
+         '(native/hw_install.h). Old packages are removed after the PKG is verified.')
 parser.add_argument('--keep-old-packages',action='store_true',help='retain previous OrbisDesk Wine PKGs (default: remove after verified full upload)')
 args=parser.parse_args()
 if args.timeout<=0:parser.error('--timeout must be positive')
 out_dir,report_dir=(ROOT/p for p in BUILDS[args.build])
 manifest=json.loads((out_dir/'manifest.json').read_text())
 pkg=ROOT/manifest['package'];runtime=ROOT/manifest['runtime_root']
+if args.pkg_only:
+    if not manifest.get('runtime_embedded',{}).get('embedded'):
+        raise SystemExit('--pkg-only needs a package with the runtime inside (built without --runtime-outside-package)')
+    args.skip_runtime=True
 sha=lambda data:hashlib.sha256(data).hexdigest()
 # Writable state for Wine: the prefix registry and the home directory.
 WRITABLE=('wine-prefix','wine-home')
@@ -53,17 +60,10 @@ def put(local,remote,expected):
     with local.open('rb') as stream:ftp.storbinary('STOR '+remote,stream,blocksize=1<<20)
     if remote_hash(remote)!=expected:raise SystemExit('read-back mismatch: '+remote)
     return 'uploaded'
-# W172 (phase 7): the console keeps what the user chose per program in winecfg
-# (HKCU\Software\Wine\AppDefaults); everything else in user.reg is the build's. Wine rewrites the
-# file on the console (its server saves every 30 s), so a plain upload would erase those choices.
-# W175: also the keys of winecfg's Desktop Integration tab (colours, metrics, visual style, app
-# theme), so the theme the user picks survives builds. Each with its subkeys. A build that must
-# change one of them names it in manifest['user_reg_reset'] (this spelling, single backslashes):
-# that upload takes it from the build, once.
+# W172/W175/W292: the user.reg keys the console keeps (tools/console_state.py, shared with the
+# first-run installer's install.json)
 USER_REG='wine-prefix/user.reg';REG_HEADER=b'WINE REGISTRY Version 2'
-CONSOLE_OWNED=('software\\wine\\appdefaults','control panel\\colors','control panel\\desktop\\windowmetrics',
-               'software\\microsoft\\windows\\currentversion\\thememanager',
-               'software\\microsoft\\windows\\currentversion\\themes\\personalize')
+from console_state import CONSOLE_OWNED
 reset=[key.lower() for key in manifest.get('user_reg_reset',[])]
 if not set(reset)<=set(CONSOLE_OWNED):raise SystemExit('user_reg_reset names keys the console does not own: %r'%reset)
 def reg_blocks(text):
@@ -191,7 +191,7 @@ if not args.skip_runtime:
 # verified upload. Never delete logs, runtime files, local releases, other PKGs,
 # a newer build, or a path outside exactly /data/pkg. NLST is untrusted input.
 cleanup={'deleted':[],'failed':[],'kept':remote_pkg}
-if not args.keep_old_packages and not args.skip_runtime:
+if not args.keep_old_packages and (args.pkg_only or not args.skip_runtime):
     def list_packages():return ftp.nlst('/data/pkg')
     def delete_package(path):return ftp.delete(path)
     for entry in retrying(list_packages):

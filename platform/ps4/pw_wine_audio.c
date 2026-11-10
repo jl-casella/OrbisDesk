@@ -3,6 +3,7 @@
  * port, separate from the DOS host's (native/dos_audio.c): AudioOut gives each user several
  * main ports. Opened on first use; a failure is logged and returned, never hidden. */
 #include "pw_wine_audio.h"
+#include "pw_trace.h"
 #include <orbis/AudioOut.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -53,8 +54,14 @@ int pw_wine_audio_output(const int16_t *frames)
         if(a){nonzero++;if(a>peak)peak=a;}
     }
     rc=sceAudioOutOutput(current,frames);
-    if(rc<0) {fprintf(stderr,"PWAUDIO output rc=%08x grains=%llu\n",(unsigned)rc,(unsigned long long)grains);return rc;}
-    if(++grains%938==0) {
+    /* alpha-1: a failing port fails every 5.3 ms grain; the first 8 failures, then every 1000th, always (returned too) */
+    if(rc<0) {
+        static unsigned failures;
+        if(failures++<8 || !(failures%1000))
+            fprintf(stderr,"PWAUDIO output rc=%08x grains=%llu failures=%u\n",(unsigned)rc,(unsigned long long)grains,failures);
+        return rc;
+    }
+    if(++grains%938==0 && pw_trace_on()) {  /* the level every ~5 s: traces only (pw_trace.h) */
         fprintf(stderr,"PWAUDIO level grains=%llu nonzero=%llu peak=%u\n",(unsigned long long)grains,(unsigned long long)nonzero,peak);
         peak=0;
     }

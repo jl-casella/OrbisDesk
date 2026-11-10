@@ -19,6 +19,8 @@ in 32-bit code do not carry the upper YMM halves.
 """
 import hashlib,json,pathlib,shlex,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 UP=ROOT/'upstream/prospero-win';MODULE=UP/'wine/wow64native'
 WINE=ROOT/'.deps/wine/source';HOST=ROOT/'.deps/wine/runtime/build';UNIX=ROOT/'.deps/wine/ps4-unix'
 work=ROOT/'build/wow64native-ps4';out=ROOT/'out/wow64native-ps4'
@@ -91,7 +93,7 @@ adaptations.append(adapt(MODULE/'unix.c',unix_c,[
 wine_flags=['-I'+str(WINE/'include'),'-Iinclude','-D__WINESRC__','-D_NTSYSTEM_','-DWINE_UNIX_LIB','-D_REENTRANT',
             '-Wall','-fcf-protection=none','-fvisibility=hidden','-fno-stack-protector','-fno-strict-aliasing',
             '-gdwarf-4','-fasynchronous-unwind-tables','-g','-O2','-D__ORBIS__','-I'+str(ROOT/'platform/ps4'),
-            '-ffunction-sections','-fdata-sections','-include',str(ROOT/'platform/ps4/pw_wine_posix.h')]
+            '-ffunction-sections','-fdata-sections','-include',str(ROOT/'platform/ps4/pw_wine_posix.h'),*PREFIX_MAP]
 unix_object=work/'unix/unix.o'
 run([UNIX/'orbis-cc','-c','-o',unix_object,unix_c,*wine_flags,'-I'+str(MODULE),
      '-D__wine_unix_call_funcs=pw_wow64native_unix_call_funcs'],cwd=UNIX)
@@ -99,7 +101,7 @@ run([UNIX/'orbis-cc','-c','-o',unix_object,unix_c,*wine_flags,'-I'+str(MODULE),
 # PE side: wow64native.dll, as prospero-win's tools/build_wow64native.sh links it.
 pe_flags=['-I'+str(MODULE),'-I'+str(HOST/'include'),'-I'+str(WINE/'include'),'-I'+str(WINE/'include/msvcrt'),
           '-D_MSVCR_VER=0','-D__WINESRC__','-D__WINE_PE_BUILD','-Wall','-fno-strict-aliasing',
-          '-mcx16','-mcmodel=small','-O2','-g','-fno-builtin','-fshort-wchar']
+          '-mcx16','-mcmodel=small','-O2','-g','-fno-builtin','-fshort-wchar',*PREFIX_MAP]
 # W169: and the RESET_STATE return (NtContinue after an exception) loads that selector instead of
 # context->SegFs. W168 set fs32_sel to 0x13, but the contexts 32-bit code hands to
 # NtRaiseException/NtContinue come from its own RtlCaptureContext and still carry fs=0000, so the
@@ -298,6 +300,7 @@ adaptations.append(adapt(WINE/'dlls/wow64/syscall.c',syscall_c,[
  *           load_64bit_module
  */''','''/* OrbisDesk B1 (pe32-en-explorer-plan.md P4): 32-bit guests of a 64-bit process (explorer) */
 BOOL pw_wow64_world = FALSE;
+static BOOL pw_traced( void );  /* alpha-1: the trace switch, below */
 /* wow64win's callback table: the PEB's is 64-bit user32's there, so each 32-bit thread gets it in this
  * TEB slot of wow64's reserved range, which the PE ntdll's KiUserCallbackDispatcher reads */
 #define PW_WOW64_TLS_CALLBACKS 18
@@ -347,7 +350,8 @@ static void pw_wow64_fatal( NTSTATUS status )
     if (pw_wow64_world)
     {
         NtCurrentTeb()->TlsSlots[PW_WOW64_TLS_CALLBACKS] = pw_callback_table;  /* OrbisDesk B1 */
-        ERR( "PWWOW wow64 thread_init thread=%04lx\\n", HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ) );  /* W236 */
+        if (pw_traced())  /* alpha-1 */
+            ERR( "PWWOW wow64 thread_init thread=%04lx\\n", HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ) );  /* W236 */
     }'''),
     # W236 (W235 run-0003.log: 207 nested c0000005 at wow64+0x11ACD): an exception whose 32-bit context has no
     # stack (esp 0) cannot reach 32-bit code; in the world it ends that thread instead of faulting again.
@@ -457,6 +461,26 @@ static char *pw_put_hex( char *p, char *end, ULONG value )
     while (n && p < end - 1) *p++ = digits[--n];
     *p = 0;
     return p;
+}
+
+/* alpha-1: OrbisDesk's trace switch (platform/ps4/pw_trace.h) as the launcher hands it to Wine, PW_TRACE=0|1;
+ * unset counts as on, as before the switch. Read once. */
+static BOOL pw_traced( void )
+{
+    static LONG traced = -1;
+
+    if (traced < 0)
+    {
+        WCHAR buffer[4] = {0};
+        UNICODE_STRING name, value;
+
+        RtlInitUnicodeString( &name, L"PW_TRACE" );
+        value.Buffer = buffer;
+        value.Length = 0;
+        value.MaximumLength = sizeof(buffer) - sizeof(WCHAR);
+        traced = RtlQueryEnvironmentVariable_U( NULL, &name, &value ) || buffer[0] != '0';
+    }
+    return traced;
 }
 
 static BOOL pw_wait_budget( LONG tid )
@@ -569,7 +593,10 @@ static void pw_wait_note( UINT num, const UINT *args, LONGLONG took, NTSTATUS st
  */'''),
     ('''    status = wow64_syscall( args, table->ServiceTable[id] );
     free_temp_data();
-    return status;''','''    {
+    return status;''','''    /* alpha-1: two clock reads around every 32-bit system call, for W272's wait lines: traces only */
+    if (!pw_traced()) status = wow64_syscall( args, table->ServiceTable[id] );
+    else
+    {
         LARGE_INTEGER pw_start, pw_end;  /* OrbisDesk W272 */
 
         NtQueryPerformanceCounter( &pw_start, NULL );

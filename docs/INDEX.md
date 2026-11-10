@@ -30,10 +30,12 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 ## Native Steam client, games and attribution
 
 - [GAMES.md](GAMES.md) — W114: games in Start → Programs → Games
+- [STEAM_HOSTED.md](STEAM_HOSTED.md) — The Steam client inside OrbisDesk
 - [STEAM_S1.md](STEAM_S1.md) — S1: HTTPS native to the Steam customer (ORBS00001)
 - [STEAM_S2.md](STEAM_S2.md) — S2: anonymous download of a Steam depot
 - [STEAM_S3.md](STEAM_S3.md) — S3: user login by QR and library
 - [STEAM_S4.md](STEAM_S4.md) — S4: install a game from the library
+- [STEAM_S5.md](STEAM_S5.md) — S5: launching an installed game from OrbisDesk's Explorer (in progress)
 - [THIRD_PARTY_FONTS.md](THIRD_PARTY_FONTS.md) — FreeType and runtime sources
 
 ## Platform and Wine increments (historical)
@@ -202,6 +204,12 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [HARDWARE_W215-loader-lock-borrador.md](HARDWARE_W215-loader-lock-borrador.md) — W215: the loader lock is taken even if a thread that expected it has been finished (draft)
 - [HARDWARE_W216-invitado-terminado-borrador.md](HARDWARE_W216-invitado-terminado-borrador.md) — W216: the last thread of a finished guest comes out without DLL_THREAD_DETACH (draft)
 - [HARDWARE_W220-winecfg-solo-borrador.md](HARDWARE_W220-winecfg-solo-borrador.md) — W220: "Run alone" box in the Winecfg Applications tab (draft)
+- [HARDWARE_W290-escritorio-borrador.md](HARDWARE_W290-escritorio-borrador.md) — W290: the desktop follows Desktop folder changes, and desktop icons get a right-click menu (draft)
+- [HARDWARE_W290-fuentes-tema-borrador.md](HARDWARE_W290-fuentes-tema-borrador.md) — W290: system fonts keep their size after a visual-style change (draft)
+- [HARDWARE_W292-escritorio-columnas-borrador.md](HARDWARE_W292-escritorio-columnas-borrador.md) — W292: desktop icons in columns, with File Manager and Steam first (draft)
+- [HARDWARE_W292-fondos-borrador.md](HARDWARE_W292-fondos-borrador.md) — W292: choosing the desktop wallpaper, with three more to pick from (draft)
+- [HARDWARE_W292-reset-root-borrador.md](HARDWARE_W292-reset-root-borrador.md) — W292: "Reset as Root" and "Reset as Sandbox" in the Start menu (draft)
+- [HARDWARE_W293-wfm-accesos-borrador.md](HARDWARE_W293-wfm-accesos-borrador.md) — W293: shortcuts in WFM show their own icon, with the arrow (draft)
 - [HARDWARE_Wxxx-navegador-borrador.md](HARDWARE_Wxxx-navegador-borrador.md) — Wxxx: Pale Moon without network log (phase 9, draft)
 - [HARDWARE_Wxxx-palemoon-invitado-2-borrador.md](HARDWARE_Wxxx-palemoon-invitado-2-borrador.md) — Wxxx: Pale Moon as guest, second round of diagnosis (draft)
 - [HARDWARE_Wxxx-palemoon-invitado-borrador.md](HARDWARE_Wxxx-palemoon-invitado-borrador.md) — Wxxx: Pale Moon as guest freezes the desktop (diagnosis, draft)
@@ -213,3 +221,5 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 
 - [CI.md](CI.md) — Running CI and measuring the platform matrix
 - [RELEASES.md](RELEASES.md) — Product builds, releases and the development branch
+- [RELEASE_LICENSES.md](RELEASE_LICENSES.md) — Release licenses (alpha-1)
+- [RELEASE_TRACES.md](RELEASE_TRACES.md) — Release traces: one switch for alpha-1

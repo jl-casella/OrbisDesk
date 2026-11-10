@@ -1,0 +1,100 @@
+OrbisDesk third-party notices
+=============================
+
+OrbisDesk (OrbisDesk.pkg and the runtime it installs under /data) is distributed
+under the GNU General Public License version 3 or later (GPL-3.0.txt). It combines
+the project's own code with the third-party components below, each under its own
+license. The full license texts are in this folder. The complete list of
+components, versions and hashes is THIRD_PARTY.md; how to obtain the
+corresponding source is in SOURCE.txt next to this file and in
+docs/RELEASE_LICENSES.md of the source repository.
+
+This file reproduces the copyright notices that the MIT, BSD, zlib, Boost and
+Apache licenses ask binary distributions to carry. The licenses are those of the
+named files in this folder; "<year> <copyright holders>" in a generic text is
+replaced by the notice listed here.
+
+Native PS4 program (eboot.bin)
+------------------------------
+Wine (LGPL-2.1-or-later, LGPL-2.1.txt)
+  Copyright the Wine project authors (see AUTHORS in the Wine source).
+prospero-win (LGPL-2.1-or-later, LGPL-2.1.txt)
+  Copyright mpereiraesaa and contributors.
+Playden for PS5 (GPL-3.0-or-later, GPL-3.0.txt)
+  Copyright Leo Lobato and contributors.
+DolphinPS4 Vulkan probe (GPL-2.0-or-later, GPL-2.0.txt)
+  Copyright iHaiDeeZ and contributors.
+Mesa 26.0.8: RADV, ACO, NIR, util (MIT, MIT.txt; some files BSL-1.0, BSL-1.0.txt)
+  Copyright the Mesa authors (see docs/license.rst in the Mesa source).
+  PS4 winsys ac_ps4_drm.c: Copyright 2026 DolphinPS4 (MIT).
+  xxHash: Copyright (C) 2012-2023 Yann Collet (BSD-2-Clause, BSD-2-Clause.txt).
+  parson: Copyright (c) 2012 - 2023 Krzysztof Gabis (MIT).
+  BLAKE3: Jack O'Connor and Samuel Neves (CC0-1.0, CC0-1.0.txt, or Apache-2.0).
+zlib (zlib-ng build of the zlib library) (Zlib, Zlib.txt)
+  (C) 1995-2024 Jean-loup Gailly and Mark Adler.
+LLVM libc++, libc++abi, libunwind (Apache-2.0 WITH LLVM-exception,
+  Apache-2.0-WITH-LLVM-exception.txt)
+  Copyright the LLVM Project contributors.
+OpenOrbis PS4 Toolchain CRT and libraries (GPL-3.0, GPL-3.0.txt; libc derived
+  from musl, MIT)
+  Copyright OpenOrbis contributors; musl: Copyright Rich Felker et al.
+curl 8.22.0 (curl license, curl.txt)
+  Copyright (c) 1996 - 2026, Daniel Stenberg, <daniel@haxx.se>, and many
+  contributors, see the THANKS file.
+Mbed TLS 3.6.6 (Apache-2.0, Apache-2.0.txt)
+  Copyright The Mbed TLS Contributors.
+Zstandard 1.5.6 (BSD-3-Clause, BSD-3-Clause.txt)
+  Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+LZMA SDK 24.09, LzmaDec (public domain)
+  Igor Pavlov.
+stb_image.h v2.30 (MIT or public domain; MIT chosen, MIT.txt)
+  Copyright (c) 2017 Sean Barrett.
+QR Code generator library, C (MIT)
+  Copyright (c) Project Nayuki.
+Mozilla CA certificate bundle (MPL-2.0, MPL-2.0.txt)
+  Mozilla Foundation; extracted by the curl project (https://curl.se/ca/).
+
+Windows programs in the runtime (/data/wine-prefix)
+---------------------------------------------------
+DXVK 2.7.1 (Zlib, Zlib.txt)
+  Copyright (c) 2017 Philip Rebohle
+  Copyright (c) 2019 Joshua Ashton
+MangoHud, Windows fork (MIT, MIT.txt)
+  Copyright (c) 2020 flightlessmango.
+  Dear ImGui: Copyright (c) 2014-2024 Omar Cornut (MIT).
+  ImPlot: Copyright (c) 2020 Evan Pezent (MIT).
+  spdlog: Copyright (c) 2016 Gabi Melman (MIT).
+  {fmt}: Copyright (c) 2012 - present, Victor Zverovich (MIT).
+  MinHook: Copyright (C) 2009-2017 Tsuda Kageyu (BSD-2-Clause, BSD-2-Clause.txt).
+  Vulkan-Headers, Vulkan-Utility-Libraries: Copyright The Khronos Group Inc.
+  (Apache-2.0).
+Khronos Vulkan loader v1.4.335, vkcube (Vulkan-Tools v1.4.335) (Apache-2.0,
+  Apache-2.0.txt)
+  Copyright The Khronos Group Inc., Valve Corporation, LunarG, Inc. and other
+  contributors.
+Mesa WGL and Zink (opengl32.dll, libgallium_wgl.dll) (MIT)
+  Copyright the Mesa authors.
+windows-glxgears (MIT)
+  Copyright (C) 1999-2001  Brian Paul   All Rights Reserved.
+WFM (MIT)
+  Copyright (c) 2023 BrunoSX.
+pl_mpeg, compiled into pwmpeg1.ax (MIT)
+  Dominic Szablewski - https://phoboslab.org
+mingw-w64 runtime, statically linked into PE files built with llvm-mingw
+  Copyright (c) 2009 - 2013 by the mingw-w64 project (see COPYING.MinGW-w64-runtime
+  in the mingw-w64 source; ZPL-2.1, public domain and BSD/MIT-style files).
+VLC media player 3.0.24 (GPL-2.0-or-later / LGPL-2.1-or-later; its own
+  COPYING.txt in C:\Program Files\VLC)
+  Copyright VideoLAN and the VLC authors; bundled libraries under their own
+  licenses as listed by VideoLAN.
+Wine Gecko 2.47.4 (MPL-2.0, MPL-2.0.txt; FFmpeg parts LGPL-2.1-or-later)
+  Copyright the Mozilla contributors and the Wine project.
+DOSBox Pure (GPL-2.0-or-later; DOSBox-Pure-LICENSE.txt in C:\windows\system32)
+  Copyright Bernhard Schelling and the DOSBox Team.
+ReactOS games and cards.dll (GPL-2.0 / LGPL-2.1-or-later / public domain;
+  ReactOS-COPYING*.txt in C:\windows\system32)
+gbe_fork (LGPL-3.0, gbe-LICENSE-LGPL-3.0.txt in C:\orbis\steam)
+GeneralUser GS 2.0.3 (GeneralUser-GS-LICENSE.txt in C:\windows)
+  Copyright S. Christian Collins.
+Desktop photograph "Green hill landscape under sky and clouds" (CC0-1.0)
+  goodfreephotos.com.

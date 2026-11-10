@@ -9,8 +9,108 @@ import re
 import shutil
 import subprocess
 import tarfile
-from urllib.parse import quote
+import urllib.request
+from urllib.parse import quote, urlparse
 from common import ROOT, RESULTS, revision, sha, write_json
+
+# GitHub limits individual release assets to 2 GiB.
+ASSET_LIMIT = 1900 * 1024 * 1024
+
+
+def split_asset(archive):
+    """Split a file larger than ASSET_LIMIT into .partNNN files without buffering GiBs; returns the files."""
+    if archive.stat().st_size <= ASSET_LIMIT:
+        return [archive]
+    parts = []
+    with archive.open('rb') as stream:
+        while True:
+            data = stream.read(min(1024 * 1024, ASSET_LIMIT))
+            if not data:
+                break
+            part = archive.with_name(archive.name + f'.part{len(parts):03}')
+            with part.open('wb') as out:
+                out.write(data)
+                remaining = ASSET_LIMIT - len(data)
+                while remaining:
+                    chunk = stream.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    remaining -= len(chunk)
+            parts.append(part)
+    archive.unlink()
+    return parts
+
+
+def fetch(url, digest, path, size=None):
+    for attempt in range(3):
+        try:
+            request = urllib.request.Request(url, headers={'User-Agent': 'OrbisDesk-release'})
+            with urllib.request.urlopen(request, timeout=120) as response, path.open('wb') as out:
+                shutil.copyfileobj(response, out, 1024 * 1024)
+            break
+        except OSError:
+            if attempt == 2:
+                raise
+    if sha(path) != digest or (size is not None and path.stat().st_size != size):
+        raise ValueError('Source download differs from its pin: ' + url)
+
+
+def git_archive(name, url, commit, path):
+    """The pinned commit's tree as a .tar.gz; a server that refuses a fetch by SHA gets a full fetch."""
+    work = path.parent / ('.git-' + name)
+    subprocess.run(['git', 'init', '-q', '--bare', str(work)], check=True)
+    git = ['git', '-C', str(work)]
+    try:
+        subprocess.run([*git, 'fetch', '-q', '--depth', '1', url, commit], check=True)
+    except subprocess.CalledProcessError:
+        subprocess.run([*git, 'fetch', '-q', url, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'], check=True)
+    found = subprocess.check_output([*git, 'rev-parse', '--verify', commit + '^{commit}'], text=True).strip()
+    if found != commit:
+        raise ValueError('Repository commit differs: ' + name)
+    subprocess.run([*git, 'archive', '--format=tar.gz', '--prefix=' + name + '-' + commit[:12] + '/',
+                    '-o', str(path), commit], check=True)
+    shutil.rmtree(work)
+
+
+def third_party_sources(candidate, tag, work):
+    """<tag>-third-party-sources.tar (docs/RELEASE_LICENSES.md section 5): the pinned third-party sources the
+    package is built from or ships, each checked against its lock, with SOURCES.txt listing their SHA-256.
+    Returns the release files it wrote into candidate (one, or its .partNNN pieces)."""
+    lock = json.loads((ROOT / 'third-party-sources.lock.json').read_text())
+    assets = json.loads((ROOT / 'product-assets.lock.json').read_text())['downloads']
+    dependencies = json.loads((ROOT / 'dependencies.lock.json').read_text())
+    name = tag + '-third-party-sources'
+    folder = work / name
+    folder.mkdir(parents=True)
+    downloads = [(key, entry['url'], entry['sha256'], entry.get('bytes')) for key, entry in lock['downloads'].items()]
+    downloads += [(key, assets[key]['url'], assets[key]['sha256'], None) for key in lock['product_assets']]
+    downloads += [(key, dependencies['archives'][key]['url'], dependencies['archives'][key]['sha256'], None)
+                  for key in lock['dependency_archives']]
+    rows = []
+    for key, url, digest, size in downloads:
+        filename = PurePosixPath(urlparse(url).path).name
+        if not filename or filename in ('.', '..'):
+            raise ValueError('Source URL has no file name: ' + url)
+        target = folder / key / filename
+        target.parent.mkdir()
+        fetch(url, digest, target, size)
+        rows.append((digest, target.relative_to(folder).as_posix(), url))
+    (folder / 'repositories').mkdir()
+    for key in lock['repositories']:
+        entry = dependencies['repositories'][key]
+        target = folder / 'repositories' / (key + '-' + entry['commit'][:12] + '.tar.gz')
+        git_archive(key, entry['url'], entry['commit'], target)
+        rows.append((sha(target), target.relative_to(folder).as_posix(), entry['url'] + ' ' + entry['commit']))
+    (folder / 'SOURCES.txt').write_text(
+        'OrbisDesk ' + tag + ': third-party sources, SHA-256, path in this archive, origin.\n'
+        'OrbisDesk\'s own source is the repository at the tag ' + tag + '.\n\n' +
+        ''.join(f'{digest}  {path}  {origin}\n' for digest, path, origin in rows))
+    archive = candidate / (name + '.tar')
+    with tarfile.open(archive, 'w') as tar:
+        tar.add(folder, arcname=name)
+    shutil.rmtree(folder)
+    return split_asset(archive)
 
 
 def contained(root, relative):
@@ -62,36 +162,28 @@ def assemble():
     shutil.copyfile(RESULTS / 'product-build.json', output / 'build-provenance.json')
     shutil.copyfile(ROOT / 'THIRD_PARTY.md', output / 'THIRD_PARTY.md')
     shutil.copytree(ROOT / 'LICENSES', output / 'LICENSES')
-    # Only the producer's fresh runtime is archived, never /data from a console.
-    archive = output / 'OrbisDesk-runtime.tar.gz'
-    with tarfile.open(archive, 'w:gz', dereference=False) as tar:
-        tar.add(runtime, arcname='data', recursive=True)
-    # GitHub limits individual release assets to 2 GiB. Split without buffering GiBs.
-    if archive.stat().st_size > 1900 * 1024 * 1024:
-        with archive.open('rb') as stream:
-            number = 0
-            while True:
-                data = stream.read(1024 * 1024)
-                if not data:
-                    break
-                with (output / (archive.name + f'.part{number:03}')).open('wb') as part:
-                    part.write(data)
-                    remaining = 1899 * 1024 * 1024
-                    while remaining:
-                        chunk = stream.read(min(1024 * 1024, remaining))
-                        if not chunk:
-                            break
-                        part.write(chunk)
-                        remaining -= len(chunk)
-                number += 1
-        archive.unlink()
-    (output / 'INSTALL.txt').write_text(
-        'Install OrbisDesk.pkg with your existing homebrew package installer.\n'
-        'Extract OrbisDesk-runtime.tar.gz to a new staging directory, then transfer the data/ contents to /data.\n'
-        'For split archives first concatenate OrbisDesk-runtime.tar.gz.part* in lexical order.\n'
-        'Back up existing registries, documents, settings and saves before replacing runtime files.\n'
-        'This archive is a fresh runtime, not a merge-aware updater. No FTP deployment is automatic.\n'
-        'Experimental build: package/import checks only; desktop smoke and physical acceptance are pending.\n')
+    # alpha-1: a package that carries the runtime installs it on its first start (native/hw_install.h);
+    # the release is then the package alone. Older recipes ship the runtime as an archive.
+    if product.get('runtime_embedded', {}).get('embedded'):
+        (output / 'INSTALL.txt').write_text(
+            'Install OrbisDesk.pkg with your existing homebrew package installer and start it.\n'
+            'The first start of each version installs the runtime into /data (about 1.1 GB; it shows its progress).\n'
+            'Documents, saves, Steam games and your settings stay; files earlier versions shipped are replaced.\n'
+            'If it reports INSTALL FAILED, free the space it names (or report the screen), then start again.\n'
+            'Experimental build: package/import checks only; desktop smoke and physical acceptance are pending.\n')
+    else:
+        # Only the producer's fresh runtime is archived, never /data from a console.
+        archive = output / 'OrbisDesk-runtime.tar.gz'
+        with tarfile.open(archive, 'w:gz', dereference=False) as tar:
+            tar.add(runtime, arcname='data', recursive=True)
+        split_asset(archive)
+        (output / 'INSTALL.txt').write_text(
+            'Install OrbisDesk.pkg with your existing homebrew package installer.\n'
+            'Extract OrbisDesk-runtime.tar.gz to a new staging directory, then transfer the data/ contents to /data.\n'
+            'For split archives first concatenate OrbisDesk-runtime.tar.gz.part* in lexical order.\n'
+            'Back up existing registries, documents, settings and saves before replacing runtime files.\n'
+            'This archive is a fresh runtime, not a merge-aware updater. No FTP deployment is automatic.\n'
+            'Experimental build: package/import checks only; desktop smoke and physical acceptance are pending.\n')
     # Licenses are a single upload asset; never accidentally publish arbitrary tree files.
     with tarfile.open(output / 'LICENSES.tar.gz', 'w:gz') as tar:
         tar.add(output / 'LICENSES', arcname='LICENSES')
@@ -140,7 +232,15 @@ def publish():
     if (candidate / 'SHA256SUMS').read_text() != checksums:
         raise ValueError('Transport checksum list differs')
     version = manifest['app_version']
+    # the tag and source asset names the package's C:\orbis\licenses\SOURCE.txt gives (tools/build-wine-hardware.py)
     tag = 'orbisdesk-' + version + '-' + source[:12]
+    # The corresponding third-party sources, fetched here against their pins before anything is tagged
+    for path in third_party_sources(candidate, tag, ROOT / 'out/release-sources'):
+        manifest['files'][path.name] = sha(path)
+    write_json(candidate / 'release-manifest.json', manifest)
+    checksums = ''.join(value + '  ' + name + '\n' for name, value in sorted(manifest['files'].items()))
+    (candidate / 'SHA256SUMS').write_text(checksums + sha(candidate / 'release-manifest.json') + '  release-manifest.json\n')
+    expected = set(manifest['files']) | {'release-manifest.json', 'SHA256SUMS'}
     # Never advance an existing tag. Retries may finish only the same draft/tag/SHA.
     try:
         reference = api(f'repos/{repo}/git/ref/tags/{quote(tag, safe="")}')
@@ -178,8 +278,11 @@ def publish():
         args['previous_tag_name'] = base
     generated = api(f'repos/{repo}/releases/generate-notes', 'POST', args)
     commits = subprocess.check_output(['git', 'log', '--format=- %h %s', (base + '..' + source) if base else source], text=True)
+    runtime = ('matching fresh /data runtime' if any(n.startswith('OrbisDesk-runtime') for n in manifest['files'])
+               else 'which installs its runtime on first start')
     body = ('Experimental OrbisDesk build. Source: `' + source + '`.\n\n'
-            'Includes PKG, matching fresh /data runtime, licenses and checksums. '
+            'Includes the PKG, ' + runtime + ', licenses, checksums and `' + tag + '-third-party-sources.tar` '
+            '(the corresponding third-party sources; concatenate any `.part*` files in order first). '
             'Build/package/import checks passed; desktop smoke and physical PS4 acceptance remain pending.\n\n' +
             generated['body'] + '\n\n## Included commits\n\n' + commits)
     payload = {'tag_name': tag, 'target_commitish': source, 'name': 'OrbisDesk ' + version,

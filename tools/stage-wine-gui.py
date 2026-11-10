@@ -8,16 +8,18 @@ api-set names (resolved by apisetschema) are left out. Nothing is patched.
 """
 import hashlib,json,pathlib,re,struct,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.Path.home()/'vk-h0')]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build';out=ROOT/'out/wine-gui';(out/'x86_64-windows').mkdir(parents=True,exist_ok=True)
 wine_commit=subprocess.check_output(['git','-C',str(SOURCE),'rev-parse','HEAD'],text=True).strip()
 if wine_commit!=json.loads((ROOT/'sources.lock.json').read_text())['sources']['wine']['commit']:
     raise SystemExit('GUI and fonts require the pinned Wine revision')
 def sha(path):return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 fixture=ROOT/'out/gui-window64.exe'
-subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-mwindows','-Wall','-Wextra','-Werror','-Wl,--no-insert-timestamp',
+subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-mwindows','-Wall','-Wextra','-Werror','-Wl,--no-insert-timestamp',*PREFIX_MAP,
                 '-o',str(fixture),str(ROOT/'fixtures/win32/gui_window.c'),'-lgdi32','-luser32'],check=True)
 text_fixture=ROOT/'out/gui-text64.exe'
-subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-mwindows','-Wall','-Wextra','-Werror','-Wl,--no-insert-timestamp',
+subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-mwindows','-Wall','-Wextra','-Werror','-Wl,--no-insert-timestamp',*PREFIX_MAP,
                 '-o',str(text_fixture),str(ROOT/'fixtures/win32/gui_text.c'),'-lgdi32','-luser32'],check=True)
 def locate(name):
     stem=name[:-4]

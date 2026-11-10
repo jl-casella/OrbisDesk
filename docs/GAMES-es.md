@@ -29,21 +29,18 @@ wsl -d Ubuntu-22.04 -- bash -lc 'cd /mnt/c/Users/JoseCasella/DEV/Codex/PS4 && py
 - `tools/make-start-menu.py` agrega Solitaire y Spider Solitaire a `Programs/Games`.
 - `tools/build-wine-hardware.py` tiene un bloque nuevo (W114) que comprueba `builder_sha256` y copia con `copy_verified` todo lo listado en `system32` y `notices` del manifiesto. No se cambió nada más de ese archivo.
 
-## 3D Pinball (Space Cadet): pendiente
+## 3D Pinball (Space Cadet): descartado
 
-El port libre es SpaceCadetPinball (MIT, `cb9b7b88`) sobre SDL2 2.32.8 y SDL2_mixer 2.8.1 (Zlib), fijados en `games.lock.json` y clonados en `.deps/`. El builder tiene la receta detrás de `--pinball` (SDL2 y SDL2_mixer compartidos, mixer sólo con WAVE y MIDI nativo; el exe linkeado con `-mwindows`). No está compilado: correr CMake sobre esos proyectos fue denegado por permisos en esta sesión. Sin `--pinball` el manifiesto no lista nada de Pinball y el menú no muestra la entrada; con `--pinball`, `make-start-menu.py` agrega "3D Pinball" solo.
-
-Los datos (`PINBALL.DAT`, los `.WAV`, `PINBALL.MID`) son de Microsoft y no hay equivalentes libres; no se empaquetan. El programa los busca en el directorio de trabajo, junto al exe y en `%APPDATA%\SpaceCadetPinball` (`SDL_GetBasePath`, `SDL_GetPrefPath`); en el prefix lo práctico es `C:\users\jose\AppData\Roaming\SpaceCadetPinball`. Sin datos muestra "The .dat file is missing" con esas rutas y no arranca la mesa.
+Se quitó en la W303 junto con sus pines de SDL2/SDL2_mixer: la mesa necesita los archivos de datos de Microsoft (`PINBALL.DAT`, `.WAV`, `PINBALL.MID`), que no se empaquetan, y la consola nunca lo tuvo.
 
 ## Sonido
 
-Ninguno de los juegos de cartas ni Minesweeper llama a `PlaySound` ni a `waveOut`: no hacen ruido en ningún sistema, así que no sirven para probar audio. El único candidato con sonido es Pinball.
+Ninguno de los juegos de cartas ni Minesweeper llama a `PlaySound` ni a `waveOut`: no hacen ruido en ningún sistema, así que no sirven para probar audio.
 
 Qué pasa en el runtime actual (código Wine fijado, `dlls/winmm`):
 
 - El runtime de hardware no lleva `mmdevapi.dll` ni `dsound.dll`, ni drivers (winealsa/winepulse). `WINMM_InitMMDevices` hace `CoCreateInstance(CLSID_MMDeviceEnumerator)`; al fallar, `waveOutGetNumDevs` devuelve 0 y `waveOutOpen` devuelve `MMSYSERR_NODRIVER` (`WINMM_StartDevicesThread` falla).
 - `PlaySound` síncrono devuelve `FALSE`. Con `SND_ASYNC` devuelve `TRUE` porque sólo crea el hilo; el hilo falla en `waveOutOpen` y termina sin aviso visible. Es el único caso donde el llamador ve éxito sin sonido.
-- SDL2 prueba WASAPI (mismo enumerador), DirectSound (`dsound.dll` ausente) y winmm; los tres fallan, `Mix_OpenAudio` devuelve error y SpaceCadetPinball imprime "Could not open audio device, continuing without audio" y sigue sin sonido.
 
 Esto no se tocó en W114.
 

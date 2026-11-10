@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "blocks": {
+    "graphics": {
+      "key": "b976fa99603d1f2c7c4044fa905d5217965873e6e228cd010617878812e9f845",
+      "repository": "jl-casella/OrbisDesk",
+      "tag": "prebuilt-graphics-b976fa99603d1f2c-42723419734",
+      "producer_sha": "f87d7589ecd6f82958615c44685dfcfe79ba0e46",
+      "run_id": "42723419734",
+      "manifest": {
+        "name": "graphics-b976fa99603d1f2c.manifest.json",
+        "sha256": "efb9cbf41530d01927d5c0869b54366a389f034ea34420aacf2256298e9b98db",
+        "size": 14593947,
+        "url": "https://github.com/jl-casella/OrbisDesk/releases/download/prebuilt-graphics-b976fa99603d1f2c-42723419734/graphics-b976fa99603d1f2c.manifest.json"
+      },
+      "payload": {
+        "sha256": "2bb08eddc72ee09ae41d1666b57006c3a5355ae7037c0675fa0993c2899c97a5",
+        "size": 587063606,
+        "parts": [
+          {
+            "name": "graphics-b976fa99603d1f2c.payload.tar.gz.part000",
+            "sha256": "2bb08eddc72ee09ae41d1666b57006c3a5355ae7037c0675fa0993c2899c97a5",
+            "size": 587063606,
+            "url": "https://github.com/jl-casella/OrbisDesk/releases/download/prebuilt-graphics-b976fa99603d1f2c-42723419734/graphics-b976fa99603d1f2c.payload.tar.gz.part000"
+          }
+        ]
+      }
+    },
+    "wine": {
+      "key": "c182a96dff5e8e9ff3d23696db16b7347e02e03630479f97be6fbb93b3ea91ef",
+      "repository": "jl-casella/OrbisDesk",
+      "tag": "prebuilt-wine-c182a96dff5e8e9f-42723419734",
+      "producer_sha": "f87d7589ecd6f82958615c44685dfcfe79ba0e46",
+      "run_id": "42723419734",
+      "manifest": {
+        "name": "wine-c182a96dff5e8e9f.manifest.json",
+        "sha256": "ca9e70c3058c8c235da4bfbf837bf7afacb8634b6dd4ed9c21a9fe4e44e1efb3",
+        "size": 4247455,
+        "url": "https://github.com/jl-casella/OrbisDesk/releases/download/prebuilt-wine-c182a96dff5e8e9f-42723419734/wine-c182a96dff5e8e9f.manifest.json"
+      },
+      "payload": {
+        "sha256": "f3a8a132b2501f1c666d507295ff84c592f15f16a943ef534dd32a3a2ce7c234",
+        "size": 526873906,
+        "parts": [
+          {
+            "name": "wine-c182a96dff5e8e9f.payload.tar.gz.part000",
+            "sha256": "f3a8a132b2501f1c666d507295ff84c592f15f16a943ef534dd32a3a2ce7c234",
+            "size": 526873906,
+            "url": "https://github.com/jl-casella/OrbisDesk/releases/download/prebuilt-wine-c182a96dff5e8e9f-42723419734/wine-c182a96dff5e8e9f.payload.tar.gz.part000"
+          }
+        ]
+      }
+    }
+  }
+}

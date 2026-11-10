@@ -24,6 +24,8 @@ Output: out/xinput-hw/{x86_64,i386}-windows/*.dll, out/xinput-hw/xinput-unix.o, 
 """
 import hashlib,json,pathlib,shlex,shutil,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
+# Keep the checkout and $HOME out of __FILE__ strings and debug info.
+PREFIX_MAP='-ffile-prefix-map=%s=. -ffile-prefix-map=%s=vk-h0'%(ROOT,pathlib.Path.home()/'vk-h0')
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build';UNIX=ROOT/'.deps/wine/ps4-unix'
 work=ROOT/'build/xinput-hw';overlay=work/'overlay';out=ROOT/'out/xinput-hw'
 MODULES=('xinput1_1','xinput1_2','xinput1_3','xinput1_4');ARCHES=('x86_64','i386')
@@ -374,6 +376,9 @@ for command in commands:
     run=subprocess.run(command,shell=True,cwd=BUILD,capture_output=True,text=True)
     if run.returncode:raise SystemExit(command[:300]+'\n'+run.stdout+run.stderr)
 modules={}
+# W303: xinput9_1_0 is the pinned tree's own (unpatched); build it, a clean host tree has not made it yet
+subprocess.run(['make','-j4',*['dlls/xinput9_1_0/%s-windows/xinput9_1_0.dll'%a for a in ARCHES]],cwd=BUILD,
+               capture_output=True,text=True,check=True)
 for a in ARCHES:
     (out/(a+'-windows')).mkdir(parents=True)
     for m in MODULES+('xinput9_1_0',):
@@ -398,7 +403,7 @@ def recipe(target):
         line=makefile[index];parts.append(line.rstrip().removesuffix('\\'))
         if not line.rstrip().endswith('\\'):break
         index+=1
-    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2')
+    return ' '.join(parts).replace('$(CC)',str(UNIX/'orbis-cc')).replace('$(CFLAGS)','-g -O2 '+PREFIX_MAP)
 unit='dlls/dnsapi/libresolv';compiled=work/'xinput-unixlib.o';final=out/'xinput-unix.o'
 command=shlex.split(recipe(unit+'.o').replace('$@',str(compiled)))
 wine_source=str(SOURCE/(unit+'.c'))

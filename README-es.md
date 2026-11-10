@@ -136,4 +136,17 @@ Sin hardware disponible, los supuestos de RWX/JIT y `sysarch` siguen sin validar
 
 GDI/VideoOut, Pad, AudioOut, RADV/Vulkan y DXVK permanecen pendientes del arranque Win32. No hay PKG publicable ni mediciones de FPS en consola.
 
-Las licencias y procedencia se detallan en [THIRD_PARTY.md](THIRD_PARTY-es.md).
+## Licencia
+
+El paquete de OrbisDesk (`OrbisDesk.pkg` y su ELF) se distribuye bajo la **GNU General Public License v3.0 o posterior**. Incluye el cliente nativo de Steam, que reutiliza código de [Playden for PS5](https://github.com/leolobato/playden-ps5) (GPL-3.0-or-later). Por eso la obra combinada es GPL-3.0-or-later.
+
+Cada archivo fuente mantiene la licencia indicada en su cabecera:
+- adaptadores, herramientas y fixtures propios: LGPL-2.1-or-later;
+- diagnósticos de `native/`: GPL-2.0-or-later;
+- Wine: LGPL-2.1-or-later.
+
+Todas son compatibles con GPL-3.0-or-later. La emulación opcional de la API de Steam por juego usa las DLL de [gbe_fork](https://github.com/Detanup01/gbe_fork) sin modificar (LGPL-3.0).
+
+Los textos de las licencias están en [LICENSES/](LICENSES). Los componentes, versiones y procedencia se detallan en [THIRD_PARTY.md](THIRD_PARTY-es.md).
+
+El cliente de Steam no es oficial y Valve no lo respalda. Steam es marca de Valve Corporation.

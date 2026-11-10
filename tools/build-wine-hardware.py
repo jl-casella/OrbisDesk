@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""W288 (W001 kept in reports/wine-hardware-w001/release-w001): real Wine boot objects, automatic PE32 launch, file logs and packaged host UI."""
-import argparse,hashlib,json,os,pathlib,shutil,subprocess,tarfile
+"""W303 (W001 kept in reports/wine-hardware-w001/release-w001): real Wine boot objects, automatic PE32 launch, file logs and packaged host UI."""
+import argparse,hashlib,json,os,pathlib,shutil,struct,subprocess,tarfile
 from wine_prefix import validate_package
 from wine_fonts import stage_fonts
 from orbis_package import package_app
@@ -13,14 +13,19 @@ from project_brand import normalize_marker
 EBOOT_BASE=0x1100000000
 ROOT=pathlib.Path(__file__).resolve().parents[1];sdk=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
 parser=argparse.ArgumentParser()
-parser.add_argument('--app-version',default='03.87',help='SFO and boot-selector version (NN.NN)')
+parser.add_argument('--app-version',default='04.02',help='SFO and boot-selector version (NN.NN)')
+parser.add_argument('--runtime-outside-package',action='store_true',
+                    help='development builds only: a package without the runtime (upload it with upload-hardware.py)')
+parser.add_argument('--allow-build-paths',action='store_true',
+                    help='development builds only: ship even if binaries still hold the build PC\'s paths (recorded in the manifest)')
 parser.add_argument('--mangohud',choices=('enabled','disabled'),default='enabled',
                     help='load the MangoHud layer (default enabled; disabled is a diagnostic control)')
 args=parser.parse_args()
 if not __import__('re').fullmatch(r'[0-9]{2}\.[0-9]{2}',args.app_version):
     parser.error('app-version must be NN.NN')
 mangohud_enabled=args.mangohud=='enabled'
-work=ROOT/'build/wine-hardware-w288';app=work/'app';out=ROOT/'out/wine-hardware-w288'
+work=ROOT/'build/wine-hardware-w303';app=work/'app';out=ROOT/'out/wine-hardware-w303'
+HW_BUILD_ID=work.name.rsplit('-',1)[1].upper()  # W303: the build this script makes (its work folder's name)
 app.mkdir(parents=True,exist_ok=True);out.mkdir(parents=True,exist_ok=True)
 base=json.loads((ROOT/'build/wine-boot/link-report.json').read_text())
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -57,7 +62,7 @@ if sha(ROOT/telemetry_build['object'])!=telemetry_build['object_sha256']:
 for key in ('gpu_source','gpu_library'):
     if sha(pathlib.Path(telemetry_build[key]))!=telemetry_build[key+'_sha256']:
         raise SystemExit('Telemetry GPU input changed: '+key)
-sink=work/'sink.c';sink.write_text((ROOT/'platform/ps4/pw_wine_sink_ps4.c').read_text().replace('"/data/frames','"/data/orbisdesk/w288/frames'))
+sink=work/'sink.c';sink.write_text((ROOT/'platform/ps4/pw_wine_sink_ps4.c').read_text().replace('"/data/frames','"/data/orbisdesk/w303/frames'))
 # W027: at most 8 BMP dumps (explorer builds its desktop over several frames); process time in the frame markers.
 sink_obj=work/'sink.o';run([*flags,'-I'+str(ROOT/'native'),'-DPW_SINK_MAX_DUMPS=8','-DPW_SINK_TIMING=1','-DPW_SINK_EXTERNAL_INPUT','-DPW_SINK_ASYNC','-DPW_SINK_GPU','-c',sink,'-o',sink_obj])
 # W028: controller input and the pointer position the sink draws.
@@ -178,6 +183,12 @@ for replaced,entry in world_build['replaces'].items():
     command=[str(ROOT/entry['object']) if arg==str(ROOT/replaced) else arg for arg in command]
 # Keep the proven library search order: build/wine-boot/lib/libc.a must win over the SDK
 # libc.a, whose readlink/lstat are raw FreeBSD syscalls (ENOSYS for W001 on hardware).
+# The Steam client inside the title (tools/build-steam-hosted.py): one object whose only globals are
+# pw_hw_steam_open/draw/pad/active (native/hw_pad.c, the sink), and its files for C:\orbis (below)
+steam_build=json.loads((ROOT/'build/steam-hosted/manifest.json').read_text())
+steam_object=ROOT/steam_build['object']
+if sha(steam_object)!=steam_build['object_sha256']:raise SystemExit('Steam object differs from its build')
+command[1:1]=[str(steam_object)]
 command[1:1]=['--wrap=exit','--wrap=_exit','--wrap=sceKernelDebugOutText','--wrap=write','--wrap=vfprintf','--wrap=fprintf','--wrap=fputs','--wrap=fwrite',str(wrapper),str(pad),str(overlay_obj)];command+=['-lSceSysmodule','-lSceSystemService','-lScePad','-lSceUserService','-lSceRtc','-lSceAudioOut']
 run(command)
 def symbols(elf,flag):
@@ -186,9 +197,10 @@ def symbols(elf,flag):
 captured=sorted(symbols(ROOT/'build/wine-boot/bootstrap.elf','--undefined-only')&symbols(work/'wine.elf','--defined-only'))
 if captured:raise SystemExit('kernel imports of the proven ELF became static definitions: '+', '.join(captured))
 env=dict(os.environ,OO_PS4_TOOLCHAIN=str(sdk))
-with (work/'build.log').open('a') as log:subprocess.run([str(sdk/'bin/linux/create-fself'),'-in='+str(work/'wine.elf'),
-    '-out='+str(work/'wine.oelf'),'--eboot',str(app/'eboot.bin'),'--paid','0x3800000000000011'],
-    env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
+# W303: relative paths from the work folder: create-fself records its -in path in the SELF
+with (work/'build.log').open('a') as log:subprocess.run([str(sdk/'bin/linux/create-fself'),'-in=wine.elf',
+    '-out=wine.oelf','--eboot',str(app.relative_to(work)/'eboot.bin'),'--paid','0x3800000000000011'],
+    cwd=work,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
 (work/'wine.exec.oelf').write_bytes(set_exec_type(work/'wine.oelf',app/'eboot.bin'))
 # Stage the same sealed prefix without DOS links: PS4 applications cannot use symbolic
 # links, so pw_wine_fs serves c: and z: from a fixed mount table.
@@ -208,6 +220,37 @@ with tarfile.open(package/'prefix.tar.gz') as archive:
         elif not member.issym():raise SystemExit('Unexpected prefix entry')
 for folder in ('wine-home','wine/lib/wine/i386-windows','wine/lib/wine/x86_64-windows','wine/lib/wine/x86_64-unix','wine/share/wine/nls'):
     (data/folder).mkdir(parents=True,exist_ok=True)
+# alpha-1: the prefix was made on the build PC as its user (W048); Wine runs as "orbis" (native/wine_boot.c).
+# The registry's profile paths are rewritten to C:\users\orbis below (system.reg, user.reg, userdef.reg)
+# and the host profile's folder is not shipped (W048's mirror makes the same tree for orbis).
+host_profiles=[p for p in (prefix/'drive_c/users').iterdir() if p.is_dir() and p.name not in ('Public','orbis')]
+if len(host_profiles)!=1:raise SystemExit('prefix: expected one host user profile, found '+str([p.name for p in host_profiles]))
+HOST_PROFILE_REG='C:\\\\users\\\\'+host_profiles[0].name   # as written in a .reg file (C:\\users\\<name>)
+def rename_host(text,name,values):
+    """alpha-1: the name of the machine that made the prefix (this PC, or a CI runner) out of the shipped registry.
+    values: {registry value: replacement}; each value must be there, and afterwards no old name may remain."""
+    old=set()
+    for value,new in values.items():
+        key='"'+value+'"="';parts=text.split(key)
+        if len(parts)<2:raise SystemExit(name+': expected a "'+value+'" value')
+        for i in range(1,len(parts)):
+            data,rest=parts[i].split('"',1)
+            host=data.lstrip('\\')   # LOGONSERVER is \\NAME (written \\\\NAME in a .reg file)
+            if not host:raise SystemExit(name+': empty "'+value+'"')
+            old.add(host)
+            parts[i]=data[:len(data)-len(host)]+new+'"'+rest
+        text=key.join(parts)
+    for host in old-{'ORBISDESK','orbisdesk'}:
+        if host.lower() in text.lower():raise SystemExit(name+': the build machine name '+host+' is still there')
+    return text
+def orbis_profile(text,name,required=True):
+    """The host profile's registry paths as C:\\users\\orbis; where required the name must be there (a prefix change shows)."""
+    if required and HOST_PROFILE_REG not in text:raise SystemExit(name+': expected '+HOST_PROFILE_REG)
+    text=text.replace(HOST_PROFILE_REG+'\\\\','C:\\\\users\\\\orbis\\\\').replace(HOST_PROFILE_REG+'"','C:\\\\users\\\\orbis"')
+    if HOST_PROFILE_REG.lower() in text.lower():raise SystemExit(name+': host profile path left after rewrite')
+    return text
+# (a prefix made from the closure alone has no profile paths in userdef.reg; W303)
+userdef_reg=prefix/'userdef.reg';userdef_reg.write_text(orbis_profile(userdef_reg.read_text(),'userdef.reg',required=False))
 shutil.copyfile(ROOT/'out/console32-bare.exe',data/'console32.exe')
 runtime=json.loads((ROOT/'out/wine/wine-runtime-manifest.json').read_text())
 def copy_verified(source,target,digest):
@@ -538,8 +581,10 @@ for proof in ('out/explorer-hw/manifest.json','out/wfm/manifest.json'):
 for target in (data/'wine/lib/wine/x86_64-windows/explorer.exe',prefix/'drive_c/windows/explorer.exe',
                prefix/'drive_c/windows/system32/explorer.exe'):
     copy_verified(ROOT/'out/explorer-hw'/explorer['path'],target,explorer['sha256'])
-# W058: WFM, the Winlator File Manager (tools/build-wfm.py), with its libcdio.dll, in system32.
-for name,e in json.loads((ROOT/'out/wfm/manifest.json').read_text())['files'].items():
+# W058: WFM, the Winlator File Manager (tools/build-wfm.py), in system32 (alpha-1: without libcdio.dll).
+wfm_files=json.loads((ROOT/'out/wfm/manifest.json').read_text())['files']
+if 'libcdio.dll' in wfm_files:raise SystemExit('out/wfm still has libcdio.dll: rerun tools/build-wfm.py (alpha-1 licences)')
+for name,e in wfm_files.items():
     if name.endswith(('.exe','.dll')):copy_verified(ROOT/'out/wfm'/e['path'],prefix/'drive_c/windows/system32'/name,e['sha256'])
 # W112: DOSBox Pure PE64 guest; sources/license travel with the runtime, no game included.
 dos=json.loads((ROOT/'out/wine-dos/manifest.json').read_text())
@@ -572,6 +617,12 @@ for name,e in guest32['modules'].items():
 # as PE64 in the pinned host Wine tree (make dlls/<name>/x86_64-windows/<name>.dll); their
 # Unix side is in the ELF (tools/build-winevulkan-ps4.py). vkprobe64.exe
 # (fixtures/win32/vkprobe64.c) uses them as a Windows program does.
+# W303: every unpatched module this builder takes from the host tree (here and below), made first: a cleaned
+# host tree (one rebuild with -ffile-prefix-map) only has what the closure and the stagers built
+HOST_TREE_MODULES=[f'dlls/{stem}/x86_64-windows/{stem}.dll' for stem in
+                   ('winevulkan','vulkan-1','winhttp','jsproxy','avrt','dxgi','d3dcompiler_47','dwmapi','wined3d')]
+HOST_TREE_MODULES+=[f'dlls/{stem}/i386-windows/{stem}.dll' for stem in ('d3dcompiler_47','dwmapi')]
+subprocess.run(['make','-j8',*HOST_TREE_MODULES],cwd=ROOT/'.deps/wine/runtime/build',capture_output=True,text=True,check=True)
 vulkan_files={}
 for stem in ('winevulkan','vulkan-1'):
     source=ROOT/'.deps/wine/runtime/build/dlls'/stem/'x86_64-windows'/(stem+'.dll')
@@ -666,6 +717,11 @@ layer32['layer']['library_path']='.\\libMangoHud.dll'
 # for a 32-bit process (a relaunched title).
 (wow64_dir/'MangoHud.x86_64.json').write_text(json.dumps(layer32,indent=4)+'\n')
 system_reg=prefix/'system.reg';system_text=system_reg.read_text()
+# W303: a prefix from a complete host tree has winevulkan's own Drivers key in both views (the 32-bit one naming
+# system32): replaced by this build's keys below; any other Khronos key is unexpected
+import re
+khronos=re.compile(r'\n\[Software\\\\(?:Wow6432Node\\\\)?Khronos\\\\Vulkan\\\\Drivers\][^\n]*\n(?:(?!\[)[^\n]*\n)*')
+system_text=khronos.sub('\n',system_text)
 if '[Software\\\\Khronos\\\\Vulkan' in system_text or '[Software\\\\Wow6432Node\\\\Khronos\\\\Vulkan' in system_text:
     raise SystemExit('system.reg already has Khronos keys')
 system_text+=('\n[Software\\\\Khronos\\\\Vulkan\\\\Drivers] 1793390636\n#time=1dd68a9cb52bf36\n'
@@ -704,7 +760,8 @@ AUDIO_CLASSES={'{BCDE0395-E52F-467C-8E3D-C4579291692E}':('mmdevapi.dll','MMDevic
 for view in ('Software\\\\Classes\\\\CLSID','Software\\\\Classes\\\\Wow6432Node\\\\CLSID'):
     for clsid,(dll,description) in AUDIO_CLASSES.items():
         key=view+'\\\\'+clsid
-        if '['+key+']' in system_text:raise SystemExit('system.reg already has '+key)
+        # W303: a prefix made with these DLLs built registers them itself (Wine's own registration): keep it
+        if '['+key+']' in system_text:continue
         system_text+=('\n['+key+'] 1793390636\n#time=1dd68a9cb52bf36\n@='+json.dumps(description)+'\n'
                       '\n['+key+'\\\\InprocServer32] 1793390636\n#time=1dd68a9cb52bf36\n'
                       '@="C:\\\\windows\\\\system32\\\\'+dll+'"\n"ThreadingModel"="Both"\n')
@@ -719,7 +776,7 @@ for dll in ('dmband','dmcompos','dmime','dmloader','dmscript','dmstyle','dmsynth
     if not classes:raise SystemExit('no coclass in '+dll+'.idl')
     for uuid,name in classes:
         key='Software\\\\Classes\\\\Wow6432Node\\\\CLSID\\\\{'+uuid.upper()+'}'
-        if '['+key+']' in system_text:raise SystemExit('system.reg already has '+key)
+        if '['+key+']' in system_text:continue  # W303: registered by the prefix itself, as above
         system_text+=('\n['+key+'] 1793390636\n#time=1dd68a9cb52bf36\n@='+json.dumps(name)+'\n'
                       '\n['+key+'\\\\InprocServer32] 1793390636\n#time=1dd68a9cb52bf36\n'
                       '@="C:\\\\windows\\\\system32\\\\'+dll+'.dll"\n"ThreadingModel"="Both"\n')
@@ -733,8 +790,15 @@ for name,digest in (('GeneralUser-GS.sf2','9575028c7a1f589f5770fccc8cff2734566af
     copy_verified(SOUNDFONT/name,prefix/'drive_c/windows'/('GeneralUser-GS.sf2' if name.endswith('.sf2') else 'GeneralUser-GS-LICENSE.txt'),digest)
 # The sealed prefix names C:\windows\system32\drivers\gm.dls, which it does not have.
 gm_old='"GMFilePath"="C:\\\\windows\\\\system32\\\\drivers\\\\gm.dls"'
-if system_text.count(gm_old)!=2:raise SystemExit('system.reg: expected GMFilePath in both views')
+if system_text.count(gm_old) not in (1,2):raise SystemExit('system.reg: expected GMFilePath in one or both views')
 system_text=system_text.replace(gm_old,'"GMFilePath"="C:\\\\windows\\\\GeneralUser-GS.sf2"')
+# W303: a prefix made from the closure alone has it in the 64-bit view only; 32-bit programs (W137's DirectMusic)
+# read the Wow6432Node view
+if '[Software\\\\Wow6432Node\\\\Microsoft\\\\DirectMusic]' not in system_text:
+    system_text+=('\n[Software\\\\Wow6432Node\\\\Microsoft\\\\DirectMusic] 1793390636\n#time=1dd68a9cb52bf36\n'
+                  '"GMFilePath"="C:\\\\windows\\\\GeneralUser-GS.sf2"\n')
+elif '"GMFilePath"="C:\\\\windows\\\\GeneralUser-GS.sf2"' not in system_text.split('[Software\\\\Wow6432Node\\\\Microsoft\\\\DirectMusic]',1)[1].split('\n[',1)[0]:
+    raise SystemExit('system.reg: Wow6432Node DirectMusic without GMFilePath')
 # W177 (phase 9): GeckoPath for 64- and 32-bit programs (a 32-bit program sees syswow64 as system32).
 # Without it mshtml starts "control.exe appwiz.cpl install_gecko" in a new process (nsembed.c).
 # W262 (W261: Prince of Persia's launcher runs a DirectX version test): HKLM\Software\Microsoft\DirectX as wine.inf's
@@ -745,7 +809,12 @@ for view in ('Software\\\\Microsoft\\\\DirectX','Software\\\\Wow6432Node\\\\Micr
     system_text+=('\n['+view+'] 1793390636\n#time=1dd68a9cb52bf36\n'
                   '"InstalledVersion"=hex:00,00,00,09,00,00,00,00\n"Version"="4.09.00.0904"\n')
 for view,arch in (('Software\\\\Wine\\\\MSHTML\\\\2.47.4','x86_64'),('Software\\\\Wow6432Node\\\\Wine\\\\MSHTML\\\\2.47.4','x86')):
-    if '['+view+']' in system_text:raise SystemExit('system.reg already has '+view)
+    if '['+view+']' in system_text:
+        # W303: kept only when the prefix's own value is this one
+        block=system_text.split('['+view+']',1)[1].split('\n[',1)[0]
+        if '"GeckoPath"="C:\\\\windows\\\\system32\\\\gecko\\\\2.47.4\\\\wine-gecko-2.47.4-'+arch+'"' not in block:
+            raise SystemExit('system.reg already has '+view+' with another GeckoPath')
+        continue
     system_text+=('\n['+view+'] 1793390636\n#time=1dd68a9cb52bf36\n'
                   '"GeckoPath"="C:\\\\windows\\\\system32\\\\gecko\\\\2.47.4\\\\wine-gecko-2.47.4-'+arch+'"\n')
 # W261: the COM registration of the modules above and of avifil32 (W260), both views (tools/stage-wine-i386.py);
@@ -761,6 +830,9 @@ system_text+=mshtml_reg.read_text()
 dshow_reg=ROOT/'out/dshow-i386'/dshow['registry']['path']
 if sha(dshow_reg)!=dshow['registry']['sha256']:raise SystemExit('DirectShow registry differs from its manifest')
 system_text+=dshow_reg.read_text()
+# alpha-1: the build PC's name out of the shipped registry (the prefix was made on the host)
+system_text=rename_host(system_text,'system.reg',{'ComputerName':'ORBISDESK','Hostname':'orbisdesk'})
+system_text=orbis_profile(system_text,'system.reg')
 system_reg.write_text(system_text)
 # W226: the same registry as a file Wine never rewrites; the launcher appends the keys the console's
 # system.reg lacks before Wine starts (native/wine_hardware.c merge_system_reg). W225's keys were lost
@@ -772,6 +844,11 @@ system_reg.write_text(system_text)
 # name and format, so the registry and ps5drv's WINE_PS5_WALLPAPER stay as they are.
 wallpaper=json.loads((ROOT/'out/wallpaper-cc0/manifest.json').read_text())['wallpaper']
 copy_verified(ROOT/'out/wallpaper-cc0'/wallpaper['path'],prefix/'drive_c/windows/orbis-hills.bmp',wallpaper['sha256'])
+# W292: more wallpapers to choose from (the desktop's right-click menu > Wallpaper lists the BMPs in
+# C:\windows), drawn by tools/make-wallpaper-set.py; the default stays orbis-hills.bmp.
+wallpaper_set=json.loads((ROOT/'out/wallpaper-set/manifest.json').read_text())
+for item in wallpaper_set['wallpapers']:
+    copy_verified(ROOT/'out/wallpaper-set'/item['path'],prefix/'drive_c/windows'/item['path'],item['sha256'])
 user_reg=prefix/'user.reg';text=user_reg.read_text()
 for old,new in (('"Wallpaper"=""','"Wallpaper"="C:\\\\windows\\\\orbis-hills.bmp"'),('"DragFullWindows"="0"','"DragFullWindows"="1"')):
     if text.count(old)!=1:raise SystemExit('user.reg: unexpected '+old)
@@ -816,8 +893,11 @@ DARK={'ActiveBorder':'45 45 48','ActiveTitle':'0 90 158','AppWorkspace':'30 30 3
       'MenuText':'235 235 235','Scrollbar':'55 55 58','TitleText':'255 255 255','Window':'30 30 30',
       'WindowFrame':'10 10 10','WindowText':'235 235 235'}
 colours=text.index('[Control Panel\\\\Colors]');colours=text.index('\n',text.index('#time=',colours))+1
-if not text[colours:].startswith('\n'):raise SystemExit('user.reg: Colors key is not empty')
-text=text[:colours]+''.join('"%s"="%s"\n'%item for item in sorted(DARK.items()))+text[colours:]
+# W303: a prefix made from the closure alone already has Wine's default colours there; they are replaced
+colours_end=text.index('\n[',colours-1)+1 if '\n[' in text[colours-1:] else len(text)
+existing=[line for line in text[colours:colours_end].split('\n') if line.strip()]
+if any(not line.startswith('"') or '"="' not in line for line in existing):raise SystemExit('user.reg: unexpected Colors key')
+text=text[:colours]+''.join('"%s"="%s"\n'%item for item in sorted(DARK.items()))+'\n'+text[colours_end:]
 # W175: the dark scheme above and a light one (Windows 10's default colours) as .theme files in
 # resources\themes; winecfg's Desktop Integration applies one with "Install theme..."
 # (programs/winecfg/theme.c, do_parse_theme reads its [Control Panel\Colors]). After the first
@@ -842,19 +922,38 @@ theme=text.index('[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\ThemeMa
 end=text.index('\n\n',theme)
 if text[theme:end].count('"ThemeActive"="1"')!=1:raise SystemExit('user.reg: ThemeManager is not as expected')
 text=text[:theme]+text[theme:end].replace('"ThemeActive"="1"','"ThemeActive"="0"')+text[end:]
+text=rename_host(text,'user.reg',{'LOGONSERVER':'ORBISDESK','USERDOMAIN':'ORBISDESK'})
+text=orbis_profile(text,'user.reg')
+# W303: the window metrics every build until W302 shipped (twips, no font entries; the console showed Start right
+# with them). A prefix from a complete host tree writes pixel sizes and Tahoma fonts there, and Start looked cut.
+# Console-owned (tools/console_state.py): a console that has them keeps its own.
+metrics_key='[Control Panel\\\\Desktop\\\\WindowMetrics]'
+metrics_at=text.index(metrics_key);metrics_body=text.index('\n',text.index('#time=',metrics_at))+1
+metrics_end=text.index('\n[',metrics_body-1)+1
+text=text[:metrics_body]+''.join('"%s"="%s"\n'%item for item in (
+    ('BorderWidth','-15'),('CaptionHeight','-270'),('CaptionWidth','-270'),('IconSpacing','-1125'),('IconTitleWrap','1'),
+    ('IconVerticalSpacing','-1125'),('MenuHeight','-270'),('MenuWidth','-270'),('PaddedBorderWidth','0'),('ScrollHeight','-240'),
+    ('ScrollWidth','-240'),('SmCaptionHeight','-225'),('SmCaptionWidth','-225')))+'\n'+text[metrics_end:]
+# W303: the HKCU part of the W261 modules' registration the sealed user.reg lacks (urlmon's Internet Settings),
+# from tools/stage-wine-i386.py, as its system.reg.add above
+if 'user_registry' in wow32:
+    wow32_user_reg=ROOT/'out/wine-i386'/wow32['user_registry']['path']
+    if sha(wow32_user_reg)!=wow32['user_registry']['sha256']:raise SystemExit('W261 user registry differs from its manifest')
+    text+=wow32_user_reg.read_text()
 user_reg.write_text(text)
 # W048: Wine runs on hardware as user "orbis" (native/wine_boot.c), but the prefix was made
 # on the host for another user, so C:\users\orbis (the user's Start menu, AppData) did
 # not exist. The host profile is directories only; the same tree is made for orbis.
-profiles=[p for p in (prefix/'drive_c/users').iterdir() if p.is_dir() and p.name not in ('Public','orbis')]
-if len(profiles)!=1:raise SystemExit('prefix: expected one host user profile, found '+str([p.name for p in profiles]))
+profiles=host_profiles
 for folder in sorted(p for p in profiles[0].rglob('*') if p.is_dir()):
     (prefix/'drive_c/users/orbis'/folder.relative_to(profiles[0])).mkdir(parents=True,exist_ok=True)
-# A rebuild can retain the MangoHud config generated below. It is overwritten
-# deterministically, so permit only that file; still reject other profile data.
+# A runtime left by a build before alpha-1 can hold the MangoHud config that went there (now in orbis'
+# profile, below); permit only that file; still reject other profile data.
 generated_config=profiles[0]/'AppData/Roaming/MangoHud/MangoHud.conf'
 if any(p.is_file() and p!=generated_config for p in profiles[0].rglob('*')):
     raise SystemExit('prefix: host profile has files; copy them too')
+# alpha-1: the host profile is not shipped (the registry names C:\users\orbis, above)
+shutil.rmtree(profiles[0])
 # W045: Start menu folders and shortcuts (tools/make-start-menu.py) in the common Start menu.
 start_menu=json.loads((ROOT/'out/start-menu/manifest.json').read_text())
 for name,e in start_menu['shortcuts'].items():
@@ -864,9 +963,42 @@ for name,e in start_menu['shortcuts'].items():
 # the File Manager shortcut there. W169: in the user's own Desktop (C:\users\orbis\Desktop,
 # FOLDERID_Desktop) rather than the common one: WFM's Desktop opens that folder, and what the
 # user puts there shows on the desktop too (explorer reads both).
+# W303: a prefix made from the closure alone has only AppData in the profile; the user's folders are made here
+# (shell32 makes them at first use too, but explorer shows C:\users\orbis\Desktop from the start)
+for folder in ('Desktop','Documents','Downloads','Favorites','Music','Pictures','Videos'):
+    (prefix/'drive_c/users/orbis'/folder).mkdir(parents=True,exist_ok=True)
+# and the common profile W302's prefix had (explorer also lists C:\users\Public\Desktop)
+for folder in ('Desktop','Documents','Music','Pictures','Videos'):
+    (prefix/'drive_c/users/Public'/folder).mkdir(parents=True,exist_ok=True)
 for name in ('Programs/Accessories/File Manager.lnk',):
     copy_verified(ROOT/'out/start-menu'/name,prefix/'drive_c/users/orbis/Desktop'/pathlib.PurePosixPath(name).name,
                   start_menu['shortcuts'][name]['sha256'])
+# The Steam client: C:\orbis\steam (CA bundle, gbe_fork's DLLs with their licence and source note),
+# C:\orbis\steam-open.exe (the Start menu item's and Desktop link's request) and the Desktop link
+for name,digest in steam_build['prefix_files'].items():
+    steam_target=prefix/'drive_c'/name;steam_target.parent.mkdir(parents=True,exist_ok=True)
+    copy_verified(ROOT/'build/steam-hosted/prefix'/name,steam_target,digest)
+# alpha-1 (docs/RELEASE_LICENSES.md): the licence texts, the copyright notices MIT/BSD/zlib ask
+# for (LICENSES/NOTICE.txt), THIRD_PARTY.md and where to get the corresponding source, in C:\orbis\licenses.
+SOURCE_REPOSITORY='https://github.com/jl-casella/OrbisDesk'
+licenses=prefix/'drive_c/orbis/licenses';licenses.mkdir(parents=True,exist_ok=True)
+license_inputs=sorted((ROOT/'LICENSES').glob('*.txt'))+[ROOT/'THIRD_PARTY.md']
+if not any(p.name=='NOTICE.txt' for p in license_inputs):raise SystemExit('LICENSES/NOTICE.txt is missing')
+for source in license_inputs:shutil.copyfile(source,licenses/source.name)
+head=subprocess.run(['git','-C',str(ROOT),'rev-parse','HEAD'],capture_output=True,text=True,check=True).stdout.strip()
+dirty=bool(subprocess.run(['git','-C',str(ROOT),'status','--porcelain','--untracked-files=no'],
+                          capture_output=True,text=True,check=True).stdout.strip())
+# the tag and asset names tools/ci/release.py publishes: orbisdesk-<version>-<commit[:12]>
+release_tag='orbisdesk-'+args.app_version+'-'+head[:12]
+(licenses/'SOURCE.txt').write_text(
+    'OrbisDesk W303 ('+args.app_version+'): corresponding source\r\n\r\n'
+    'OrbisDesk is free software under the GNU GPL version 3 or later (GPL-3.0.txt).\r\n'
+    'Source code: '+SOURCE_REPOSITORY+', tag '+release_tag+' (commit '+head+(' plus local changes' if dirty else '')+').\r\n'
+    'Third-party sources (Wine, Mesa, VLC, Wine Gecko, SeaMonkey, DOSBox Pure, gbe_fork, curl, Mbed TLS and others)\r\n'
+    'are attached to the same release as '+release_tag+'-third-party-sources.tar (split into .partNNN files\r\n'
+    'when large), with the SHA-256 of every source inside it in SOURCES.txt. For three years from the release\r\n'
+    'date the same sources are also available on request through the repository\'s issue tracker.\r\n')
+manifest_licenses={p.name:sha(p) for p in sorted(licenses.iterdir())}
 # Phase 9: the SeaMonkey profile the Start menu shortcut passes with -profile (fixtures/browser).
 # SeaMonkey 2.53 is the browser (the user's choice; W177-W215 staged two Pale Moon profiles, whose
 # user.js on the console are obsolete_files below). SeaMonkey itself is the user's own copy, not in
@@ -875,14 +1007,35 @@ for name in ('Programs/Accessories/File Manager.lnk',):
 seamonkey_profile=prefix/'drive_c/users/orbis/AppData/Roaming/Mozilla/SeaMonkey/Profiles/orbis'
 seamonkey_profile.mkdir(parents=True,exist_ok=True)
 (seamonkey_profile/'user.js').write_text((ROOT/'fixtures/browser/seamonkey-user.js').read_text())
+# W303 (alpha-1): SeaMonkey itself ships, so the Start menu shortcut works on a clean install: the official
+# win64 en-US build pinned in product-assets.lock.json (MPL-2.0, LICENSES/MPL-2.0.txt), as the console had it.
+import zipfile
+seamonkey_spec=json.loads((ROOT/'product-assets.lock.json').read_text())['downloads']['seamonkey']
+seamonkey_zip=ROOT/seamonkey_spec['path']
+if sha(seamonkey_zip)!=seamonkey_spec['sha256']:raise SystemExit('SeaMonkey archive differs from product-assets.lock.json')
+seamonkey_dir=prefix/'drive_c/Program Files/SeaMonkey'
+if seamonkey_dir.exists():shutil.rmtree(seamonkey_dir)
+with zipfile.ZipFile(seamonkey_zip) as archive:
+    for member in archive.infolist():
+        parts=pathlib.PurePosixPath(member.filename).parts
+        if not parts or parts[0]!='seamonkey' or '..' in parts:raise SystemExit('unexpected SeaMonkey entry '+member.filename)
+        if member.is_dir() or len(parts)==1:continue
+        target=seamonkey_dir.joinpath(*parts[1:]);target.parent.mkdir(parents=True,exist_ok=True)
+        with archive.open(member) as source,target.open('wb') as out_file:shutil.copyfileobj(source,out_file)
+if not (seamonkey_dir/'seamonkey.exe').is_file():raise SystemExit('SeaMonkey archive has no seamonkey.exe')
+# W303: VLC opened without the Start menu's options (from WFM, a file association) asks its first-run privacy
+# question on a clean install; the answer the shortcuts give (--no-qt-privacy-ask, no network metadata), as VLC
+# writes it. (The DVD Player shortcut closing at once without a disc is W246's --play-and-exit, not this.)
+vlc_profile=prefix/'drive_c/users/orbis/AppData/Roaming/vlc';vlc_profile.mkdir(parents=True,exist_ok=True)
+(vlc_profile/'vlcrc').write_text('[qt] # Qt interface\nqt-privacy-ask=0\n\n[core] # core program\nmetadata-network-access=0\n')
 # W090: the Graphics Tools shortcuts' icons (tools/make-icons.py) and the MangoHud settings that
 # its "MangoHud Config" shortcut opens (%APPDATA%\MangoHud\MangoHud.conf, MangoHud's own path).
 icons=json.loads((ROOT/'out/icons/manifest.json').read_text())['icons']
 (prefix/'drive_c/orbis/icons').mkdir(exist_ok=True)
 for name,digest in icons.items():copy_verified(ROOT/'out/icons'/name,prefix/'drive_c/orbis/icons'/name,digest)
-# W092: %APPDATA% is the host profile's (W091: C:\users\jose\AppData\Roaming), not orbis'
-if profiles[0].name!='jose':raise SystemExit('prefix: host profile is not jose; update tools/make-start-menu.py')
-mangohud_conf=prefix/'drive_c/users'/profiles[0].name/'AppData/Roaming/MangoHud/MangoHud.conf'
+# W092: %APPDATA% follows the registry's shell folders; since alpha-1 they name C:\users\orbis (above),
+# as tools/make-start-menu.py's "MangoHud Config" shortcut does
+mangohud_conf=prefix/'drive_c/users/orbis/AppData/Roaming/MangoHud/MangoHud.conf'
 mangohud_conf.parent.mkdir(parents=True,exist_ok=True)
 mangohud_conf.write_text('# MangoHud settings (OrbisDesk). Save and restart OrbisDesk to apply.\n'
                          '# Options: https://github.com/flightlessmango/MangoHud#hud-configuration\n'
@@ -903,6 +1056,41 @@ for arch,windows in (('i386-windows','syswow64'),('x86_64-windows','system32')):
 # modules from about 332 MiB to 158 MiB; Wine's builtin marker stays. A module llvm-strip
 # refuses (e.g. the guest ntdll and kernelbase: "unexpected associative section index") is
 # kept as it is.
+# W303: what earlier sealed prefixes had in syswow64 and one made from the closure alone lacks (found against W302):
+# the NLS tables and winmetadata, the same data as system32's; and Wine's 32-bit programs, built in the host tree
+windows=prefix/'drive_c/windows'
+for item in sorted((windows/'system32').iterdir()):
+    if item.suffix.lower()=='.nls' and not (windows/'syswow64'/item.name).exists():shutil.copyfile(item,windows/'syswow64'/item.name)
+if (windows/'system32/winmetadata').is_dir():
+    shutil.copytree(windows/'system32/winmetadata',windows/'syswow64/winmetadata',dirs_exist_ok=True)
+# W303: Control Panel applets a complete host tree adds that do not load here (CPlApplet not found: no Bluetooth or
+# infrared stack); the user's choice keeps appwiz, desk and inetcpl, which open
+REMOVED_APPLETS=('bthprops.cpl','irprops.cpl')
+for folder in ('system32','syswow64'):
+    for name in REMOVED_APPLETS:(windows/folder/name).unlink(missing_ok=True)
+# W303: what tools/stage-wine-i386.py's W261_LEFT_OUT leaves out on purpose, which a prefix from a complete host tree
+# brings back: modules whose Unix side is not in the ELF (dwrite: SeaMonkey drew pages without text and VLC's Qt
+# quit, both through DirectWrite), services that do not run, printing, WinRT, 16-bit... W302 had none of them.
+# Keys starting "x86_64 only" apply to system32. Control Panel applets the user keeps (W303) stay.
+from wine_product_seeds import declaration
+# (and the two W302's prefix had: apisetschema.dll, which out/wine-pe64 provides and the prefix preflight requires
+# in system32 (native/wine_prefix_probe.c, dll-pe64; W303's first final build stopped with rc 95 without it), and
+# newdev.dll)
+KEPT_LEFT_OUT={'appwiz.cpl','desk.cpl','inetcpl.cpl','joy.cpl','apisetschema.dll','newdev.dll'}
+left_out_removed=[]
+for reason,names in declaration(ROOT/'tools/stage-wine-i386.py','W261_LEFT_OUT').items():
+    for folder in (('system32',) if reason.startswith('x86_64 only') else ('system32','syswow64')):
+        for name in names:
+            target=windows/folder/name
+            if name.lower() in KEPT_LEFT_OUT or not target.is_file():continue
+            target.unlink();left_out_removed.append(folder+'/'+name)
+print(json.dumps({'left_out_removed':len(left_out_removed)}))
+I386_PROGRAMS=('explorer','rundll32','svchost','winedevice')
+subprocess.run(['make','-j8',*[f'programs/{p}/i386-windows/{p}.exe' for p in I386_PROGRAMS]],
+               cwd=ROOT/'.deps/wine/runtime/build',capture_output=True,text=True,check=True)
+for p in I386_PROGRAMS:
+    target=windows/'syswow64'/(p+'.exe')
+    if not target.exists():shutil.copyfile(ROOT/'.deps/wine/runtime/build/programs'/p/'i386-windows'/(p+'.exe'),target)
 stripped={'modules':0,'bytes_before':0,'bytes_after':0,'kept':[]}
 # W120: also the i386 modules (W119 added ~100 MiB of PE32 debug information with wined3d).
 for folder in (data/'wine/lib/wine/x86_64-windows',prefix/'drive_c/windows/system32',prefix/'drive_c/orbis',
@@ -918,27 +1106,39 @@ for folder in (data/'wine/lib/wine/x86_64-windows',prefix/'drive_c/windows/syste
         stripped['modules']+=1;stripped['bytes_before']+=before;stripped['bytes_after']+=module.stat().st_size
 print(json.dumps({'stripped_modules':stripped['modules'],'mib_before':stripped['bytes_before']>>20,
                   'mib_after':stripped['bytes_after']>>20,'kept':len(stripped['kept'])}))
-content='IV0000-ORBW00002_00-ORBISWINW0010000'
-pkg=package_app(ROOT,app,out,'OrbisDesk','ORBW00002',content,version=args.app_version,filename='OrbisDesk.pkg')
-manifest={'build':'W288','app_version':args.app_version,'title_id':'ORBW00002','package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),
-    'package_bytes':pkg.stat().st_size,'eboot_sha256':sha(app/'eboot.bin'),'base_wine_elf_sha256':base['bootstrap_sha256'],
-    'wine_commit':wine_commit,'prefix_package':verified,'hardware_status':'pending','Wine_booted':False,
-    'runtime_root':str(data.relative_to(ROOT)),
-    'directories':[p.relative_to(data).as_posix() for p in sorted(data.rglob('*')) if p.is_dir()],
-    'runtime_files':{p.relative_to(data).as_posix():{'sha256':sha(p),'bytes':p.stat().st_size} for p in sorted(data.rglob('*')) if p.is_file()},
-    'source_hashes':{str(p.relative_to(ROOT)):sha(p) for p in (ROOT/'native/wine_hardware.c',ROOT/'native/hw_text.h',ROOT/'platform/ps4/pw_wine_fs.c',ROOT/'platform/ps4/pw_wine_platform.c',
-        ROOT/'native/wine_boot.c',ROOT/'native/hw_pad.c',ROOT/'native/hw_overlay.c',ROOT/'platform/ps4/pw_wine_sink_ps4.c',ROOT/'tools/build-wine-hardware.py',ROOT/'tools/orbis_package.py')},
-    'link_command':command,'eboot_base':hex(EBOOT_BASE),'drive_mounts':{'dosdevices/c:':'../drive_c','dosdevices/z:':'../..'},
-    'expected_result':'reports/increment15/native-prefix-console32/result.txt'}
-# Reference directory naming differs in older evidence; the canonical increment11
-# fixture output is the same console32-bare contract used by the Linux runner.
-manifest['expected_result']='reports/increment25-windows-reference/text-result.txt'
-manifest['program']='C:\\windows\\explorer.exe /desktop=shell,1280x720'
-manifest['runs_until_closed']=True
+# W303 (alpha-1): debug information that still names the build PC, anywhere in the runtime (subfolders such as
+# drivers, winsxs and i386-guest, and the modules llvm-strip refused above): assembler units (compiler-rt,
+# SymCrypt .S) keep their full source and build paths despite -ffile-prefix-map. Stripped here, with the
+# architecture's MinGW strip when llvm-strip refuses; what still names the build PC fails the check below.
+build_identity=sorted({str(ROOT),str(ROOT).replace('/','\\'),str(pathlib.Path.home())}-{'','/','\\'})
+# Prebuilt third-party toolchains carry their own builders' GitHub Actions paths: llvm-mingw's libc++/libunwind
+# (MinGW DLLs and EXEs) and the OpenOrbis SDK's libunwind (the ELF). On a GitHub runner, whose home is also
+# /home/runner, those would read as this build's; they are not, so they are not counted.
+FOREIGN_BUILD_PATHS=('/home/runner/work/llvm-mingw/','/home/runner/work/llvm-project/')
+def names_build_pc(blob):
+    for identity in build_identity:
+        for encoding in ('utf-8','utf-16-le'):
+            needle=identity.encode(encoding)
+            count=blob.count(needle)
+            if not count:continue
+            foreign=sum(blob.count(f.encode(encoding)) for f in FOREIGN_BUILD_PATHS if f.startswith(identity))
+            if count>foreign:return True
+    return False
+stripped['identity']=[]
+for module in sorted(p for p in data.rglob('*') if p.is_file()):
+    blob=module.read_bytes()
+    if blob[:2]!=b'MZ' or not names_build_pc(blob):continue
+    machine=struct.unpack_from('<H',blob,struct.unpack_from('<I',blob,0x3c)[0]+4)[0] if len(blob)>0x40 else 0
+    temporary=module.with_name(module.name+'.stripped')
+    for tool in ('llvm-strip-19',{0x8664:'x86_64-w64-mingw32-strip',0x14c:'i686-w64-mingw32-strip'}.get(machine)):
+        if tool and not subprocess.run([tool,'--strip-debug','-o',str(temporary),str(module)],capture_output=True).returncode:
+            temporary.replace(module);stripped['identity'].append(str(module.relative_to(data)));break
+        temporary.unlink(missing_ok=True)
+print(json.dumps({'identity_stripped':len(stripped['identity'])}))
 # W170: the console keeps /data/wine-prefix between builds and the upload only adds files, so a
 # file a build stops shipping stays. W168's shortcut in the common Desktop showed File Manager
 # twice next to W169's one in the user's Desktop. upload-hardware.py deletes these paths.
-manifest['obsolete_files']=['wine-prefix/drive_c/users/Public/Desktop/File Manager.lnk',
+obsolete_files=['wine-prefix/drive_c/users/Public/Desktop/File Manager.lnk',
     # W179 (phase 9): iexplore cannot run in one process (it registers a local COM server, which
     # needs rpcss); W177 shipped its Start menu shortcut, which W179 no longer makes.
     'wine-prefix/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Internet/Internet Explorer.lnk',
@@ -954,16 +1154,83 @@ manifest['obsolete_files']=['wine-prefix/drive_c/users/Public/Desktop/File Manag
     'wine-prefix/drive_c/users/orbis/AppData/Roaming/Moonchild Productions/Pale Moon/Profiles/orbis-nojit/user.js']
 # W243: the VLC plugins stage-vlc.py leaves out. W241 shipped 290 and VLC loads whatever is in its
 # plugins folder (W241 ran out of descriptors), so the console's copies go too.
-manifest['obsolete_files']+=['wine-prefix/drive_c/Program Files/VLC/'+name for name in vlc['left_out_plugins']]
+obsolete_files+=['wine-prefix/drive_c/Program Files/VLC/'+name for name in vlc['left_out_plugins']]
+# alpha-1 licences: libcdio.dll (GPL-3.0, prebuilt, no known source) is no longer shipped; builds since W058
+# put it in system32, so the console's copy goes too.
+obsolete_files.append('wine-prefix/drive_c/windows/system32/libcdio.dll')
+# W303: the applets removed above, on a console a W303 package installed before
+obsolete_files+=['wine-prefix/drive_c/windows/'+folder+'/'+name for folder in ('system32','syswow64') for name in REMOVED_APPLETS]
+# The runtime's inventory (also the manifest's, below) and what the console must drop
+runtime_directories=[p.relative_to(data).as_posix() for p in sorted(data.rglob('*')) if p.is_dir()]
+runtime_files={p.relative_to(data).as_posix():{'sha256':sha(p),'bytes':p.stat().st_size} for p in sorted(data.rglob('*')) if p.is_file()}
+for path in obsolete_files:
+    if not path.startswith('wine-prefix/') or '..' in path.split('/') or path in runtime_files:
+        raise SystemExit('obsolete file must be an unshipped wine-prefix path: '+path)
+user_reg_reset=[]   # CONSOLE_OWNED keys this build takes from its own user.reg once (tools/console_state.py)
+# alpha-1: the runtime travels inside OrbisDesk.pkg as /app0/runtime, and the launcher installs it into
+# /data on the first start of each build (native/hw_install.c), with install.json as its contract:
+# the same rules tools/upload-hardware.py applies over FTP. --runtime-outside-package keeps the old
+# split (a 35 MB package and an FTP-uploaded runtime) for quick development builds.
+from console_state import CONSOLE_OWNED
+install={'schema_version':1,'build':HW_BUILD_ID,'app_version':args.app_version,'state_root':'/data/orbisdesk',
+    'writable':['wine-prefix','wine-home'],'directories':runtime_directories,
+    'files':[[path,e['sha256'],e['bytes']] for path,e in runtime_files.items()],
+    'obsolete_files':obsolete_files,'console_owned':list(CONSOLE_OWNED),'user_reg_reset':user_reg_reset,
+    'host_profile':host_profiles[0].name,'bytes':sum(e['bytes'] for e in runtime_files.values())}
+install_json=work/'install.json'
+install_json.write_text(json.dumps(install,indent=1,ensure_ascii=False)+'\n',encoding='utf-8')
+# the same list as lines for the launcher (native/hw_install.h hw_install_parse); paths last, they hold spaces
+def install_line(kind,value):
+    if '\n' in value or '\r' in value:raise SystemExit('install list: line break in '+repr(value))
+    return kind+' '+value+'\n'
+install_text='ORBISDESK-INSTALL 1\n'+install_line('B',HW_BUILD_ID)+install_line('H',host_profiles[0].name)+install_line('T',str(install['bytes']))
+install_text+=''.join(install_line('W',w) for w in install['writable'])
+install_text+=''.join(install_line('K',k) for k in CONSOLE_OWNED)+''.join(install_line('R',k) for k in user_reg_reset)
+install_text+=''.join(install_line('D',d) for d in runtime_directories)
+install_text+=''.join(install_line('F','%s %d %s'%(e['sha256'],e['bytes'],path)) for path,e in runtime_files.items())
+install_text+=''.join(install_line('O',o) for o in obsolete_files)
+install_txt=work/'install.txt';install_txt.write_bytes(install_text.encode('utf-8'))
+embedded={} if args.runtime_outside_package else {
+    **{'runtime/'+path:data/path for path in runtime_files},'runtime/install.json':install_json,'runtime/install.txt':install_txt}
+# alpha-1: nothing of the build PC in what ships. Its checkout and home paths (compilers' __FILE__ and debug
+# strings: -ffile-prefix-map in the builders) and its user's profile, in the runtime and the ELF.
+identity_hits=[]
+for path in [app/'eboot.bin',*(p for p in data.rglob('*') if p.is_file())]:
+    if names_build_pc(path.read_bytes()):identity_hits.append(str(path.relative_to(work)))
+if (prefix/'drive_c/users'/host_profiles[0].name).exists():identity_hits.append('host profile folder')
+if identity_hits and not args.allow_build_paths:
+    raise SystemExit('build PC paths in %d shipped files (first: %s); rebuild them with -ffile-prefix-map, '
+                     'or --allow-build-paths for a development build'%(len(identity_hits),', '.join(identity_hits[:5])))
+content='IV0000-ORBW00002_00-ORBISWINW0010000'
+pkg=package_app(ROOT,app,out,'OrbisDesk','ORBW00002',content,version=args.app_version,filename='OrbisDesk.pkg',extra=embedded)
+manifest={'build':'W303','app_version':args.app_version,'title_id':'ORBW00002','package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),
+    'package_bytes':pkg.stat().st_size,'eboot_sha256':sha(app/'eboot.bin'),'base_wine_elf_sha256':base['bootstrap_sha256'],
+    'wine_commit':wine_commit,'prefix_package':verified,'hardware_status':'pending','Wine_booted':False,
+    'runtime_root':str(data.relative_to(ROOT)),
+    'directories':runtime_directories,'runtime_files':runtime_files,
+    'source_hashes':{str(p.relative_to(ROOT)):sha(p) for p in (ROOT/'native/wine_hardware.c',ROOT/'native/hw_text.h',ROOT/'platform/ps4/pw_wine_fs.c',ROOT/'platform/ps4/pw_wine_platform.c',
+        ROOT/'native/wine_boot.c',ROOT/'native/hw_pad.c',ROOT/'native/hw_overlay.c',ROOT/'platform/ps4/pw_wine_sink_ps4.c',ROOT/'tools/build-wine-hardware.py',ROOT/'tools/orbis_package.py',ROOT/'native/hw_install.h',ROOT/'tools/console_state.py')},
+    'link_command':command,'eboot_base':hex(EBOOT_BASE),'drive_mounts':{'dosdevices/c:':'../drive_c','dosdevices/z:':'../..'},
+    'expected_result':'reports/increment15/native-prefix-console32/result.txt'}
+# Reference directory naming differs in older evidence; the canonical increment11
+# fixture output is the same console32-bare contract used by the Linux runner.
+manifest['expected_result']='reports/increment25-windows-reference/text-result.txt'
+manifest['program']='C:\\windows\\explorer.exe /desktop=shell,1280x720'
+manifest['licenses']={'folder':'wine-prefix/drive_c/orbis/licenses','files':manifest_licenses,'source_commit':head,'source_dirty':dirty}
+manifest['build_identity']={'files_with_build_paths':len(identity_hits),'allowed':args.allow_build_paths,'sample':identity_hits[:20]}
+manifest['runs_until_closed']=True
+manifest['obsolete_files']=obsolete_files
+manifest['user_reg_reset']=user_reg_reset
+manifest['runtime_embedded']={'embedded':not args.runtime_outside_package,'install_json':'runtime/install.json','install_json_sha256':sha(install_json),'files':len(runtime_files),'bytes':install['bytes']}
 manifest['result_name']='text-result.txt'
 manifest['expected_prefix']='passed=1;family_tahoma=1;'
 # W112 retains W103's private system.o override and rebuilds native telemetry.
 # The old CPU-telemetry preparer draft is deliberately not run.
 overlay_source=vk/'src/mangohud-win/src/vulkan.cpp'
 if '// OrbisDesk W096: shared-process overlay lock.' not in normalize_marker(overlay_source.read_text()):
-    raise SystemExit('W288 requires the W096 shared-process MangoHud patch')
+    raise SystemExit('W303 requires the W096 shared-process MangoHud patch')
 if '// OrbisDesk W099: join outside the UI lock.' not in normalize_marker(overlay_source.read_text()):
-    raise SystemExit('W288 requires the W099 teardown patch')
+    raise SystemExit('W303 requires the W099 teardown patch')
 overlay_proof=json.loads((vk/'build/mangohud/orbis-build.json').read_text())
 if overlay_proof['dll_sha256']!=vulkan_files['libMangoHud.dll']:
     raise SystemExit('MangoHud DLL differs from its successful build proof')
@@ -974,9 +1241,9 @@ for name,marker in (('src/overlay.cpp','// OrbisDesk W102: sample on the frame t
                     ('src/fps_metrics.h','// OrbisDesk W102: calculate on the frame thread'),
                     ('src/notify_win32.cpp','// OrbisDesk W102: configuration reloads at instance creation')):
     if name not in overlay_proof['sources'] or marker not in normalize_marker((vk/'src/mangohud-win'/name).read_text()):
-        raise SystemExit('W288 requires compiled frame-sampling source: '+name)
+        raise SystemExit('W303 requires compiled frame-sampling source: '+name)
 for name in ('src/cpu_win32.cpp','src/hud_elements.cpp','src/orbis_metrics.h','src/orbis_telemetry.h'):
-    if name not in overlay_proof['sources']:raise SystemExit('W288 native metrics source missing from build proof: '+name)
+    if name not in overlay_proof['sources']:raise SystemExit('W303 native metrics source missing from build proof: '+name)
 if overlay_proof['sources']['src/orbis_telemetry.h']!=sha(ROOT/'platform/ps4/pw_telemetry.h'):
     raise SystemExit('MangoHud/native telemetry schemas differ')
 manifest['mangohud']={'library_sha256':vulkan_files['libMangoHud.dll'],
@@ -988,7 +1255,7 @@ manifest['mangohud']={'library_sha256':vulkan_files['libMangoHud.dll'],
     'hardware_validation':'pending','cpu_gpu_telemetry_changed':True,'metric_labels':['CPU','GPU']}
 for source in (ROOT/'tools/vk-h0/build-mangohud.sh',ROOT/'tools/vk-h0/build-mangohud-i386.sh',ROOT/'tools/vk-h0/build-vulkan-loader-i386.sh',ROOT/'tools/vk-h0/patch-mangohud-shared-process.py',ROOT/'tools/vk-h0/patch-mangohud-teardown.py',ROOT/'tools/vk-h0/patch-mangohud-frame-sampling.py'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
-manifest['shell_diagnostics']={'build':'W288','purpose':'locate Start failure after guest window/thread teardown',
+manifest['shell_diagnostics']={'build':'W303','purpose':'locate Start failure after guest window/thread teardown',
     'observer':'independent Wine thread; GUI clock heartbeat; Start and taskbar cleanup progress',
     'guest_thread_wait_result_logged':True,'fix_validated':False}
 manifest['reload_diagnostics']={'wine_debug':'warn+module,trace+seh,trace+loaddll,warn+debugstr',
