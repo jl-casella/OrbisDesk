@@ -1,8 +1,20 @@
-# Handoff point: OrbisDesk W288 (03.87), 2026-11-07
+# Handoff point: OrbisDesk W303 and the hosted product build, 2026-11-10
 
 [English](CURRENT_STATE.md) | [Español](CURRENT_STATE-es.md)
 
-Latest uploaded build: W288, `OrbisDesk.pkg` 03.87. Not yet tested on the console. Details for W285–W288: [HARDWARE_W285_W288](HARDWARE_W285_W288.md).
+The current product base is **W303**, whose local default SFO version is **04.02**. Commit `208803d` records clean-install console validation. The complete GitHub-hosted product build now succeeds; the reviewed `dev` baseline is `aa43870`. A CI candidate has its own assigned SFO version and source SHA, and needs its own runtime acceptance evidence.
+
+- **Installation:** `OrbisDesk.pkg` carries the runtime. The first-start installer runs after the NORMAL/ROOT choice and before the ROOT jailbreak, while `/app0/runtime` is accessible. It verifies copied files and preserves user-owned state. See [installation and release flow](RELEASES.md#first-start-install).
+- **Builds:** the clean hosted recipe includes the complete host Wine tree and its verified prefix, PS4 adapters, the hosted Steam client, graphics, zlib and pinned assets. Graphics and Wine can come from verified Actions caches or pinned prebuilt release assets; later PS4 build steps do not invalidate those blocks. See [product builds and releases](RELEASES.md).
+- **Runtime:** W303 restores profile/Public folders, 32-bit programs, NLS/metadata and registration from the complete prefix, retains the W302 window metrics, and reapplies the console module exclusions. SeaMonkey is included, VLC's initial privacy prompt is suppressed, and release logs use the [trace policy](RELEASE_TRACES.md).
+- **Steam:** the native client is integrated into the title and product recipe. Its login/download/game acceptance is separate from installation and desktop acceptance; follow [hosted Steam](STEAM_HOSTED.md) and its linked test evidence.
+- **Next acceptance:** use the exact CI candidate's package, manifest, source SHA and logs to check installation, desktop and application behavior. A successful build or a cache hit does not establish console or emulator execution for that candidate.
+
+<a id="handoff-point-orbisdesk-w288-0387-2026-11-07"></a>
+
+# Previous handoff: OrbisDesk W288 (03.87), 2026-11-07
+
+At that handoff, W288 / 03.87 was the latest uploaded build and had not yet been tested on the console. The following entries retain the evidence and pending checks from that date. Details: [HARDWARE_W285_W288](HARDWARE_W285_W288.md).
 
 - **W285:** a guest's audio streams leave the mixer when it unloads (orphan list, not freed). Tested with NFS U2 closed from the overlay; that run released its own stream.
 - **W286:** RADV's GPU logs go to `/data/orbisdesk/gpu`. The old `/data/orbis-win` folder was deleted from the console.
