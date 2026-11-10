@@ -226,6 +226,23 @@ for folder in ('wine-home','wine/lib/wine/i386-windows','wine/lib/wine/x86_64-wi
 host_profiles=[p for p in (prefix/'drive_c/users').iterdir() if p.is_dir() and p.name not in ('Public','orbis')]
 if len(host_profiles)!=1:raise SystemExit('prefix: expected one host user profile, found '+str([p.name for p in host_profiles]))
 HOST_PROFILE_REG='C:\\\\users\\\\'+host_profiles[0].name   # as written in a .reg file (C:\\users\\<name>)
+def rename_host(text,name,values):
+    """alpha-1: the name of the machine that made the prefix (this PC, or a CI runner) out of the shipped registry.
+    values: {registry value: replacement}; each value must be there, and afterwards no old name may remain."""
+    old=set()
+    for value,new in values.items():
+        key='"'+value+'"="';parts=text.split(key)
+        if len(parts)<2:raise SystemExit(name+': expected a "'+value+'" value')
+        for i in range(1,len(parts)):
+            data,rest=parts[i].split('"',1)
+            host=data.lstrip('\\')   # LOGONSERVER is \\NAME (written \\\\NAME in a .reg file)
+            if not host:raise SystemExit(name+': empty "'+value+'"')
+            old.add(host)
+            parts[i]=data[:len(data)-len(host)]+new+'"'+rest
+        text=key.join(parts)
+    for host in old-{'ORBISDESK','orbisdesk'}:
+        if host.lower() in text.lower():raise SystemExit(name+': the build machine name '+host+' is still there')
+    return text
 def orbis_profile(text,name,required=True):
     """The host profile's registry paths as C:\\users\\orbis; where required the name must be there (a prefix change shows)."""
     if required and HOST_PROFILE_REG not in text:raise SystemExit(name+': expected '+HOST_PROFILE_REG)
@@ -814,9 +831,7 @@ dshow_reg=ROOT/'out/dshow-i386'/dshow['registry']['path']
 if sha(dshow_reg)!=dshow['registry']['sha256']:raise SystemExit('DirectShow registry differs from its manifest')
 system_text+=dshow_reg.read_text()
 # alpha-1: the build PC's name out of the shipped registry (the prefix was made on the host)
-for old,new in (('"ComputerName"="JCASELLA"','"ComputerName"="ORBISDESK"'),('"Hostname"="jcasella"','"Hostname"="orbisdesk"')):
-    if old not in system_text:raise SystemExit('system.reg: expected '+old)
-    system_text=system_text.replace(old,new)
+system_text=rename_host(system_text,'system.reg',{'ComputerName':'ORBISDESK','Hostname':'orbisdesk'})
 system_text=orbis_profile(system_text,'system.reg')
 system_reg.write_text(system_text)
 # W226: the same registry as a file Wine never rewrites; the launcher appends the keys the console's
@@ -907,9 +922,7 @@ theme=text.index('[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\ThemeMa
 end=text.index('\n\n',theme)
 if text[theme:end].count('"ThemeActive"="1"')!=1:raise SystemExit('user.reg: ThemeManager is not as expected')
 text=text[:theme]+text[theme:end].replace('"ThemeActive"="1"','"ThemeActive"="0"')+text[end:]
-for old,new in (('"LOGONSERVER"="\\\\\\\\JCASELLA"','"LOGONSERVER"="\\\\\\\\ORBISDESK"'),('"USERDOMAIN"="JCASELLA"','"USERDOMAIN"="ORBISDESK"')):
-    if old not in text:raise SystemExit('user.reg: expected '+old)
-    text=text.replace(old,new)
+text=rename_host(text,'user.reg',{'LOGONSERVER':'ORBISDESK','USERDOMAIN':'ORBISDESK'})
 text=orbis_profile(text,'user.reg')
 # W303: the window metrics every build until W302 shipped (twips, no font entries; the console showed Start right
 # with them). A prefix from a complete host tree writes pixel sizes and Tahoma fonts there, and Start looked cut.
