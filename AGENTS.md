@@ -2,6 +2,8 @@
 
 [English](AGENTS.md) | [Español](AGENTS-es.md)
 
+**Firmware correction (2026-11-11):** the user confirmed that the test console is a PS4 Pro Baikal running **12.50**, not 12.52. References to their console in this document are corrected; original logs and manifests retain the earlier reported value. Do not attribute these tests to 12.52 hardware.
+
 This is the entry point for an AI agent or a developer joining this repository. It is Markdown, with an ASCII directory map. Commands below are entry points with explicit prerequisites, not a claim that a fresh clone already has a complete one-command build.
 
 ## 1. Read first and establish the actual state
@@ -201,7 +203,7 @@ Record the source revision/diff, input and executable hashes, emulator kind/conf
 
 ## 9. Physical PS4 deployment and feedback loop
 
-The available test console was reported as a PS4 Pro Baikal, firmware 12.52 with GoldHEN. This is one user's setup, not a compatibility matrix. FTP uses port 2121. Always use the user's currently supplied address: script defaults still contain historical `.107`, while recent delivery used `.100`.
+The available test console was reported as a PS4 Pro Baikal, firmware 12.50 with GoldHEN. This is one user's setup, not a compatibility matrix. FTP uses port 2121. Always use the user's currently supplied address: script defaults still contain historical `.107`, while recent delivery used `.100`.
 
 1. Build and inspect the actual package manifest under `out/wine-hardware-wNNN/manifest.json`; it identifies package, ELF, runtime root and source hashes. Check that upload/fetch tools recognize the chosen build ID. They maintain explicit build lists.
 2. With transfer authorization, upload the package **and required runtime**, not just the PKG. Console paths normally include `/data/pkg/OrbisDesk.pkg`, `/data/wine-prefix`, `/data/wine-home` and `/data/wine`. Do not guess a new mount/layout from a historical screenshot.

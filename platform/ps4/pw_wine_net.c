@@ -241,7 +241,9 @@ ssize_t pw_wine_recvmsg(int fd,struct msghdr *destination,int flags)
     ssize_t result=kernel_recvmsg(fd,&wire,kernel);int saved=errno;
     if(result<0 && saved!=EAGAIN) trace("recvmsg","kernel",saved,&wire);
     if(result>=0) {
-        int reported=0,unknown=wire.flags;
+        /* PS4 echoes the requested nonblocking mode in msg_flags (P002 hardware).
+         * It is not a received-message event. Unrequested bits still fail below. */
+        int reported=0,unknown=wire.flags & ~(kernel & KERNEL_MSG_DONTWAIT);
         for(unsigned i=0;i<sizeof(received_flags)/sizeof(received_flags[0]);++i)
             if(unknown&received_flags[i].kernel) {reported|=received_flags[i].sdk;unknown&=~received_flags[i].kernel;}
         if(unknown || wire.controllen>destination->msg_controllen) {saved=ENOTSUP;result=-1;trace("recvmsg","flags",saved,&wire);}

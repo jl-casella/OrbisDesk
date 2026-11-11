@@ -2,6 +2,8 @@
 
 [English](THIRD_PARTY.md) | [Español](THIRD_PARTY-es.md)
 
+Los diagnósticos de cargador externo usan [ps4-payload-dev/elfldr](https://github.com/ps4-payload-dev/elfldr) y [payload SDK](https://github.com/ps4-payload-dev/sdk) de John Törnblom; los archivos inspeccionados del cargador/CRT son GPL-3.0-or-later. Revisiones y hashes están fijados en [process-loader.lock.json](tools/process-loader.lock.json); las adaptaciones de trazado están en [patches/process-loader](patches/process-loader/). Son artefactos de investigación separados, no componentes del PKG principal OrbisDesk. El builder instrumentado aporta un paquete de fuentes con los upstream fijados y las adaptaciones; conservar sus avisos de copyright/licencia. Ver [la guía de sondas de procesos](docs/PROCESS_FAMILY_PROBES-es.md).
+
 Las fuentes descargadas permanecen en `upstream/`; sus revisiones exactas están en `sources.lock.json`. Las descargas binarias oficiales están fijadas por SHA256 en `artifacts.lock.json`. No se incluyen juegos, BIOS ni claves. Los únicos archivos de sistema de la consola en el paquete son los tres módulos de paquete de OpenOrbis listados en [componentes del runtime](#componentes-del-runtime-w301).
 
 | Componente |Uso real| Licencia de referencia |

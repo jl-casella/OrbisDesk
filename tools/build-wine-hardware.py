@@ -561,6 +561,8 @@ for target in (data/'wine/lib/wine/x86_64-windows/taskmgr.exe',prefix/'drive_c/w
 # pinned one in both places; W180's winecfg froze applying a theme.
 winecfg=json.loads((ROOT/'out/winecfg-hw/manifest.json').read_text())
 if winecfg['builder_sha256']!=sha(ROOT/'tools/build-winecfg-hw.py'):raise SystemExit('winecfg differs from its builder')
+for source,digest in winecfg.get('input_sha256',{}).items():
+    if sha(ROOT/source)!=digest:raise SystemExit('winecfg input changed: '+source)
 for target in (data/'wine/lib/wine/x86_64-windows/winecfg.exe',prefix/'drive_c/windows/system32/winecfg.exe'):
     copy_verified(ROOT/'out/winecfg-hw'/winecfg['winecfg']['path'],target,winecfg['winecfg']['sha256'])
 # W174 (phase 8): the hardware nsi.dll (tools/build-nsi-hw.py): the network tables from libSceNetCtl
@@ -601,7 +603,10 @@ for name in games['system32']+games['notices']:
     copy_verified(ROOT/'out/games'/games['files'][name]['path'],prefix/'drive_c/windows/system32'/name,games['files'][name]['sha256'])
 # W052: ntdll and kernelbase that run 64-bit GUI programs as guests of this process
 # (tools/build-guest-hw.py), in the library directory and wherever the prefix has a copy.
-for name,e in json.loads((ROOT/'out/guest-hw/manifest.json').read_text())['modules'].items():
+guest64=json.loads((ROOT/'out/guest-hw/manifest.json').read_text())
+for source,digest in guest64.get('input_sha256',{}).items():
+    if sha(ROOT/source)!=digest:raise SystemExit('guest DLL input changed: '+source)
+for name,e in guest64['modules'].items():
     for target in (data/'wine/lib/wine/x86_64-windows'/name,prefix/'drive_c/windows/system32'/name):
         if target.parent.is_dir() and (target.exists() or target.parent.name=='x86_64-windows'):
             copy_verified(ROOT/'out/guest-hw'/e['path'],target,e['sha256'])
@@ -610,6 +615,8 @@ for name,e in json.loads((ROOT/'out/guest-hw/manifest.json').read_text())['modul
 # in a 64-bit process (tools/build-wow64-world-ps4.py); a relaunched 32-bit program keeps the stock ones.
 guest32=json.loads((ROOT/'out/guest-hw-i386/manifest.json').read_text())
 if guest32['builder_sha256']!=sha(ROOT/'tools/build-guest-hw.py'):raise SystemExit('i386 guest DLLs differ from their builder')
+for source,digest in guest32.get('input_sha256',{}).items():
+    if sha(ROOT/source)!=digest:raise SystemExit('i386 guest DLL input changed: '+source)
 (data/'wine/lib/wine/i386-guest').mkdir(parents=True,exist_ok=True)
 for name,e in guest32['modules'].items():
     copy_verified(ROOT/'out/guest-hw-i386'/e['path'],data/'wine/lib/wine/i386-guest'/name,e['sha256'])
@@ -878,9 +885,7 @@ text+='\n[Software\\\\Wine\\\\Drivers] 1793390636\n#time=1dd68a9cb52bf36\n"Audio
 # loader, MangoHud, Gecko's adapter query); system32\dxgi.dll is DXVK's (see the DXVK block).
 if '[Software\\\\Wine\\\\AppDefaults\\\\explorer.exe\\\\DllOverrides]' in text:raise SystemExit('user.reg: unexpected explorer.exe DllOverrides')
 text+='\n[Software\\\\Wine\\\\AppDefaults\\\\explorer.exe\\\\DllOverrides] 1793390636\n#time=1dd68a9cb52bf36\n"dxgi"="builtin"\n'
-# W190: the 64-bit Direct3D 11 test needs DXVK's dxgi, which only a title running alone gets.
-if '[Software\\\\Wine\\\\AppDefaults\\\\d3d11test64.exe]' in text:raise SystemExit('user.reg: unexpected d3d11test64.exe AppDefaults')
-text+='\n[Software\\\\Wine\\\\AppDefaults\\\\d3d11test64.exe] 1793390636\n#time=1dd68a9cb52bf36\n"OrbisRunsAlone"="Y"\n'
+# d3d11test64.exe now works as a desktop guest. Do not seed an exclusive execution rule.
 # W045: a dark scheme through the system colours (the prefix's Colors key is empty, so Wine
 # used its classic grey). Light text on every dark face: buttons and taskbar, menus,
 # captions, windows, tooltips; blue selection with white text.

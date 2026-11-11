@@ -7,8 +7,8 @@ top-level window, and for another thread's window win32u waits for that thread w
 winecfg runs as a guest in explorer's process, so one thread not reading messages held Apply.
 Other threads windows get the change posted (SWP_ASYNCWINDOWPOS). The W182 timing markers
 (PWCFG) were removed in W189. W190: Apply ends with RegFlushKey(HKEY_CURRENT_USER), so the
-theme reaches disk before the title is killed. W220: the Applications tab has a "Run alone"
-checkbox (AppDefaults <exe> "OrbisRunsAlone"), Add application writes the program's key on Apply,
+theme reaches disk before the title is killed. Applications has a per-path execution selector;
+legacy OrbisRunsAlone choices are read as Exclusive. Add application writes its profile on Apply,
 and that Apply writes HKCU to disk too; appdefaults.c is revised along with theme.c.
 The overlay is compiled with the pinned build's own commands (make -n).
 Output: out/winecfg-hw/winecfg.exe and manifest.json.
@@ -77,118 +77,43 @@ revise('''                    update_mime_types(hDlg);
                     update_window_pos();
                     RegFlushKey(HKEY_CURRENT_USER);  /* W190 */''','Apply: HKCU written to disk at the end.')
 
-# W220 (W217: seamonkey.exe added in the Applications tab to run alone; nothing reached user.reg):
-# winecfg had no control for OrbisRunsAlone (kernelbase ps4_runs_alone, tools/build-guest-hw.py),
-# and Add application only adds a list row: Wine writes the AppDefaults key when a setting changes.
-# A "Run alone" checkbox, made at WM_INITDIALOG under the Windows version (the list gets one row
-# shorter and the rows below it move up; no resource change), writes or removes OrbisRunsAlone
-# through the settings list; Apply creates the keys of the programs added, applies, and writes
-# HKCU to disk.
-revise('''/* called when the user selects a different application */''','''/* OrbisDesk W220: a 64-bit program marked here runs alone: the title restarts with it instead of
- * running it as a guest of explorer (kernelbase ps4_runs_alone, AppDefaults <exe> "OrbisRunsAlone"
- * "Y"). W217: the mark had no control, and Add application wrote nothing until a setting changed:
- * the programs added get their AppDefaults key on Apply. */
-#define IDC_ORBIS_RUNS_ALONE 1290
-static WCHAR *orbis_added[64];
-static unsigned int orbis_added_count;
+# Execution modes use their own path-specific namespace; Wine's other options keep AppDefaults.
+(overlay/'pw_execution_mode.h').write_bytes((ROOT/'platform/ps4/pw_execution_mode.h').read_bytes())
+revise('WINE_DEFAULT_DEBUG_CHANNEL(winecfg);','WINE_DEFAULT_DEBUG_CHANNEL(winecfg);\nstatic void orbis_load_profiles(HWND listview);','Execution profile enumeration declaration.','appdefaults.c')
+marker='/* called when the user selects a different application */'
+revise(marker,(ROOT/'native/winecfg_execution.h').read_text()+'\n'+marker,'Execution-mode selector, explanations and legacy compatibility.','appdefaults.c')
+revise('  init_comboboxes(dialog);\n  \n  /* Select the default settings listview item',
+       '  orbis_load_profiles(listview);\n  init_comboboxes(dialog);\n  \n  /* Select the default settings listview item','Load exact-path execution profiles.','appdefaults.c')
+revise('  current_app = (WCHAR*) item.lParam;',"  orbis_execution_target = (const WCHAR *)item.lParam;\n  current_app = (WCHAR *)orbis_execution_target;\n  if (current_app && wcsrchr(current_app, L'\\\\')) current_app = wcsrchr(current_app, L'\\\\') + 1;",'Selection keeps full-path execution identity and basename Wine settings.','appdefaults.c')
+revise('  set_window_title(dialog);\n}', '  set_window_title(dialog);\n  orbis_update_execution(dialog);\n}','Refresh the execution mode on selection.','appdefaults.c')
+revise('''      if (list_contains_file(listview, filetitle))
+          return;
 
-static void orbis_update_runs_alone(HWND dialog)
-{
-    HWND box = GetDlgItem(dialog, IDC_ORBIS_RUNS_ALONE);
-    WCHAR *value;
-
-    if (!box) return;
-    EnableWindow(box, current_app != NULL);
-    value = current_app ? get_reg_key(config_key, keypath(L""), L"OrbisRunsAlone", L"") : NULL;
-    SendMessageW(box, BM_SETCHECK, value && value[0] == 'Y' ? BST_CHECKED : BST_UNCHECKED, 0);
-    free(value);
-}
-
-static void orbis_on_runs_alone_click(HWND dialog)
-{
-    if (!current_app) return;
-    set_reg_key(config_key, keypath(L""), L"OrbisRunsAlone",
-                IsDlgButtonChecked(dialog, IDC_ORBIS_RUNS_ALONE) == BST_CHECKED ? L"Y" : NULL);
-    SendMessageW(GetParent(dialog), PSM_CHANGED, (WPARAM) dialog, 0);
-}
-
-/* the list gets one row shorter and the rows below it move up; the checkbox takes the last row */
-static void orbis_create_runs_alone(HWND dialog)
-{
-    RECT list, rect, row = { 0, 0, 0, 14 }, place = { 17, 197, 245, 207 };
-    HWND listview = GetDlgItem(dialog, IDC_APP_LISTVIEW), child, box;
-
-    if (!listview) return;
-    MapDialogRect(dialog, &row);
-    MapDialogRect(dialog, &place);
-    GetWindowRect(listview, &list);
-    MapWindowPoints(NULL, dialog, (POINT *)&list, 2);
-    for (child = GetWindow(dialog, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
+      new_app = wcsdup(filetitle);''','''      WCHAR canonical[MAX_PATH], execution_key[MAX_PATH+64];
+      if (!pw_execution_key(file,canonical,execution_key)) return;
+      if (list_contains_file(listview, canonical)) return;
+      new_app = wcsdup(canonical);''','Add application stores a full-path execution profile and retains Wine basename settings.','appdefaults.c')
+revise('      add_listview_item(listview, new_app, new_app);', '''      add_listview_item(listview, new_app, new_app);
+      set_reg_key(HKEY_CURRENT_USER, execution_key, L"ExecutablePath", canonical);
+      if (orbis_added_count < ARRAY_SIZE(orbis_added)) orbis_added[orbis_added_count++] = wcsdup(filetitle);
+      SendMessageW(GetParent(dialog), PSM_CHANGED, (WPARAM) dialog, 0);''','Persist newly added paths only on Apply.','appdefaults.c')
+revise('    set_reg_key(config_key, keypath(L""), NULL, NULL); /* delete the section  */', '''    if (orbis_path_target())
     {
-        if (child == listview) continue;
-        GetWindowRect(child, &rect);
-        MapWindowPoints(NULL, dialog, (POINT *)&rect, 2);
-        if (rect.top >= list.bottom)
-            SetWindowPos(child, 0, rect.left, rect.top - row.bottom, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        WCHAR path[MAX_PATH], key[MAX_PATH+64];
+        if (pw_execution_key(orbis_execution_target,path,key)) set_reg_key(HKEY_CURRENT_USER,key,NULL,NULL);
     }
-    SetWindowPos(listview, 0, 0, 0, list.right - list.left, list.bottom - list.top - row.bottom,
-                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    box = CreateWindowExW(0, L"Button", L"Run a&lone (the title restarts with this program)",
-                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_DISABLED | BS_AUTOCHECKBOX,
-                          place.left, place.top, place.right - place.left, place.bottom - place.top,
-                          dialog, (HMENU)(INT_PTR)IDC_ORBIS_RUNS_ALONE, GetModuleHandleW(NULL), NULL);
-    if (box) SendMessageW(box, WM_SETFONT, SendMessageW(dialog, WM_GETFONT, 0, 0), FALSE);
-}
-
-/* Apply: the AppDefaults key of each program added (a removal queued after it still applies) */
-static void orbis_create_added_keys(void)
-{
-    HKEY appdefaults, key;
-    unsigned int i;
-
-    if (!RegCreateKeyExW(config_key, L"AppDefaults", 0, NULL, 0, MAXIMUM_ALLOWED, NULL, &appdefaults, NULL))
-    {
-        for (i = 0; i < orbis_added_count; i++)
-            if (!RegCreateKeyExW(appdefaults, orbis_added[i], 0, NULL, 0, MAXIMUM_ALLOWED, NULL, &key, NULL))
-                RegCloseKey(key);
-        RegCloseKey(appdefaults);
-    }
-    for (i = 0; i < orbis_added_count; i++) free(orbis_added[i]);
-    orbis_added_count = 0;
-}
-
-/* called when the user selects a different application */''','Applications tab: run-alone checkbox and its helpers (W220).','appdefaults.c')
-revise('''  set_window_title(dialog);
-}
-
-static BOOL list_contains_file''','''  set_window_title(dialog);
-  orbis_update_runs_alone(dialog);  /* W220 */
-}
-
-static BOOL list_contains_file''','The checkbox follows the selected program (W220).','appdefaults.c')
-revise('''      add_listview_item(listview, new_app, new_app);
-''','''      add_listview_item(listview, new_app, new_app);
-      /* W220: its AppDefaults key is created on Apply */
-      if (orbis_added_count < ARRAY_SIZE(orbis_added)) orbis_added[orbis_added_count++] = wcsdup(new_app);
-      SendMessageW(GetParent(dialog), PSM_CHANGED, (WPARAM) dialog, 0);
-''','Add application: the key is created on Apply (W220).','appdefaults.c')
-revise('''    case WM_INITDIALOG:
-        init_appsheet(hDlg);''','''    case WM_INITDIALOG:
-        orbis_create_runs_alone(hDlg);  /* W220: before the first selection */
-        init_appsheet(hDlg);''','The checkbox is made with the tab (W220).','appdefaults.c')
-revise('''        case PSN_APPLY:
-            apply();''','''        case PSN_APPLY:
-            orbis_create_added_keys();  /* W220 */
-            apply();
-            RegFlushKey(HKEY_CURRENT_USER);  /* W220, as W190 for the theme */''','Apply: added keys, settings, then HKCU to disk (W220).','appdefaults.c')
+    else set_reg_key(config_key, keypath(L""), NULL, NULL);
+    orbis_execution_target = NULL;''','Remove a path profile without deleting other EXEs shared Wine settings.','appdefaults.c')
+revise('    case WM_INITDIALOG:\n        init_appsheet(hDlg);', '    case WM_INITDIALOG:\n        orbis_create_execution(hDlg);\n        init_appsheet(hDlg);','Create execution controls before selection.','appdefaults.c')
+revise('        case PSN_APPLY:\n            apply();', '        case PSN_APPLY:\n            orbis_create_added_keys();\n            apply();\n            RegFlushKey(HKEY_CURRENT_USER);','Apply and flush selected profiles.','appdefaults.c')
 revise('''            case IDC_APP_REMOVEAPP:
               on_remove_app_click(hDlg);
               break;''','''            case IDC_APP_REMOVEAPP:
               on_remove_app_click(hDlg);
               break;
-            case IDC_ORBIS_RUNS_ALONE:  /* W220 */
-              orbis_on_runs_alone_click(hDlg);
-              break;''','The checkbox click (W220).','appdefaults.c')
+            case IDC_ORBIS_EXECUTION:
+              if (HIWORD(wParam) == CBN_SELCHANGE) orbis_on_execution_change(hDlg);
+              break;''','Handle execution-mode selection.','appdefaults.c')
 
 UNITS=('theme.c','appdefaults.c')
 dry=subprocess.run(['make','-n']+[arg for unit in UNITS for arg in ('-W','../../source/programs/winecfg/'+unit)]+
@@ -214,6 +139,7 @@ for command in commands:
 out.mkdir(parents=True);shutil.copyfile(work/'winecfg.exe',out/'winecfg.exe')
 manifest={'schema_version':1,'wine_commit':commit,'builder_sha256':sha(__file__),
           'winecfg':{'path':'winecfg.exe','sha256':sha(out/'winecfg.exe')},'revisions':revisions,
-          'compile_warnings':warnings,'commands':commands}
+          'compile_warnings':warnings,'commands':commands,
+          'input_sha256':{str(p.relative_to(ROOT)):sha(p) for p in (ROOT/'native/winecfg_execution.h',ROOT/'platform/ps4/pw_execution_mode.h')}}
 (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
 print(json.dumps({'winecfg':manifest['winecfg']['sha256'][:16],'revisions':len(revisions),'warnings':len(warnings)}))

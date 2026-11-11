@@ -5,6 +5,8 @@
 
 [English](THIRD_PARTY.md) | [Español](THIRD_PARTY-es.md)
 
+External process-loader diagnostics use John Törnblom's [ps4-payload-dev/elfldr](https://github.com/ps4-payload-dev/elfldr) and [payload SDK](https://github.com/ps4-payload-dev/sdk), whose inspected loader/CRT files are GPL-3.0-or-later. Revisions and archive hashes are pinned in [process-loader.lock.json](tools/process-loader.lock.json); stage-tracing adaptations are in [patches/process-loader](patches/process-loader/). These are separate research artifacts, not components of the main OrbisDesk PKG. The trace builder provides a source bundle with the pinned upstream sources and adaptations; preserve upstream copyright/license notices. See [the process probe guide](docs/PROCESS_FAMILY_PROBES.md).
+
 The downloaded sources remain at `upstream/`; Your exact reviews are in `sources.lock.json`. The official binary downloads are set by SHA256 at `artifacts.lock.json`. No games, BIOS or keys are included. The only console system files in the package are the three OpenOrbis package modules listed under [runtime components](#runtime-components-w301).
 
 |Component| Uso actual |Reference licence|

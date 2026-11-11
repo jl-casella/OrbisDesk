@@ -5,6 +5,8 @@
 
 [English](HARDWARE_G001.md) | [Español](HARDWARE_G001-es.md)
 
+**Firmware correction (2026-11-11):** the user's PS4 Pro Baikal runs **12.50**, not 12.52. This corrects our console identity, not the cited third-party results. The old anchor is retained for historical links; original logs are not rewritten.
+
 <a id="objetivo"></a>
 
 
@@ -26,7 +28,7 @@ Prove that the GPU of the PS4 can be used with Vulkan from a homebrew compiled w
   - the log is to `/data/orbis-win/g001/`;
   - the pass 3 lasts 20 s (1200 paintings);
   - Once per second, a line `fps` is recorded, with the tables presented and the FPS that would allow the rendering and waiting of the fice alone, without vsync.
-- DolphinPS4 reports that your probe works in a PS4 Slim with 12.52 and a Pro with 11.00 (`README.md`). In a Pro with 12.52 it's not proven.
+- DolphinPS4 reports that your probe works in a PS4 Slim with 12.52 and a Pro with 11.00 (`README.md`). On our Pro running 12.50 it had not been tested at that stage.
 
 <a id="cómo-se-construye"></a>
 
@@ -75,7 +77,7 @@ The ELF has a single segment `LOAD` RW, which is what requires `check-oelf.cmake
 <a id="g001-en-la-ps4-pro-1252"></a>
 
 
-## G001 in PS4 Pro (12.52)
+## G001 in PS4 Pro (12.50)
 
 Evidence: `reports/vk-probe-g001/physical/20261101T164147Z/vk-probe.log`. The `vk-probe-stderr.log` was empty and did not generate `mesa.log`.
 

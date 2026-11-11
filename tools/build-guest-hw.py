@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Build the hardware variants of ntdll.dll and kernelbase.dll (PE64) that run guest programs.
 
-W052, multitasking experiment. A PS4 title cannot start a second process, so a 64-bit
-GUI program started from the desktop runs as a guest inside this process:
+W052, multitasking experiment. The current Wine desktop backend runs a 64-bit
+GUI program as a guest inside this process; the external native-process probes
+are not yet a Wine process backend:
 kernelbase's CreateProcessInternalW loads the EXE as a module (ntdll relocates it and
 resolves its imports, which the loader otherwise does only for DLLs) and starts its
 entry point on a new thread. The guest's threads carry a pointer to it in
@@ -91,6 +92,8 @@ void ps4_guest_memory_released( void *base );
 void ps4_guest_code_writable( HANDLE process, void *addr, SIZE_T size, DWORD prot );
 '''
 (overlay/'kernelbase').mkdir(parents=True,exist_ok=True);(overlay/'kernelbase/ps4_guest.h').write_text(GUEST_H)
+for header in ('pw_execution_mode.h','pw_execution_policy.h'):
+    shutil.copyfile(ROOT/'platform/ps4'/header,overlay/'kernelbase'/header)
 
 # ntdll: relocate and resolve imports of a guest EXE; a guest's exit ends the guest only.
 revise('ntdll','loader','''    if (!(nt->FileHeader.Characteristics & IMAGE_FILE_DLL) &&
@@ -648,20 +651,7 @@ static DWORD WINAPI ps4_guest_start( void *param )
 }
 
 #include "winreg.h"
-/* W183 (phase 9): a 64-bit program the AppDefaults mark to run alone
- * (HKCU\\Software\\Wine\\AppDefaults\\<exe> "OrbisRunsAlone"="Y") is not a guest: it gets the title
- * to itself, as a 32-bit program does. W182: Pale Moon's mozglue.dll, xul.dll and nss3.dll have
- * the names of Wine Gecko's; in one process the second program bound to the first's and aborted. */
-static BOOL ps4_runs_alone( const WCHAR *name )
-{
-    WCHAR key[MAX_PATH + 40], value[4];
-    DWORD size = sizeof(value);
-
-    if (wcslen( name ) > MAX_PATH) return FALSE;
-    swprintf( key, ARRAY_SIZE(key), L"Software\\\\Wine\\\\AppDefaults\\\\%s", name );
-    return !RegGetValueW( HKEY_CURRENT_USER, key, L"OrbisRunsAlone", RRF_RT_REG_SZ, NULL, value, &size ) &&
-           (value[0] == 'Y' || value[0] == 'y');
-}
+#include "pw_execution_policy.h"
 
 static BOOL ps4_guest_launch( const WCHAR *app_name, const WCHAR *cmd_line, DWORD flags, PROCESS_INFORMATION *info )
 {
@@ -684,7 +674,7 @@ static BOOL ps4_guest_launch( const WCHAR *app_name, const WCHAR *cmd_line, DWOR
         const WCHAR *base = wcsrchr( app_name, '\\\\' );
         if (!wcsicmp( base ? base + 1 : app_name, L"wineboot.exe" )) return FALSE;
         /* W183: it relaunches the title instead (CreateProcessInternalW, below) */
-        if (ps4_runs_alone( base ? base + 1 : app_name ))
+        if (ps4_runs_alone( app_name ))
         {
             ERR( "PWGUEST runs_alone app=%s\\n", debugstr_w(app_name) );
             return FALSE;
@@ -914,12 +904,23 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
 ''','''    info->hThread = info->hProcess = 0;
     info->dwProcessId = info->dwThreadId = 0;
 
+    if (ps4_execution_mode( app_name ) == PW_EXEC_SEPARATE)
+    {
+        ERR( "PWOPEN separate_processes_unavailable image=%s\\n", debugstr_w(app_name) );
+        status = STATUS_NOT_SUPPORTED;
+        goto done;
+    }
     if (ps4_guest_launch( app_name, tidy_cmdline, flags, info ))
     {
         status = STATUS_SUCCESS;
         goto done;
     }
 #ifndef _WIN64
+    if (ps4_execution_mode( app_name ) == PW_EXEC_GUEST)
+    {
+        status = STATUS_NOT_SUPPORTED;
+        goto done;
+    }
     /* W235 (P6): this i386 kernelbase loads only in explorer's 32-bit world (wine/lib/wine/i386-guest,
      * tools/build-wow64-world-ps4.py). A program that is not a guest here goes back to explorer's
      * 64-bit side (ps4_world_launch), which offers the relaunch: nothing relaunches from a 32-bit thread */
@@ -1005,13 +1006,13 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
                 CloseHandle( file );
             }
             /* W183: a 64-bit program marked to run alone (ps4_runs_alone) takes the same path */
-            if (!pe32 && ps4_runs_alone( name )) alone = TRUE;
+            if (!pe32 && ps4_runs_alone( app_name )) alone = TRUE;
         }
 #ifdef _WIN64
         /* W235 (pe32-en-explorer-plan.md P7): a PE32 runs as a guest of explorer's 32-bit world. The
          * relaunch stays for programs marked to run alone (OrbisRunsAlone), for every PE32 while
          * C:\\\\orbis\\\\pe32relaunch.txt exists, and when the world fails (the dialog says why) */
-        if (pe32 && !ps4_runs_alone( name ) && !ps4_pe32_relaunch_forced())
+        if (pe32 && !ps4_runs_alone( app_name ) && !ps4_pe32_relaunch_forced())
         {
             DWORD error = ps4_world_launch( app_name, tidy_cmdline, cur_dir, flags, info );
 
@@ -1034,6 +1035,12 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
                       L"Para abrirlo, OrbisDesk se reinicia y lo ejecuta solo, con los mismos argumentos; al cerrarlo "
                       L"vuelve al escritorio. Se cerrarán los programas abiertos. ¿Continuar?" );
 #endif
+        if (ps4_execution_mode( app_name ) == PW_EXEC_GUEST)
+        {
+            ERR( "PWOPEN desktop_mode_no_relaunch image=%s\\n", debugstr_w(app_name) );
+            status = STATUS_NOT_SUPPORTED;
+            goto done;
+        }
         if (pe32 || alone)
         {
             int (WINAPI *message_box)( HWND, const WCHAR *, const WCHAR *, UINT ) =
@@ -4209,6 +4216,8 @@ def build(arch,work,out):
         shutil.copyfile(work/module/(module+'.dll'),out/(module+'.dll'))
         modules[module+'.dll']={'path':module+'.dll','sha256':sha(out/(module+'.dll')),'units':units,'commands':commands}
     manifest={'schema_version':1,'wine_commit':commit,'modules':modules,'revisions':revisions,
+              'input_sha256':{str((ROOT/'platform/ps4'/p.name).relative_to(ROOT)):sha(p) for p in
+                              (overlay/'kernelbase/pw_execution_mode.h',overlay/'kernelbase/pw_execution_policy.h')},
               'overlay_sha256':{str(p.relative_to(overlay)):sha(p) for p in sorted(overlay.rglob('*')) if p.is_file()}}
     if arch=='i386':manifest['builder_sha256']=sha(pathlib.Path(__file__))
     (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')

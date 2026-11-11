@@ -2,6 +2,8 @@
 
 [English](AGENTS.md) | [Español](AGENTS-es.md)
 
+**Corrección de firmware (2026-11-11):** el usuario confirmó que su consola es una PS4 Pro Baikal con firmware **12.50**, no 12.52. Las referencias a su consola en este documento están corregidas; los logs y manifiestos originales conservan el dato informado anteriormente. No atribuir estas pruebas a hardware 12.52.
+
 Este es el punto de entrada para una IA o una persona que empieza a trabajar en el repositorio. Usa Markdown con un mapa ASCII de carpetas. Los comandos son puntos de entrada con prerrequisitos explícitos; no afirman que un clon nuevo tenga una compilación completa con un solo comando.
 
 ## 1. Primera lectura y estado real
@@ -201,7 +203,7 @@ Registrar revisión/diff, hashes de entradas y ejecutables, tipo/configuración 
 
 ## 9. Despliegue y feedback en PS4 física
 
-La consola disponible fue informada como PS4 Pro Baikal, firmware 12.52 y GoldHEN. Describe una instalación del usuario, no una matriz de compatibilidad. FTP usa 2121. Usar siempre la IP actual indicada por el usuario: los defaults todavía incluyen `.107`, mientras entregas recientes usaron `.100`.
+La consola disponible fue informada como PS4 Pro Baikal, firmware 12.50 y GoldHEN. Describe una instalación del usuario, no una matriz de compatibilidad. FTP usa 2121. Usar siempre la IP actual indicada por el usuario: los defaults todavía incluyen `.107`, mientras entregas recientes usaron `.100`.
 
 1. Compilar e inspeccionar `out/wine-hardware-wNNN/manifest.json`: paquete, ELF, raíz del runtime y hashes de fuentes. Verificar que los scripts de transferencia/recolección reconozcan esa build: mantienen listas explícitas.
 2. Con autorización de transferencia, subir paquete **y runtime requerido**, no sólo PKG. Las rutas habituales incluyen `/data/pkg/OrbisDesk.pkg`, `/data/wine-prefix`, `/data/wine-home` y `/data/wine`. No inventar otro montaje a partir de una captura histórica.

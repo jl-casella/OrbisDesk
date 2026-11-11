@@ -1,0 +1,69 @@
+--- a/selfldr.c
++++ b/selfldr.c
+@@ -30,6 +30,7 @@
+ #include <ps4/klog.h>
+ 
+ #include "log.h"
++#include <ps4/kernel.h>
+ #include "selfldr.h"
+ 
+ /**
+@@ -57,6 +58,7 @@
+   uint8_t *self;
+   size_t self_size;
+   char *const *argv;
++  volatile int escape;  // P010: parent sets 1 once the child has adopted the title sandbox, -1 on failure
+ } self_spawn_args_t;
+ 
+ /**
+@@ -114,6 +116,29 @@
+   }
+   close(fd);
+ 
++  if(args->argv[1] && args->argv[2] && !strncmp(args->argv[1], "--orbisdesk-pid=", 16)
++     && !strncmp(args->argv[2], "--orbisdesk-self=", 17)) {
++    char *shifted[256 + 2] = { 0 };
++    shifted[0] = args->argv[0];
++    for(int i = 3, j = 1; args->argv[i] && j < 257; i++, j++) {
++      shifted[j] = args->argv[i];
++    }
++    unlink(path);
++    // the parent copies the title's sandbox (rootdir/jaildir/prison) onto this child before it execs
++    long ts[2] = { 0, 1000000 };  // 1 ms
++    for(int i = 0; i < 5000 && !args->escape; i++) {
++      syscall(240, ts, 0);  // SYS_nanosleep
++    }
++    { char m[80]; int n = sprintf(m, "orbisdesk-p010 escape=%d\n", args->escape); if(n > 0) write(2, m, n); }
++    if(args->escape != 1) {
++      klog_puts("orbisdesk: sandbox child not adopted");
++      return 0;
++    }
++    chdir("/");
++    execve(args->argv[2] + 17, shifted, envp);
++    perror("orbisdesk execve");
++    return 0;
++  }
+   execve(path, args->argv, envp);
+   perror("execve");
+ 
+@@ -122,7 +147,7 @@
+ 
+ pid_t
+ selfldr_spawn(int stdio, char *const argv[], uint8_t *self, size_t self_size) {
+-  self_spawn_args_t args = { stdio, self, self_size, argv };
++  self_spawn_args_t args = { stdio, self, self_size, argv, 0 };
+   struct kevent evt;
+   void *stack;
+   pid_t pid;
+@@ -148,6 +173,11 @@
+     return -1;
+   }
+ 
++  if(argv[1] && argv[2] && !strncmp(argv[1], "--orbisdesk-pid=", 16)
++     && !strncmp(argv[2], "--orbisdesk-self=", 17)) {
++    int ok = orbisdesk_adopt_child(pid,argv);
++    args.escape = ok ? 1 : -1;
++  }
+   EV_SET(&evt, pid, EVFILT_PROC, EV_ADD, NOTE_EXEC | NOTE_EXIT, 0, 0);
+   if(kevent(kq, &evt, 1, &evt, 1, 0) < 0) {
+     LOG_PERROR("kevent");

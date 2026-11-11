@@ -5,6 +5,8 @@
 
 [English](HARDWARE_W228.md) | [Español](HARDWARE_W228-es.md)
 
+**Firmware correction (2026-11-11):** the user confirmed that the test console is a PS4 Pro Baikal running **12.50**, not 12.52. References to their console in this document are corrected; original logs and manifests retain the earlier reported value. Do not attribute these tests to 12.52 hardware.
+
 Summary J001, W227 and W228. W228: `reports/wine-hardware-w228/physical/20261104T215518Z/` (PWJB mode = root, jailbreak rc = 0, identity setuid = 1 wineserver_lookup = 2, PWDRIVE d: and e:, relaunch with source = relax, `pe_machine path=/mnt/usb1/PC/Grand Theft Auto Vice City/gta-vc.exe machine=0x14c`).
 
 <a id="qué-hace"></a>
@@ -14,7 +16,7 @@ Summary J001, W227 and W228. W228: `reports/wine-hardware-w228/physical/20261104
 
 - **For what:** from your sandbox, the app does not see `/mnt`, and the user's USB drives are in `/mnt/usb0`.. `/mnt/usb7`. The ROOT mode asks GoldHEN the jailbreak of its SDK before it starts Wine, and the disks appear as units of Windows.
 - **Optional:** without choosing ROOT, the start is the usual (NORMAL), without jailbreak and without USB units.
-- **Requirement:** GoldHEN with the command of SDK (syscall 500). Tested at the user's PS4 Pro (informed firmware 12.52). Without GoldHEN, the order fails with its code in the log and the app starts the same, without units.
+- **Requirement:** GoldHEN with the command of SDK (syscall 500). Tested at the user's PS4 Pro (informed firmware 12.50). Without GoldHEN, the order fails with its code in the log and the app starts the same, without units.
 
 <a id="cómo-se-elige"></a>
 

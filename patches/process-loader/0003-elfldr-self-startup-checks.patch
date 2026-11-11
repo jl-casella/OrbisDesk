@@ -1,0 +1,77 @@
+--- a/selfldr.c
++++ b/selfldr.c
+@@ -60,6 +60,7 @@
+   char *const *argv;
+   volatile int escape;  // P010: parent sets 1 once the child has adopted the title sandbox, -1 on failure
+ } self_spawn_args_t;
++#include "process_loader_self_check.h"
+ 
+ /**
+  * Duplicate the file descriptor from the given process.
+@@ -82,6 +83,7 @@
+ static int
+ selfldr_rfork_entry(void *ctx) {
+   self_spawn_args_t *args = (self_spawn_args_t *)ctx;
++  pw_loader_stage("self_child_entry", getpid());
+   char *const envp[] = { 0 };
+   pid_t ppid = getppid();
+   char path[PATH_MAX];
+@@ -135,7 +137,10 @@
+       return 0;
+     }
+     chdir("/");
++    if(!orbisdesk_self_files(args->argv[2] + 17)) return 0;
++    pw_loader_stage("self_exec_enter", getpid());
+     execve(args->argv[2] + 17, shifted, envp);
++    pw_loader_stage("self_exec_errno", errno);
+     perror("orbisdesk execve");
+     return 0;
+   }
+@@ -158,13 +163,14 @@
+     return -1;
+   }
+ 
+-  if(!(stack = malloc(PAGE_SIZE))) {
++  pw_loader_stage("self_spawn_enter", getpid());
++  if(!(stack = malloc(2 * 1024 * 1024))) {
+     LOG_PERROR("malloc");
+     close(kq);
+     return -1;
+   }
+ 
+-  if((pid = rfork_thread(RFPROC | RFCFDG | RFMEM, stack + PAGE_SIZE - 8,
++  if((pid = rfork_thread(RFPROC | RFCFDG | RFMEM, stack + 2 * 1024 * 1024 - 8,
+                          selfldr_rfork_entry, &args))
+      < 0) {
+     LOG_PERROR("rfork_thread");
+@@ -179,6 +185,7 @@
+     args.escape = ok ? 1 : -1;
+   }
+   EV_SET(&evt, pid, EVFILT_PROC, EV_ADD, NOTE_EXEC | NOTE_EXIT, 0, 0);
++  pw_loader_stage("self_wait_exec_enter", pid);
+   if(kevent(kq, &evt, 1, &evt, 1, 0) < 0) {
+     LOG_PERROR("kevent");
+     free(stack);
+@@ -186,6 +193,7 @@
+     return -1;
+   }
+ 
++  pw_loader_stage("self_wait_exec_return", pid);
+   free(stack);
+   close(kq);
+ 
+--- a/socksrv.c
++++ b/socksrv.c
+@@ -196,6 +196,12 @@
+     return;
+   }
+ 
++  if(magic == 0x3f49444f) {
++    char identity[320];
++    int n=snprintf(identity,sizeof(identity),"{\"service\":\"orbisdesk-loader\",\"protocol\":1,\"build\":\"P011\",\"recipe\":\"%s\",\"pid\":%d}\n",ORBISDESK_LOADER_RECIPE,getpid());
++    if(n>0 && n<(int)sizeof(identity)) write(fd,identity,n);
++    return;
++  }
+   if(magic == PAYLOAD_MAGIC_FILE || magic == PAYLOAD_MAGIC_HTTP) {
+     if(payload_readuri(fd, uri, PATH_MAX)
+        || uri_get_content(uri, &buf, &len)) {
