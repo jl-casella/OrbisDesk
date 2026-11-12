@@ -43,7 +43,7 @@ def build(version, cache_mode='reuse'):
                  'build-wine-directory-ps4', 'build-wow64-world-ps4', 'build-ddraw-hw',
                  'build-wined3d-hw', 'build-wmvcore-hw', 'build-msstyles-hw',
                  'build-nsi-hw', 'build-dxgi-hw', 'build-winmm-hw',
-                 'build-taskmgr-hw', 'build-winecfg-hw', 'build-explorer-hw', 'build-guest-hw',
+                 'build-taskmgr-hw', 'build-winecfg-hw', 'build-mangohudcfg-hw', 'build-explorer-hw', 'build-guest-hw',
                  'build-wfm', 'build-dos-runtime', 'build-games', 'make-icons', 'make-start-menu', 'make-app-icon'):
         python(name)
     step('product-assets', [sys.executable, ROOT / 'tools/ci/product-fixtures.py'])

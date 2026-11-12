@@ -304,6 +304,7 @@ Conclusión: RADV sobre GNM funciona en esta consola con nuestro SDK y nuestra i
   - **Íconos:** `tools/make-icons.py` dibuja en Python los íconos de 16, 32 y 48 px y los escribe como `.ico` (BMP de 32 bits con máscara), en `C:\orbis\icons`: engranajes, cubo, triángulo RGB y una "M" naranja. Los programas de prueba no tienen íconos propios.
   - **MangoHud.conf inicial:** fps, frametime, gráfico de frametime, CPU, GPU, RAM, y posición arriba a la izquierda.
   - **MangoJuice no se incluyó.** MangoJuice-Windows (`e2ec0755`) es una aplicación Vala con GTK4, libadwaita-1 y gee-0.8, y no tiene releases. Hay que compilar toda la pila GTK4 para Windows y tener `valac` en el host, que no está instalado.
+    - Más adelante: [Ajustes de MangoHud](MANGOHUD_SETTINGS-es.md) revisó esta decisión y añadió en su lugar un editor Win32 pequeño.
   - PKG `/data/pkg/orbis-win-W090-3456e351caaf.pkg` (APP_VER 01.89).
 - Corrección: el usuario aclara que el overlay **no apareció** ni en W089 ni en W090.
   - En los dos, `vkcube` carga las mismas DLL. Entre ellas está `dnsapi`, que viene de `IPHLPAPI` y que solo importa `libMangoHud.dll`. `wined3d` arranca en `no3d` y se consulta la RAM.

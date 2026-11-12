@@ -1040,6 +1040,14 @@ mangohud_conf.parent.mkdir(parents=True,exist_ok=True)
 mangohud_conf.write_text('# MangoHud settings (OrbisDesk). Save and restart OrbisDesk to apply.\n'
                          '# Options: https://github.com/flightlessmango/MangoHud#hud-configuration\n'
                          'fps\nframetime\nframe_timing=1\ncpu_stats\ngpu_stats\nram\nposition=top-left\n')
+# MangoHud Settings (docs/MANGOHUD_SETTINGS.md): C:\orbis\mangohudcfg.exe, a form for the keys above that both
+# MangoHud and the overlay's Estadisticas read (tools/build-mangohudcfg-hw.py); the Start menu's "MangoHud Config"
+# opens it. The file above is only the clean-install default: upload-hardware.py keeps the console's copy.
+mangohudcfg=json.loads((ROOT/'out/mangohudcfg-hw/manifest.json').read_text())
+if mangohudcfg['builder_sha256']!=sha(ROOT/'tools/build-mangohudcfg-hw.py'):raise SystemExit('mangohudcfg differs from its builder')
+if mangohudcfg['source']['sha256']!=sha(ROOT/'fixtures/win32/mangohudcfg.c'):raise SystemExit('mangohudcfg differs from its source')
+copy_verified(ROOT/'out/mangohudcfg-hw'/mangohudcfg['program']['path'],prefix/'drive_c/orbis/mangohudcfg.exe',
+              mangohudcfg['program']['sha256'])
 # W284 (W281: NFS U2's second start had no music: its timer outlived the program and killed winmm's timer thread):
 # winmm.dll that removes a timer whose function is gone or faults (tools/build-winmm-hw.py). After every other
 # staging, so it replaces the host copies in the builtin folders and the prefix.
@@ -1171,11 +1179,14 @@ user_reg_reset=[]   # CONSOLE_OWNED keys this build takes from its own user.reg 
 # /data on the first start of each build (native/hw_install.c), with install.json as its contract:
 # the same rules tools/upload-hardware.py applies over FTP. --runtime-outside-package keeps the old
 # split (a 35 MB package and an FTP-uploaded runtime) for quick development builds.
-from console_state import CONSOLE_OWNED
+from console_state import CONSOLE_OWNED,CONSOLE_OWNED_FILES
+for path in CONSOLE_OWNED_FILES:
+    if path not in runtime_files:raise SystemExit('console-owned file not in the runtime: '+path)
 install={'schema_version':1,'build':HW_BUILD_ID,'app_version':args.app_version,'state_root':'/data/orbisdesk',
     'writable':['wine-prefix','wine-home'],'directories':runtime_directories,
     'files':[[path,e['sha256'],e['bytes']] for path,e in runtime_files.items()],
-    'obsolete_files':obsolete_files,'console_owned':list(CONSOLE_OWNED),'user_reg_reset':user_reg_reset,
+    'obsolete_files':obsolete_files,'console_owned':list(CONSOLE_OWNED),'console_owned_files':list(CONSOLE_OWNED_FILES),
+    'user_reg_reset':user_reg_reset,
     'host_profile':host_profiles[0].name,'bytes':sum(e['bytes'] for e in runtime_files.values())}
 install_json=work/'install.json'
 install_json.write_text(json.dumps(install,indent=1,ensure_ascii=False)+'\n',encoding='utf-8')
@@ -1186,6 +1197,7 @@ def install_line(kind,value):
 install_text='ORBISDESK-INSTALL 1\n'+install_line('B',HW_BUILD_ID)+install_line('H',host_profiles[0].name)+install_line('T',str(install['bytes']))
 install_text+=''.join(install_line('W',w) for w in install['writable'])
 install_text+=''.join(install_line('K',k) for k in CONSOLE_OWNED)+''.join(install_line('R',k) for k in user_reg_reset)
+install_text+=''.join(install_line('P',p) for p in CONSOLE_OWNED_FILES)
 install_text+=''.join(install_line('D',d) for d in runtime_directories)
 install_text+=''.join(install_line('F','%s %d %s'%(e['sha256'],e['bytes'],path)) for path,e in runtime_files.items())
 install_text+=''.join(install_line('O',o) for o in obsolete_files)
@@ -1276,6 +1288,8 @@ manifest['task_manager']={'build':taskmgr,'runtime_differences':['taskmgr.exe','
     'cpu':'title process busy/(capacity*wall), same source as the HUD; not system-wide',
     'processes':'Wine processes only; guests share the explorer process','physical_validation':'pending'}
 manifest['source_hashes']['tools/build-taskmgr-hw.py']=sha(ROOT/'tools/build-taskmgr-hw.py')
+for source in ('tools/build-mangohudcfg-hw.py','fixtures/win32/mangohudcfg.c'):  # MangoHud Settings
+    manifest['source_hashes'][source]=sha(ROOT/source)
 manifest['source_hashes']['tools/build-winecfg-hw.py']=sha(ROOT/'tools/build-winecfg-hw.py')  # W182
 manifest['source_hashes']['tools/build-dxgi-hw.py']=sha(ROOT/'tools/build-dxgi-hw.py')  # W192
 manifest['source_hashes']['platform/ps4/pw_wine_threads.c']=sha(ROOT/'platform/ps4/pw_wine_threads.c')  # W195

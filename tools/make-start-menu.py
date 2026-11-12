@@ -27,13 +27,18 @@ MENU={
                     ('Game Controllers','control.exe','Test the controller (XInput)','joy.cpl',SYS+'joy.cpl')],
 }
 # W090: the GPU test programs in C:\orbis, each with its icon from tools/make-icons.py (copied
-# to C:\orbis\icons by build-wine-hardware.py), and the MangoHud configuration in Notepad.
+# to C:\orbis\icons by build-wine-hardware.py), and the MangoHud configuration (MangoHud Settings, and the
+# file itself in Notepad).
 # Items: name, full target path, description, arguments, icon.
 ORBIS='C:\\orbis\\'
 GRAPHICS=[('glxgears',ORBIS+'glxgears.exe','OpenGL gears through Zink and Vulkan','',ORBIS+'icons\\glxgears.ico'),
           ('vkcube',ORBIS+'vkcube.exe','Vulkan cube (Vulkan-Tools)','',ORBIS+'icons\\vkcube.ico'),
           ('vkspin',ORBIS+'vkspin64.exe','Vulkan spinning triangle','',ORBIS+'icons\\vkspin64.ico'),
-          ('MangoHud Config',SYS+'notepad.exe','Edit the MangoHud overlay settings',
+          # MangoHud Settings (fixtures/win32/mangohudcfg.c, docs/MANGOHUD_SETTINGS.md): the HUD options as a form,
+          # under the shortcut's old name so the console's copy is replaced; the file itself stays in Notepad
+          ('MangoHud Config',ORBIS+'mangohudcfg.exe','Choose what the MangoHud overlay shows and where','',
+           ORBIS+'icons\\mangohud.ico'),
+          ('MangoHud Config (text)',SYS+'notepad.exe','Edit the MangoHud settings file as text',
            # W092: %APPDATA% follows the registry's shell folders, C:\users\orbis since alpha-1 (build-wine-hardware.py)
            'C:\\users\\orbis\\AppData\\Roaming\\MangoHud\\MangoHud.conf',ORBIS+'icons\\mangohud.ico')]
 # W177 (phase 9): Programs/Internet. SeaMonkey 2.53 is the browser (the user's choice; it replaced
