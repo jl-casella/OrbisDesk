@@ -41,7 +41,7 @@ El manifiesto `requireAdministrator` de upstream no se enlaza.
 
 - comprueba el manifiesto contra el builder y el lock;
 - copia `out/mangojuice-hw/MangoJuice` a `C:\Program Files\MangoJuice`, carpeta que el strip de depuración no toca, igual que hace con VLC;
-- falla si alguna DLL de Windows que importa el programa, directamente o a través de otra DLL de Wine, no está ni en la carpeta builtin de Wine ni en system32 (las `api-ms-win-*` se resuelven mediante el apiset);
+- falla si alguna DLL de Windows que importa el programa, directamente o a través de otra DLL de Wine, no está en system32 una vez terminado el prefijo (las `api-ms-win-*` se resuelven mediante el apiset);
 - borra de la consola el antiguo `Graphics Tools\MangoHud Config.lnk`.
 
 `tools/ci/build-product.py` ejecuta el builder con `--fetch`, y la fuente de MangoJuice ahora se restaura en CI.
@@ -50,7 +50,7 @@ El manifiesto `requireAdministrator` de upstream no se enlaza.
 
 `libharfbuzz-0.dll` y `libpangowin32-1.0-0.dll` de MSYS2 importan `DWrite.dll`, que OrbisDesk no incluía. En la consola (paquete combinado W303, run-0060) MangoJuice no se abrió: no se encontró DWrite.dll, y después fallaron en cadena harfbuzz, freetype, fontconfig, cairo y GTK. Ahora se incluye el dwrite del propio Wine:
 
-- [stage-wine-extras.py](../tools/stage-wine-extras.py) copia `dwrite.dll` para las dos vistas desde la build de Wine del host fijada, sin parches. `build-wine-hardware.py` lo pone en las carpetas builtin y en system32/syswow64.
+- [stage-wine-extras.py](../tools/stage-wine-extras.py) copia `dwrite.dll` para las dos vistas desde la build de Wine del host fijada, sin parches. `build-wine-hardware.py` lo pone en las carpetas builtin y en system32/syswow64, y lo mantiene ahí: `W261_LEFT_OUT` de `stage-wine-i386.py` lista dwrite, que se había dejado fuera porque no tenía lado Unix (SeaMonkey dibujaba páginas sin texto y el Qt de VLC se cerraba). Con solo la copia de la carpeta builtin seguía fallando (run-0061). Ahora que dwrite tiene su lado Unix, SeaMonkey y VLC vuelven a usar DirectWrite y hay que probarlos de nuevo.
 - dwrite dibuja los glifos con FreeType en su lado Unix, `dwrite.so`. El título no tiene cargador dinámico. [build-unixlibs-ps4.py](../tools/build-unixlibs-ps4.py) compila sin cambios `dlls/dwrite/freetype.c` de Wine, con su `dlopen`/`dlsym` renombrados a [pw_dwrite_unix.c](../platform/ps4/pw_dwrite_unix.c). Ese archivo responde con el FreeType que win32u ya enlaza en el ELF de arranque, y [pw_wine_unixlibs.c](../platform/ps4/pw_wine_unixlibs.c) registra `dwrite.so`.
 
 El resto del cierre, 64 DLL, estaba en W303. El `usp10.dll` de 8 KiB es el reenviador de Wine a gdi32, no un stub. El lado Unix compila con la toolchain de la consola, y sus únicos símbolos sin definir son las 28 funciones de FreeType, que define `build/freetype-ps4`, más la salida de depuración de ntdll y libc. Necesita un ELF de arranque nuevo (`build-unixlibs-ps4.py` y después `link-wine-boot.py`); no se enlazó ni se ejecutó.

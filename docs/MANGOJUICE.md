@@ -41,7 +41,7 @@ The upstream `requireAdministrator` manifest is not linked.
 
 - checks the manifest against the builder and the lock;
 - copies `out/mangojuice-hw/MangoJuice` to `C:\Program Files\MangoJuice`, which the debug strip leaves alone, as it does VLC;
-- fails if any Windows DLL the program imports, directly or through another Wine DLL, is in neither Wine's builtin folder nor system32 (the `api-ms-win-*` ones resolve through the apiset);
+- fails if any Windows DLL the program imports, directly or through another Wine DLL, is not in system32 once the prefix is final (the `api-ms-win-*` ones resolve through the apiset);
 - deletes the old `Graphics Tools\MangoHud Config.lnk` from the console.
 
 `tools/ci/build-product.py` runs the builder with `--fetch`, and MangoJuice's source is now restored in CI.
@@ -50,7 +50,7 @@ The upstream `requireAdministrator` manifest is not linked.
 
 MSYS2's `libharfbuzz-0.dll` and `libpangowin32-1.0-0.dll` import `DWrite.dll`, which OrbisDesk did not ship. On the console (W303 combined package, run-0060) MangoJuice did not open: DWrite.dll was not found, and harfbuzz, freetype, fontconfig, cairo and GTK then failed one after another. Wine's own dwrite is now staged:
 
-- [stage-wine-extras.py](../tools/stage-wine-extras.py) copies `dwrite.dll` for both views from the pinned host Wine build, unpatched. `build-wine-hardware.py` puts it in the builtin folders and in system32/syswow64.
+- [stage-wine-extras.py](../tools/stage-wine-extras.py) copies `dwrite.dll` for both views from the pinned host Wine build, unpatched. `build-wine-hardware.py` puts it in the builtin folders and in system32/syswow64, and keeps it there: `stage-wine-i386.py`'s `W261_LEFT_OUT` lists dwrite, which had been left out because it had no Unix side (SeaMonkey drew pages without text and VLC's Qt quit). With only the builtin folder's copy it still failed (run-0061). Now that dwrite has its Unix side, SeaMonkey and VLC use DirectWrite again and need retesting.
 - dwrite draws glyphs through FreeType on its Unix side, `dwrite.so`. The title has no dynamic loader. [build-unixlibs-ps4.py](../tools/build-unixlibs-ps4.py) compiles Wine's `dlls/dwrite/freetype.c` unchanged, with its `dlopen`/`dlsym` renamed to [pw_dwrite_unix.c](../platform/ps4/pw_dwrite_unix.c). That file answers from the FreeType win32u already links into the boot ELF, and [pw_wine_unixlibs.c](../platform/ps4/pw_wine_unixlibs.c) registers `dwrite.so`.
 
 The rest of the closure, 64 DLLs, was present in W303. The 8 KiB `usp10.dll` is Wine's forwarder to gdi32, not a stub. The Unix side compiles with the console toolchain, and its only undefined symbols are FreeType's 28 functions, which `build/freetype-ps4` defines, plus ntdll's debug output and libc. It needs a new boot ELF (`build-unixlibs-ps4.py`, then `link-wine-boot.py`); it was not linked or run.
