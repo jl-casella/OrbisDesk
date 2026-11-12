@@ -41,10 +41,19 @@ The upstream `requireAdministrator` manifest is not linked.
 
 - checks the manifest against the builder and the lock;
 - copies `out/mangojuice-hw/MangoJuice` to `C:\Program Files\MangoJuice`, which the debug strip leaves alone, as it does VLC;
-- fails if any Windows DLL the program imports is missing from Wine's runtime (the `api-ms-win-crt-*` ones resolve to `ucrtbase` through the apiset);
+- fails if any Windows DLL the program imports, directly or through another Wine DLL, is in neither Wine's builtin folder nor system32 (the `api-ms-win-*` ones resolve through the apiset);
 - deletes the old `Graphics Tools\MangoHud Config.lnk` from the console.
 
 `tools/ci/build-product.py` runs the builder with `--fetch`, and MangoJuice's source is now restored in CI.
+
+### DirectWrite
+
+MSYS2's `libharfbuzz-0.dll` and `libpangowin32-1.0-0.dll` import `DWrite.dll`, which OrbisDesk did not ship. On the console (W303 combined package, run-0060) MangoJuice did not open: DWrite.dll was not found, and harfbuzz, freetype, fontconfig, cairo and GTK then failed one after another. Wine's own dwrite is now staged:
+
+- [stage-wine-extras.py](../tools/stage-wine-extras.py) copies `dwrite.dll` for both views from the pinned host Wine build, unpatched. `build-wine-hardware.py` puts it in the builtin folders and in system32/syswow64.
+- dwrite draws glyphs through FreeType on its Unix side, `dwrite.so`. The title has no dynamic loader. [build-unixlibs-ps4.py](../tools/build-unixlibs-ps4.py) compiles Wine's `dlls/dwrite/freetype.c` unchanged, with its `dlopen`/`dlsym` renamed to [pw_dwrite_unix.c](../platform/ps4/pw_dwrite_unix.c). That file answers from the FreeType win32u already links into the boot ELF, and [pw_wine_unixlibs.c](../platform/ps4/pw_wine_unixlibs.c) registers `dwrite.so`.
+
+The rest of the closure, 64 DLLs, was present in W303. The 8 KiB `usp10.dll` is Wine's forwarder to gdi32, not a stub. The Unix side compiles with the console toolchain, and its only undefined symbols are FreeType's 28 functions, which `build/freetype-ps4` defines, plus ntdll's debug output and libc. It needs a new boot ELF (`build-unixlibs-ps4.py`, then `link-wine-boot.py`); it was not linked or run.
 
 ## Result of this build
 
@@ -67,7 +76,7 @@ The user's file survives updates. `tools/console_state.py` lists it in `CONSOLE_
 ## What was checked, and what was not
 
 - The builder ran start to finish. Both links were identical.
-- Every Windows DLL the program imports was present in W303's runtime when first checked. A later check ran while another session was rebuilding that runtime, so the build-time check in `build-wine-hardware.py` is the one that counts.
+- On the console, MangoJuice failed to load because DWrite.dll was missing (run-0060, above). That is now fixed in the build, but the fix has not been tested on the console.
 - `hw_overlay.c` compiles with the console's own compiler flags (`helper_compile_flags`). In the host preview harness:
   - a MangoJuice-style file (`legacy_layout=false`, `fps`, `ram`) gave `gpu=0 cpu=0 ram=1 fps=1 frametime=0 frame_timing=0`;
   - the build's default file still gave the default rows.
@@ -75,7 +84,7 @@ The user's file survives updates. `tools/console_state.py` lists it in `CONSOLE_
 - The icons were previewed at 16, 32 and 48 px on the dark menu (38,38,40), the light menu (240,240,240) and the selection colour (0,120,215).
 - **Not run anywhere:**
   - MangoJuice itself: running the downloaded GTK binaries natively on the build PC was not allowed in this session, and the host Wine build has no display driver;
-  - not in a W package, on shadPS4 or on the PS4;
+  - not on shadPS4, and on the PS4 only as far as the DWrite.dll failure;
   - its startup time, memory use and controller navigation;
   - whether GTK 4.24's cairo path works under OrbisDesk's Wine at all.
 

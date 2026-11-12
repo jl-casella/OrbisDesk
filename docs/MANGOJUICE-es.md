@@ -41,10 +41,19 @@ El manifiesto `requireAdministrator` de upstream no se enlaza.
 
 - comprueba el manifiesto contra el builder y el lock;
 - copia `out/mangojuice-hw/MangoJuice` a `C:\Program Files\MangoJuice`, carpeta que el strip de depuración no toca, igual que hace con VLC;
-- falla si falta en el runtime de Wine alguna DLL de Windows que importa el programa (las `api-ms-win-crt-*` se resuelven a `ucrtbase` mediante el apiset);
+- falla si alguna DLL de Windows que importa el programa, directamente o a través de otra DLL de Wine, no está ni en la carpeta builtin de Wine ni en system32 (las `api-ms-win-*` se resuelven mediante el apiset);
 - borra de la consola el antiguo `Graphics Tools\MangoHud Config.lnk`.
 
 `tools/ci/build-product.py` ejecuta el builder con `--fetch`, y la fuente de MangoJuice ahora se restaura en CI.
+
+### DirectWrite
+
+`libharfbuzz-0.dll` y `libpangowin32-1.0-0.dll` de MSYS2 importan `DWrite.dll`, que OrbisDesk no incluía. En la consola (paquete combinado W303, run-0060) MangoJuice no se abrió: no se encontró DWrite.dll, y después fallaron en cadena harfbuzz, freetype, fontconfig, cairo y GTK. Ahora se incluye el dwrite del propio Wine:
+
+- [stage-wine-extras.py](../tools/stage-wine-extras.py) copia `dwrite.dll` para las dos vistas desde la build de Wine del host fijada, sin parches. `build-wine-hardware.py` lo pone en las carpetas builtin y en system32/syswow64.
+- dwrite dibuja los glifos con FreeType en su lado Unix, `dwrite.so`. El título no tiene cargador dinámico. [build-unixlibs-ps4.py](../tools/build-unixlibs-ps4.py) compila sin cambios `dlls/dwrite/freetype.c` de Wine, con su `dlopen`/`dlsym` renombrados a [pw_dwrite_unix.c](../platform/ps4/pw_dwrite_unix.c). Ese archivo responde con el FreeType que win32u ya enlaza en el ELF de arranque, y [pw_wine_unixlibs.c](../platform/ps4/pw_wine_unixlibs.c) registra `dwrite.so`.
+
+El resto del cierre, 64 DLL, estaba en W303. El `usp10.dll` de 8 KiB es el reenviador de Wine a gdi32, no un stub. El lado Unix compila con la toolchain de la consola, y sus únicos símbolos sin definir son las 28 funciones de FreeType, que define `build/freetype-ps4`, más la salida de depuración de ntdll y libc. Necesita un ELF de arranque nuevo (`build-unixlibs-ps4.py` y después `link-wine-boot.py`); no se enlazó ni se ejecutó.
 
 ## Resultado de esta compilación
 
@@ -67,7 +76,7 @@ El archivo del usuario sobrevive a las actualizaciones. `tools/console_state.py`
 ## Qué se comprobó y qué no
 
 - El builder se ejecutó de principio a fin. Los dos enlaces fueron idénticos.
-- Todas las DLL de Windows que importa el programa estaban en el runtime de W303 la primera vez que se comprobó. Una comprobación posterior coincidió con otra sesión que estaba reconstruyendo ese runtime, así que la que cuenta es la de `build-wine-hardware.py` al compilar.
+- En la consola, MangoJuice no cargó porque faltaba DWrite.dll (run-0060, arriba). Eso ya está corregido en la build, pero la corrección no se ha probado en la consola.
 - `hw_overlay.c` compila con las opciones de compilación de la propia consola (`helper_compile_flags`). En el harness de vista previa del host:
   - un archivo como los de MangoJuice (`legacy_layout=false`, `fps`, `ram`) dio `gpu=0 cpu=0 ram=1 fps=1 frametime=0 frame_timing=0`;
   - el archivo por defecto de la build siguió dando las filas por defecto.
@@ -75,7 +84,7 @@ El archivo del usuario sobrevive a las actualizaciones. `tools/console_state.py`
 - Los iconos se revisaron a 16, 32 y 48 px sobre el menú oscuro (38,38,40), el menú claro (240,240,240) y el color de selección (0,120,215).
 - **No se ejecutó en ningún sitio:**
   - el propio MangoJuice: en esta sesión no se permitió ejecutar en el PC de compilación los binarios GTK descargados, y la build de Wine del host no tiene driver de pantalla;
-  - ni en un paquete W, ni en shadPS4, ni en la PS4;
+  - ni en shadPS4, y en la PS4 solo hasta el fallo de DWrite.dll;
   - su tiempo de arranque, su uso de memoria y la navegación con el mando;
   - si el camino cairo de GTK 4.24 funciona siquiera bajo el Wine de OrbisDesk.
 

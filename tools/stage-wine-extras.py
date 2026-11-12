@@ -18,6 +18,9 @@ W175 (phase 7). From the pinned host Wine tree (.deps/wine/runtime/build), unpat
 - W221: dpnhpast.dll, the DirectPlay NAT helper. The DirectX SDK's GetDXVersion reports 8.1 only
   when it loads by that name; without it GTA Vice City stops at "DirectX 8.1 is required" (W219,
   docs/investigacion-gta-vc-base-0x400000.md). Imports kernel32, ntdll and ucrtbase only.
+- dwrite.dll, DirectWrite: MSYS2's libharfbuzz imports it, so MangoJuice's GTK did not load without it
+  (run-0060, docs/MANGOJUICE.md). Its Unix side is dwrite.so in the boot ELF (tools/build-unixlibs-ps4.py,
+  platform/ps4/pw_dwrite_unix.c), on the FreeType win32u already links.
 Output: out/wine-extras/{x86_64,i386}-windows/, out/wine-extras/winsxs/, out/wine-extras/themes/
 and manifest.json, copied by build-wine-hardware.py.
 """
@@ -26,7 +29,7 @@ ROOT=pathlib.Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build';out=ROOT/'out/wine-extras'
 MODULES=(('comctl32_v6','comctl32_v6.dll'),('imaadp32.acm','imaadp32.acm'),('msadp32.acm','msadp32.acm'),
          ('msg711.acm','msg711.acm'),('msacm32.drv','msacm32.drv'),('midimap','midimap.dll'),
-         ('dpnhpast','dpnhpast.dll'))
+         ('dpnhpast','dpnhpast.dll'),('dwrite','dwrite.dll'))
 ARCHES={'x86_64':'amd64','i386':'x86'}  # Wine's build folder, winsxs processorArchitecture
 def sha(path):return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 wine_commit=subprocess.check_output(['git','-C',str(SOURCE),'rev-parse','HEAD'],text=True).strip()

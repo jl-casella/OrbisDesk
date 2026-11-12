@@ -1050,11 +1050,33 @@ if mangojuice['lock_sha256']!=sha(ROOT/'mangojuice.lock.json'):raise SystemExit(
 for relative,e in mangojuice['files'].items():
     target=prefix/'drive_c/Program Files'/relative;target.parent.mkdir(parents=True,exist_ok=True)
     copy_verified(ROOT/'out/mangojuice-hw'/relative,target,e['sha256'])
-# the Windows DLLs it takes from Wine (api-ms-win-crt-* resolve to ucrtbase through the apiset)
-wine_dlls={p.name.lower() for folder in (prefix/'drive_c/windows/system32',data/'wine/lib/wine/x86_64-windows')
-           for p in folder.iterdir()}
-missing=[dll for dll in mangojuice['system_imports'] if not dll.startswith('api-ms-win-') and dll not in wine_dlls]
-if missing:raise SystemExit('MangoJuice imports DLLs the runtime lacks: '+', '.join(missing))
+# the Windows DLLs it takes from Wine, and theirs in turn (api-ms-win-* resolve through the apiset). run-0060:
+# DWrite.dll, which harfbuzz and pangowin32 import, was in neither folder, and GTK did not load.
+def pe_imports(path):
+    """Names in the import and delay-import tables of a PE32+ (Wine's own DELAYIMPORTS bind lazily, not here)."""
+    blob=path.read_bytes();pe=struct.unpack_from('<I',blob,0x3c)[0]
+    count=struct.unpack_from('<H',blob,pe+6)[0];optional=pe+24;size=struct.unpack_from('<H',blob,pe+20)[0]
+    if struct.unpack_from('<H',blob,optional)[0]!=0x20b:return set()
+    sections=[struct.unpack_from('<IIII',blob,optional+size+40*i+8) for i in range(count)]
+    def at(rva):return next((raw+rva-va for vsize,va,rsize,raw in sections if va<=rva<va+max(vsize,rsize)),None)
+    names=set()
+    for directory,entry_size,field in ((1,20,12),(13,32,4)):
+        rva=struct.unpack_from('<I',blob,optional+112+8*directory)[0];offset=at(rva) if rva else None
+        while offset is not None and blob[offset:offset+entry_size]!=bytes(entry_size):
+            name=at(struct.unpack_from('<I',blob,offset+field)[0])
+            if name is not None:names.add(blob[name:blob.index(b'\0',name)].decode().lower())
+            offset+=entry_size
+    return names
+wine_dlls={}
+for folder in (data/'wine/lib/wine/x86_64-windows',prefix/'drive_c/windows/system32'):
+    for p in folder.iterdir():wine_dlls.setdefault(p.name.lower(),p)
+needed={dll:'mangojuice' for dll in mangojuice['system_imports']};pending=list(needed);missing=[]
+while pending:
+    dll=pending.pop()
+    if dll.startswith(('api-ms-win-','ext-ms-win-')):continue
+    if dll not in wine_dlls:missing.append('%s (needed by %s)'%(dll,needed[dll]));continue
+    for name in pe_imports(wine_dlls[dll])-needed.keys():needed[name]=dll;pending.append(name)
+if missing:raise SystemExit('MangoJuice imports DLLs the runtime lacks: '+', '.join(sorted(missing)))
 # W284 (W281: NFS U2's second start had no music: its timer outlived the program and killed winmm's timer thread):
 # winmm.dll that removes a timer whose function is gone or faults (tools/build-winmm-hw.py). After every other
 # staging, so it replaces the host copies in the builtin folders and the prefix.
