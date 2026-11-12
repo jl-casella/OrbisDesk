@@ -33,6 +33,22 @@
 /* Phase C / P015: the child's window in the title's desktop (explorer /desktop=shell in WinSta0), its pixels
  * streamed to the title over POP_SEP_SURFACE, composited by the sink at the window's desktop rectangle. */
 #define POP_SEP_SURFACE    POP_SEP_DIR "/surface.sock"
+/* Phase D.1a / P016: OpenOrbis PRX the child loads with the system linker (native/pop_prx_probe.c) */
+#define POP_SEP_PRX_PROBE  "/data/orbisdesk/pop-prx-probe.prx"
+/* Phase D.1b / P017: Wine's unix side as a PRX (native/pop_wine_child.c entry), the Windows program it runs
+ * (fixtures/win32/separate_d1.c; Z: is /data) and Wine's log in this process */
+#define POP_SEP_WINE_PRX   "/data/orbisdesk/pop-wine-child.prx"
+#define POP_SEP_D1_EXE     "Z:\\orbisdesk\\separate_d1.exe"
+#define POP_SEP_WINE_LOG   POP_SEP_DIR "/wine-child.jsonl"
+/* Phase D.3: kernelbase's request (token, image, command line, current directory; one per line) becomes the
+ * child's job; the child reports "pid tid" in POP_SEP_STARTED<token> for kernelbase's handles. The boot
+ * self-test runs only when POP_SEP_SELFTEST exists (it used to run every boot). */
+#define POP_SEP_JOB        POP_SEP_DIR "/job"
+#define POP_SEP_STARTED    POP_SEP_DIR "/started-"
+#define POP_SEP_SELFTEST   POP_SEP_DIR "/selftest"
+/* Phase D.2 / P018: the GUI program (fixtures/win32/separate_d2.c), run instead of D.1's when present */
+#define POP_SEP_D2_FILE    "/data/orbisdesk/separate_d2.exe"
+#define POP_SEP_D2_EXE     "Z:\\orbisdesk\\separate_d2.exe"
 #define POP_SEP_WINSTA     "WinSta0"
 #define POP_SEP_DESKTOP    "shell"
 #define POP_SEP_WIN_X 400

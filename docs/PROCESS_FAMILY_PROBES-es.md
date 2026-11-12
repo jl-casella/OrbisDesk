@@ -6,6 +6,8 @@ Estas sondas reproducen el contrato de procesos que necesitan launchers cuyo hij
 
 **Estado actual, 2026-11-11:** P007 ya verifica un auxiliar freestanding con base fija y transferencia bidireccional de descriptores en hardware físico 12.50. El siguiente requisito es el arranque SELF OpenOrbis de P009/P010, no repetir las pistas mmap de P005. El producto principal sigue en W303. Ver el plan actualizado al final de esta guía.
 
+**Actualización, 2026-11-12:** las fases B–D (un proceso separado que ejecuta Wine como cliente del wineserver del título, con ventanas, entrada y handles reales de `CreateProcess`) están en [Procesos de Windows separados](POP_SEPARATE_PROCESS-es.md).
+
 ## Reproducción Win32 propia
 
 [process_family.c](../fixtures/win32/process_family.c) produce dos ejecutables PE32 con base preferida `0x400000`, `IMAGE_FILE_RELOCS_STRIPPED` y sin directorio de relocaciones. El builder verifica esas propiedades. Sólo importan kernel32 y no usan arranque CRT.

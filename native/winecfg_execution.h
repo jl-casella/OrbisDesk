@@ -32,7 +32,7 @@ static void orbis_update_execution(HWND dialog)
 {
     static const WCHAR *help[]={L"Uses desktop guests; asks before an exclusive restart.",
         L"Keeps desktop apps open; fails instead of restarting.",
-        L"Not available until Wine process support is integrated.",
+        L"Runs in its own native process (needs the GoldHEN loader); no Direct3D yet.",
         L"Closes desktop apps and restarts OrbisDesk for this program."};
     orbis_execution_selection=orbis_execution_mode();
     EnableWindow(GetDlgItem(dialog,IDC_ORBIS_EXECUTION),current_app!=NULL);
@@ -44,11 +44,6 @@ static void orbis_on_execution_change(HWND dialog)
     int mode=(int)SendDlgItemMessageW(dialog,IDC_ORBIS_EXECUTION,CB_GETCURSEL,0,0);
     WCHAR path[MAX_PATH],key[MAX_PATH+64],*stored;
     if(!current_app || mode<0 || mode>3)return;
-    if(mode==PW_EXEC_SEPARATE)
-    {
-        MessageBoxW(dialog,L"Separate Wine processes are not available in this build. Your previous mode is unchanged.",L"OrbisDesk",MB_OK|MB_ICONINFORMATION);
-        SendDlgItemMessageW(dialog,IDC_ORBIS_EXECUTION,CB_SETCURSEL,orbis_execution_selection,0);return;
-    }
     if(orbis_path_target())
     {
         if(!pw_execution_key(orbis_execution_target,path,key))return;
@@ -72,7 +67,7 @@ static void orbis_create_execution(HWND dialog)
 {
     RECT list,rect,row={0,0,0,42},label={17,174,98,184},combo={100,171,245,247},help={17,190,245,212};
     HWND listview=GetDlgItem(dialog,IDC_APP_LISTVIEW),child,control;
-    static const WCHAR *choices[]={L"Automatic (recommended)",L"Inside the desktop",L"Separate processes (unavailable)",L"Exclusive (restart desktop)"};unsigned i;
+    static const WCHAR *choices[]={L"Automatic (recommended)",L"Inside the desktop",L"Separate processes (GoldHEN loader)",L"Exclusive (restart desktop)"};unsigned i;
     if(!listview)return;
     MapDialogRect(dialog,&row);MapDialogRect(dialog,&label);MapDialogRect(dialog,&combo);MapDialogRect(dialog,&help);
     GetWindowRect(listview,&list);MapWindowPoints(NULL,dialog,(POINT *)&list,2);

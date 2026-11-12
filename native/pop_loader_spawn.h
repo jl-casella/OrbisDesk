@@ -212,6 +212,17 @@ static void *pop_sep_surface_thread(void *arg){
     }
     return NULL;
 }
+/* Called by win32u's driver for each pointer event (ps5drv.c window_at): the separate process's window (its
+ * handle, sent with each frame) when desktop point x,y is over it as last composited, else 0. trylock: input
+ * must never wait on the presenter. */
+unsigned long long pw_hw_separate_window(int x, int y);
+unsigned long long pw_hw_separate_window(int x, int y){
+    if(pthread_mutex_trylock(&pop_sep_surface_lock)) return 0;
+    const struct pop_sep_frame *f = &pop_sep_shown;
+    unsigned long long hwnd = pop_sep_visible && x >= f->x && x < f->x + f->w && y >= f->y && y < f->y + f->h ? f->window : 0;
+    pthread_mutex_unlock(&pop_sep_surface_lock);
+    return hwnd;
+}
 /* Called by the sink on each output frame: the desktop (desk_w x desk_h) is shown scaled at
  * (left,top,scale_w,scale_h) of the output; draw the separate window's pixels at its desktop rectangle with
  * the same mapping. Returns 1 when something was drawn (the sink then redraws the pointer over it). */
@@ -255,7 +266,7 @@ static void *pop_separate_watch(void *arg){
      * a Separados-flagged EXE. Delay so the in-process wineserver is up (the child also retries its connect).
      * Disable by creating POP_SEP_DIR/no-selftest. The kernelbase PW_EXEC_SEPARATE path still works too. */
     {
-        struct stat st;int disabled=stat(POP_SEP_DIR "/no-selftest",&st)==0;
+        struct stat st;int disabled=stat(POP_SEP_SELFTEST,&st)!=0;   /* D.3: opt-in */
         pop_sep_log(log,"selftest_disabled",disabled);
         if(!disabled){
             for(int s=0;s<20;s++)sleep(1);
@@ -277,9 +288,14 @@ static void *pop_separate_watch(void *arg){
     for(;;){
         FILE *req=fopen(POP_SEP_REQUEST,"rb");
         if(req){
-            char app[512];size_t got=fread(app,1,sizeof(app)-1,req);app[got]=0;fclose(req);
+            char app[8192];size_t got=fread(app,1,sizeof(app)-1,req);app[got]=0;fclose(req);
             unlink(POP_SEP_REQUEST);
             pop_sep_log(log,"spawn_requested",(long)got);
+            /* D.3: the request is the child's job (it reads and removes it before running Wine) */
+            FILE *job=fopen(POP_SEP_JOB ".tmp","wb");
+            int job_ok=job&&fwrite(app,1,got,job)==got;if(job)fclose(job);
+            if(job_ok){chmod(POP_SEP_JOB ".tmp",0666);job_ok=!rename(POP_SEP_JOB ".tmp",POP_SEP_JOB);}
+            pop_sep_log(log,"job_written",job_ok?(long)got:-(long)errno);
             const char *elf=pop_pick_child_elf(log);
             long sent=elf?pop_loader_spawn_elf(elf,log):-1;
             pop_sep_log(log,"spawn_done",sent);

@@ -6,6 +6,8 @@ These probes reproduce the process contract needed by launchers whose child must
 
 **Current handoff, 2026-11-11:** P007 now verifies a fixed-base freestanding helper and bidirectional descriptor transfer on physical 12.50 hardware. The next gate is the OpenOrbis SELF bootstrap in P009/P010, not another P005 mapping-hint test. The main product remains W303. See the revised plan at the end of this guide.
 
+**Update, 2026-11-12:** phases B–D (a separate process running Wine as a client of the title's wineserver, with windows, input and real `CreateProcess` handles) are in [Separate Windows processes](POP_SEPARATE_PROCESS.md).
+
 ## Own Win32 reproduction
 
 [process_family.c](../fixtures/win32/process_family.c) produces two PE32 executables with preferred base `0x400000`, `IMAGE_FILE_RELOCS_STRIPPED`, and no relocation directory. The builder verifies these properties. They import only kernel32 and use no CRT startup.

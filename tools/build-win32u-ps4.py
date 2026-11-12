@@ -470,7 +470,14 @@ revise('dlls/win32u/ps5drv.c','''    if ((window = find_window( hwnd )))
 # pointer, from the compositor's stack (the desktop window where there is none), as
 # winex11 passes the X window under the pointer; win32u then finds the child. Keys keep
 # the foreground window.
-revise('dlls/win32u/ps5drv.c','''static BOOL ps5_ProcessEvents( DWORD mask )''','''/* the top-level window under a screen point, top of the stack first */
+revise('dlls/win32u/ps5drv.c','''static BOOL ps5_ProcessEvents( DWORD mask )''','''/* PoP D.3: the separate process's window under a screen point, or 0. The title defines it
+ * (native/pop_loader_spawn.h); this weak default answers 0 in links without it (the diagnostic boot ELF),
+ * where an undefined weak reference would leave create-fself without a library for the symbol. Default
+ * visibility: win32u builds hidden, and a local copy would shadow the title's. */
+unsigned long long pw_hw_separate_window( int x, int y ) __attribute__((weak, visibility("default")));
+unsigned long long pw_hw_separate_window( int x, int y ) { (void)x; (void)y; return 0; }
+
+/* the top-level window under a screen point, top of the stack first */
 static HWND window_at( INT x, INT y )
 {
     GUITHREADINFO info = {.cbSize = sizeof(info)};
@@ -483,6 +490,15 @@ static HWND window_at( INT x, INT y )
      * only in that window's thread, so a drag lost its moves whenever the pointer got
      * ahead of the window (W057-W059: bursts with 1-5 s gaps) */
     if (tid && NtUserGetGUIThreadInfo( tid, &info ) && info.hwndCapture) return info.hwndCapture;
+    /* PoP D.3: a separate process's window is drawn above this process's windows (native/pop_loader_spawn.h),
+     * which this table does not hold. A point over it goes to that window, named by the handle its process
+     * sends with each frame: the server delivers to a given visible window in whatever thread or process owns
+     * it. (Hardware 2026-11-12: given this process's window underneath, the launcher's console and the file
+     * manager took the clicks; given the desktop window, the server's z-order still chose them.) */
+    {
+        HWND separate = (HWND)(ULONG_PTR)pw_hw_separate_window( x, y );
+        if (separate) return separate;
+    }
 
     pthread_mutex_lock( &screen_lock );
     for (i = window_count; i > 0 && !hwnd; i--)

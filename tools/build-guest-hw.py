@@ -906,41 +906,82 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
 
     if (ps4_execution_mode( app_name ) == PW_EXEC_SEPARATE)
     {
-        /* Phase B / P014: route to the separate-process path. Drop a request for the eboot watcher
-         * (native/pop_loader_spawn.h) to spawn a second NATIVE process through the GoldHEN loader; that
-         * process joins THIS wineserver by path (native/process_p014_child.c) and creates a named object
-         * in \\\\KernelObjects. We then confirm the shared namespace by opening it with NtOpenMutant -- the
-         * cross-process rendezvous a dual-fixed-base launcher game (Prince of Persia) needs. Research
-         * probe: the target EXE itself is not launched here; the proof is in the PWSEP log. */
-        HANDLE req = CreateFileW( L"Z:\\\\data\\\\orbisdesk\\\\process-p014\\\\spawn-request",
-                                  GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL );
-        if (req != INVALID_HANDLE_VALUE)
-        {
-            char utf8[520]; DWORD wrote = 0;
-            int len = WideCharToMultiByte( CP_UTF8, 0, app_name, -1, utf8, sizeof(utf8), NULL, NULL );
-            if (len > 1) WriteFile( req, utf8, len - 1, &wrote, NULL );
-            CloseHandle( req );
-            ERR( "PWSEP separate_request image=%s wrote=%lu\\n", debugstr_w(app_name), wrote );
+        /* PoP Phase D.3: the program runs in a separate native process. The title's watcher
+         * (native/pop_loader_spawn.h) starts it through the GoldHEN loader and it runs the image under Wine
+         * as a client of this wineserver (native/process_p014_child.c, native/pop_wine_child.c). The request
+         * carries a token, the image, the command line and the current directory; the new process writes its
+         * Windows process and thread ids under that token, and the caller gets real handles to it, as from
+         * CreateProcess: it can wait for it and read its exit code. */
+        static const WCHAR request_name[] = L"Z:\\\\orbisdesk\\\\process-p014\\\\spawn-request";
+        WCHAR dir[MAX_PATH], started[96];
+        char text[4096];
+        DWORD token = (GetTickCount() ^ (GetCurrentThreadId() << 16)) | 1, wrote = 0, got = 0, pid = 0, tid = 0, i;
+        int n = 0, tries, len;
+        HANDLE file;
+
+        if (cur_dir) lstrcpynW( dir, cur_dir, MAX_PATH );
+        else GetCurrentDirectoryW( MAX_PATH, dir );
+        {   /* token, as decimal text */
+            char digits[12]; int d = 0; DWORD v = token;
+            do { digits[d++] = '0' + v % 10; v /= 10; } while (v);
+            while (d) text[n++] = digits[--d];
+            text[n++] = '\\n';
         }
-        else ERR( "PWSEP separate_request_failed image=%s error=%lu\\n", debugstr_w(app_name), GetLastError() );
+        len = WideCharToMultiByte( CP_UTF8, 0, app_name, -1, text + n, sizeof(text) - n - 4, NULL, NULL );
+        n += len > 0 ? len - 1 : 0; text[n++] = '\\n';
+        len = WideCharToMultiByte( CP_UTF8, 0, tidy_cmdline ? tidy_cmdline : app_name, -1, text + n, sizeof(text) - n - 4, NULL, NULL );
+        n += len > 0 ? len - 1 : 0; text[n++] = '\\n';
+        len = WideCharToMultiByte( CP_UTF8, 0, dir, -1, text + n, sizeof(text) - n - 2, NULL, NULL );
+        n += len > 0 ? len - 1 : 0; text[n++] = '\\n';
+
+        file = CreateFileW( request_name, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL );
+        if (file == INVALID_HANDLE_VALUE)
         {
-            UNICODE_STRING object_name; OBJECT_ATTRIBUTES oa; HANDLE shared = NULL; int tries;
-            RtlInitUnicodeString( &object_name, L"\\\\KernelObjects\\\\OrbisSeparateJoin" );
-            InitializeObjectAttributes( &oa, &object_name, 0, NULL, NULL );
-            for (tries = 0; tries < 60; tries++)
-            {
-                if (!NtOpenMutant( &shared, SYNCHRONIZE, &oa )) break;
-                shared = NULL; Sleep( 100 );
-            }
-            if (shared)
-            {
-                ERR( "PWSEP separate_join_confirmed image=%s object=KernelObjects/OrbisSeparateJoin tries=%d\\n",
-                     debugstr_w(app_name), tries );
-                NtClose( shared );
-            }
-            else ERR( "PWSEP separate_join_pending image=%s (child object not visible)\\n", debugstr_w(app_name) );
+            ERR( "PWSEP separate_request_failed image=%s error=%lu\\n", debugstr_w(app_name), GetLastError() );
+            status = STATUS_UNSUCCESSFUL;
+            goto done;
         }
-        status = STATUS_NOT_SUPPORTED;
+        WriteFile( file, text, n, &wrote, NULL );
+        CloseHandle( file );
+        ERR( "PWSEP separate_request image=%s token=%lu cmdline=%s dir=%s\\n", debugstr_w(app_name), token,
+             debugstr_w(tidy_cmdline), debugstr_w(dir) );
+
+        /* the new process reports "pid tid" in started-<token> once it has joined this server */
+        lstrcpyW( started, L"Z:\\\\orbisdesk\\\\process-p014\\\\started-" );
+        {
+            WCHAR digits[12]; int d = 0, s = lstrlenW( started ); DWORD v = token;
+            do { digits[d++] = '0' + v % 10; v /= 10; } while (v);
+            while (d) started[s++] = digits[--d];
+            started[s] = 0;
+        }
+        for (tries = 0; tries < 300; tries++)   /* 30 s: the loader spawn and Wine's start take a few */
+        {
+            file = CreateFileW( started, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
+            if (file != INVALID_HANDLE_VALUE)
+            {
+                got = 0; ReadFile( file, text, sizeof(text) - 1, &got, NULL ); CloseHandle( file );
+                text[got] = 0;
+                if (got && text[got - 1] == '\\n') break;   /* complete line */
+            }
+            Sleep( 100 );
+        }
+        for (i = 0, pid = 0; i < got && text[i] >= '0' && text[i] <= '9'; i++) pid = pid * 10 + (text[i] - '0');
+        for (i++, tid = 0; i < got && text[i] >= '0' && text[i] <= '9'; i++) tid = tid * 10 + (text[i] - '0');
+        DeleteFileW( started );
+        if (!pid)
+        {
+            ERR( "PWSEP separate_start_timeout image=%s token=%lu\\n", debugstr_w(app_name), token );
+            status = STATUS_UNSUCCESSFUL;
+            goto done;
+        }
+        info->hProcess = OpenProcess( PROCESS_ALL_ACCESS, inherit, pid );
+        info->hThread = tid ? OpenThread( THREAD_ALL_ACCESS, inherit, tid ) : 0;
+        info->dwProcessId = pid;
+        info->dwThreadId = tid;
+        ERR( "PWSEP separate_started image=%s token=%lu pid=%04lx tid=%04lx process=%p thread=%p\\n",
+             debugstr_w(app_name), token, pid, tid, info->hProcess, info->hThread );
+        status = info->hProcess ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
         goto done;
     }
     if (ps4_guest_launch( app_name, tidy_cmdline, flags, info ))

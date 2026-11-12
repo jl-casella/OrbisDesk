@@ -7,6 +7,7 @@
  * cross-process shared-named-object rendezvous a dual-fixed-base launcher game (Prince of Persia:
  * launcher + POP.exe on "PrinceSM") needs. Loader-dependent research substrate; not a shippable feature. */
 #include <sys/stat.h>
+#include <dlfcn.h>
 #include "pop_separate.h"
 #include "pop_wine_join_core.h"
 #include "pop_separate_window.h"
@@ -76,6 +77,51 @@ int main(void){
         pop_logf(&j,"{\"build\":\"P014\",\"event\":\"adopt_uid\",\"want\":%d,\"rc\":%d,\"errno\":%d,\"uid\":%d,\"euid\":%d}",
                  want,rc,err,(int)getuid(),(int)geteuid());}fclose(uf);}
     else pop_logf(&j,"{\"build\":\"P014\",\"event\":\"app_uid_missing\",\"uid\":%d}",(int)getuid());
+    /* Phase D.1a / P016: host OpenOrbis code (the toolchain and libc of the title's Wine) in this process
+     * through the system linker, the way GoldHEN plugins load: imports, TLS and initialisers resolved there. */
+    {void *prx=dlopen(POP_SEP_PRX_PROBE,RTLD_NOW);
+     int (*probe)(int)=prx?(int(*)(int))dlsym(prx,"pop_prx_probe"):NULL;
+     const char *dlerr=prx&&probe?"":dlerror();
+     pop_logf(&j,"{\"build\":\"P016\",\"event\":\"prx_load\",\"handle\":%d,\"entry\":%d,\"error\":\"%s\"}",
+              prx!=NULL,probe!=NULL,dlerr?dlerr:"?");
+     if(probe){if(logf)fflush(logf);int r=probe(logf?fileno(logf):-1);
+        pop_logf(&j,"{\"build\":\"P016\",\"event\":\"prx_returned\",\"ok\":%d}",r);}}
+    /* Phase D.1b / P017: when the Wine PRX is installed, this process becomes a Wine process of the title's
+     * server: connect to the bridge, hand the socket to Wine (WINESERVERSOCKET) and run a Windows program.
+     * pop_wine_child_run does not return on success (Wine exits the process with the program's exit code). */
+    {struct stat wst;
+     if(stat(POP_SEP_WINE_PRX,&wst)==0){
+        void *w=dlopen(POP_SEP_WINE_PRX,RTLD_NOW);
+        int (*run)(int,const char*,const char*)=w?(int(*)(int,const char*,const char*))dlsym(w,"pop_wine_child_run"):NULL;
+        int (*run_job)(int,const char*,const char*,const char*,const char*,const char*)=
+            w?(int(*)(int,const char*,const char*,const char*,const char*,const char*))dlsym(w,"pop_wine_child_run_job"):NULL;
+        const char *werr=w&&run?"":dlerror();
+        pop_logf(&j,"{\"build\":\"P017\",\"event\":\"wine_prx_load\",\"bytes\":%lld,\"handle\":%d,\"entry\":%d,\"error\":\"%s\"}",
+                 (long long)wst.st_size,w!=NULL,run!=NULL,werr?werr:"?");
+        if(run){
+            pop_connect(&j,POP_SEP_PREFIX);
+            pop_logf(&j,"{\"build\":\"P017\",\"event\":\"wine_handoff\",\"server_fd\":%d,\"exe\":\"%s\"}",j.fd_socket,"separate_d1.exe");
+            if(logf)fflush(logf);
+            /* D.3: kernelbase's request, handed over by the title as POP_SEP_JOB: token, image, command line,
+             * current directory, one per line */
+            static char job[8192];char *field[4]={0};
+            FILE *jf=fopen(POP_SEP_JOB,"rb");
+            if(jf){size_t got=fread(job,1,sizeof(job)-1,jf);job[got]=0;fclose(jf);unlink(POP_SEP_JOB);
+                char *p=job;for(int k=0;k<4&&p&&*p;k++){field[k]=p;p=strchr(p,'\n');if(p)*p++=0;}}
+            int rc;
+            if(field[3]&&run_job){
+                pop_logf(&j,"{\"build\":\"P019\",\"event\":\"job\",\"token\":\"%s\",\"image_bytes\":%zu}",field[0],strlen(field[1]));
+                if(logf)fflush(logf);
+                rc=run_job(j.fd_socket,field[0],field[1],field[2],field[3],POP_SEP_WINE_LOG);
+            }else{
+                struct stat d2;const char *exe=stat(POP_SEP_D2_FILE,&d2)==0?POP_SEP_D2_EXE:POP_SEP_D1_EXE;  /* D.2: the GUI program when installed */
+                rc=run(j.fd_socket,exe,POP_SEP_WINE_LOG);
+            }
+            pop_logf(&j,"{\"build\":\"P017\",\"event\":\"wine_child_returned\",\"rc\":%d}",rc);
+            if(logf)fclose(logf);
+            return rc;
+        }
+     }}
     pop_child_diagnose(&j);
     /* Phase B: join + named object (held for the whole run: the handle stays open while this process lives) */
     int ok=pop_wine_join_run(&j,POP_SEP_PREFIX,0/*create*/,POP_SEP_OBJECT_A,0);

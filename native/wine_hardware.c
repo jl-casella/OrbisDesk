@@ -690,6 +690,19 @@ static void crash_handler(int signal,siginfo_t *info,void *raw)
         (unsigned long long)mc->mc_rip,(unsigned long long)mc->mc_rsp,(unsigned long long)mc->mc_rax,
         (unsigned long long)mc->mc_rdi,(unsigned long long)*(const uint64_t *)(uintptr_t)mc->mc_rsp,(void *)&main);
     if(log_fd>=0&&n>0){__real_write(log_fd,text,(size_t)n);fsync(log_fd);}
+    /* PoP D.1 (2026-11-12): an abort inside libkernel at boot printed no caller. Words on the stack that point
+     * into this image are the candidate return addresses (resolve them against wine.elf); the thread name says
+     * which thread it was. Only the first fault of a cascade gets this line. */
+    static int scanned;
+    if(!scanned++){
+        char name[40]={0};scePthreadGetname(scePthreadSelf(),name);
+        const uint64_t *sp=(const uint64_t *)(uintptr_t)mc->mc_rsp;
+        n=snprintf(text,sizeof(text),HW_BUILD " crash_stack thread=%.32s",name);
+        for(int i=0,hits=0;i<512&&hits<16&&n<(int)sizeof(text)-24;i++)
+            if(sp[i]>=0x1100000000ull&&sp[i]<0x1110000000ull){n+=snprintf(text+n,sizeof(text)-n," %llx",(unsigned long long)sp[i]);hits++;}
+        if(n<(int)sizeof(text)-1)text[n++]='\n';
+        if(log_fd>=0){__real_write(log_fd,text,(size_t)n);fsync(log_fd);}
+    }
     pw_hw_unjailbreak("crash");
     /* A refused syscall (SIGSYS) would be refused again by _exit; let the system close the app. */
     if(signal==SIGSYS) {wait_for_system_close("sigsys");}
