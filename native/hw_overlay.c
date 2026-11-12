@@ -596,6 +596,11 @@ static void hud_read_conf(struct hud_conf *c)
         closedir(users);
     }
     if(!file) {fprintf(stderr,"PWOVERLAY hud: no MangoHud.conf, MangoHud's defaults\n");return;}
+    /* legacy_layout=0 (MangoJuice writes "legacy_layout=false"): MangoHud shows only the rows the file names
+     * (overlay_params.cpp, sort_elements), not its defaults; each row's last value in the file, -1 unnamed */
+    int legacy=1,named[7]={-1,-1,-1,-1,-1,-1,-1};
+    int *const rows[7]={&c->gpu,&c->cpu,&c->vram,&c->ram,&c->fps,&c->frametime,&c->frame_timing};
+    static const char *const row_keys[7]={"gpu_stats","cpu_stats","vram","ram","fps","frametime","frame_timing"};
     while(fgets(line,sizeof(line),file)) {
         char *key=line,*value,*end;
         if((end=strpbrk(key,"#\r\n"))) *end=0;
@@ -604,7 +609,9 @@ static void hud_read_conf(struct hud_conf *c)
         for(end=key+strlen(key);end>key && (end[-1]==' ' || end[-1]=='\t');) *--end=0;
         if(!*key) continue;
         int on=!value || atoi(value)!=0;
-        if(!strcmp(key,"gpu_stats")) c->gpu=on;
+        for(int i=0;i<7;i++) if(!strcmp(key,row_keys[i])) named[i]=on;
+        if(!strcmp(key,"legacy_layout")) legacy=on;
+        else if(!strcmp(key,"gpu_stats")) c->gpu=on;
         else if(!strcmp(key,"cpu_stats")) c->cpu=on;
         else if(!strcmp(key,"vram")) c->vram=on;
         else if(!strcmp(key,"ram")) c->ram=on;
@@ -623,8 +630,9 @@ static void hud_read_conf(struct hud_conf *c)
         }
     }
     fclose(file);
-    fprintf(stderr,"PWOVERLAY hud: %s gpu=%d cpu=%d vram=%d ram=%d fps=%d frametime=%d frame_timing=%d position=%s"
-            " font_size=%d alpha=%d%%\n",path,c->gpu,c->cpu,c->vram,c->ram,c->fps,c->frametime,c->frame_timing,
+    if(!legacy) for(int i=0;i<7;i++) *rows[i]=named[i]==1;
+    fprintf(stderr,"PWOVERLAY hud: %s legacy_layout=%d gpu=%d cpu=%d vram=%d ram=%d fps=%d frametime=%d frame_timing=%d position=%s"
+            " font_size=%d alpha=%d%%\n",path,legacy,c->gpu,c->cpu,c->vram,c->ram,c->fps,c->frametime,c->frame_timing,
             hud_positions[c->position],c->font_size,c->alpha_pct);
 }
 static void sample_stats(void)

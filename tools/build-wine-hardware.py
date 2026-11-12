@@ -1040,14 +1040,21 @@ mangohud_conf.parent.mkdir(parents=True,exist_ok=True)
 mangohud_conf.write_text('# MangoHud settings (OrbisDesk). Save and restart OrbisDesk to apply.\n'
                          '# Options: https://github.com/flightlessmango/MangoHud#hud-configuration\n'
                          'fps\nframetime\nframe_timing=1\ncpu_stats\ngpu_stats\nram\nposition=top-left\n')
-# MangoHud Settings (docs/MANGOHUD_SETTINGS.md): C:\orbis\mangohudcfg.exe, a form for the keys above that both
-# MangoHud and the overlay's Estadisticas read (tools/build-mangohudcfg-hw.py); the Start menu's "MangoHud Config"
-# opens it. The file above is only the clean-install default: upload-hardware.py keeps the console's copy.
-mangohudcfg=json.loads((ROOT/'out/mangohudcfg-hw/manifest.json').read_text())
-if mangohudcfg['builder_sha256']!=sha(ROOT/'tools/build-mangohudcfg-hw.py'):raise SystemExit('mangohudcfg differs from its builder')
-if mangohudcfg['source']['sha256']!=sha(ROOT/'fixtures/win32/mangohudcfg.c'):raise SystemExit('mangohudcfg differs from its source')
-copy_verified(ROOT/'out/mangohudcfg-hw'/mangohudcfg['program']['path'],prefix/'drive_c/orbis/mangohudcfg.exe',
-              mangohudcfg['program']['sha256'])
+# MangoJuice (docs/MANGOJUICE.md, tools/build-mangojuice-hw.py): the MangoHud settings GUI, GTK4 drawn by cairo,
+# in C:\Program Files\MangoJuice (not stripped below, as VLC); the Start menu's Graphics Tools > MangoJuice opens it.
+# It rewrites the file above, which is only the clean-install default: updates keep the console's copy
+# (console_state.CONSOLE_OWNED_FILES).
+mangojuice=json.loads((ROOT/'out/mangojuice-hw/manifest.json').read_text())
+if mangojuice['builder_sha256']!=sha(ROOT/'tools/build-mangojuice-hw.py'):raise SystemExit('MangoJuice differs from its builder')
+if mangojuice['lock_sha256']!=sha(ROOT/'mangojuice.lock.json'):raise SystemExit('MangoJuice differs from its lock')
+for relative,e in mangojuice['files'].items():
+    target=prefix/'drive_c/Program Files'/relative;target.parent.mkdir(parents=True,exist_ok=True)
+    copy_verified(ROOT/'out/mangojuice-hw'/relative,target,e['sha256'])
+# the Windows DLLs it takes from Wine (api-ms-win-crt-* resolve to ucrtbase through the apiset)
+wine_dlls={p.name.lower() for folder in (prefix/'drive_c/windows/system32',data/'wine/lib/wine/x86_64-windows')
+           for p in folder.iterdir()}
+missing=[dll for dll in mangojuice['system_imports'] if not dll.startswith('api-ms-win-') and dll not in wine_dlls]
+if missing:raise SystemExit('MangoJuice imports DLLs the runtime lacks: '+', '.join(missing))
 # W284 (W281: NFS U2's second start had no music: its timer outlived the program and killed winmm's timer thread):
 # winmm.dll that removes a timer whose function is gone or faults (tools/build-winmm-hw.py). After every other
 # staging, so it replaces the host copies in the builtin folders and the prefix.
@@ -1147,6 +1154,8 @@ print(json.dumps({'identity_stripped':len(stripped['identity'])}))
 # file a build stops shipping stays. W168's shortcut in the common Desktop showed File Manager
 # twice next to W169's one in the user's Desktop. upload-hardware.py deletes these paths.
 obsolete_files=['wine-prefix/drive_c/users/Public/Desktop/File Manager.lnk',
+    # MangoJuice replaces the "MangoHud Config" shortcut, which opened MangoHud.conf in Notepad (W090-W303)
+    'wine-prefix/drive_c/ProgramData/Microsoft/Windows/Start Menu/Graphics Tools/MangoHud Config.lnk',
     # W179 (phase 9): iexplore cannot run in one process (it registers a local COM server, which
     # needs rpcss); W177 shipped its Start menu shortcut, which W179 no longer makes.
     'wine-prefix/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Internet/Internet Explorer.lnk',
@@ -1288,7 +1297,7 @@ manifest['task_manager']={'build':taskmgr,'runtime_differences':['taskmgr.exe','
     'cpu':'title process busy/(capacity*wall), same source as the HUD; not system-wide',
     'processes':'Wine processes only; guests share the explorer process','physical_validation':'pending'}
 manifest['source_hashes']['tools/build-taskmgr-hw.py']=sha(ROOT/'tools/build-taskmgr-hw.py')
-for source in ('tools/build-mangohudcfg-hw.py','fixtures/win32/mangohudcfg.c'):  # MangoHud Settings
+for source in ('tools/build-mangojuice-hw.py','mangojuice.lock.json'):  # MangoJuice
     manifest['source_hashes'][source]=sha(ROOT/source)
 manifest['source_hashes']['tools/build-winecfg-hw.py']=sha(ROOT/'tools/build-winecfg-hw.py')  # W182
 manifest['source_hashes']['tools/build-dxgi-hw.py']=sha(ROOT/'tools/build-dxgi-hw.py')  # W192

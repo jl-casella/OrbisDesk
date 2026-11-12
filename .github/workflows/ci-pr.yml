@@ -57,7 +57,6 @@ jobs:
           python3 tools/ci/bootstrap.py --fixtures
           bash tools/test-vm.sh
           bash tools/test-pe32.sh
-          python3 tests/test_mangohudcfg.py
       - name: Host failure evidence
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

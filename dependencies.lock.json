@@ -71,7 +71,7 @@
       "path": ".deps/vk/mangojuice-win",
       "url": "https://github.com/Leclowndu93150/mangojuice-Windows.git",
       "commit": "e2ec0755f83975be5f0b593ee59cee62e793ed4a",
-      "role": "reference only"
+      "role": "built by tools/build-mangojuice-hw.py (mangojuice.lock.json)"
     },
     "playden-ps5": {
       "path": "upstream/playden-ps5",
