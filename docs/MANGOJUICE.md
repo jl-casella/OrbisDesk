@@ -33,6 +33,7 @@ Steps:
 Two revisions are made to MangoJuice, and both are recorded in the manifest:
 
 - `main()` sets `GSK_RENDERER=cairo` and `GDK_DISABLE=gl,vulkan` unless the user has set them. The title has no GL for GTK, and its Vulkan belongs to the games, so GTK draws the window in software.
+- `main()` also sets `PANGOCAIRO_BACKEND=fontconfig` and loads a little CSS that removes the shadow and rounded corners of popovers and tooltips (see "Rendering on the console" below).
 - The **Games** page is removed. It starts a standalone `MangoHud.exe` against a running game and registers the layer under HKLM through `reg.exe`. OrbisDesk already loads MangoHud as an implicit layer and ships no `MangoHud.exe`.
 
 The upstream `requireAdministrator` manifest is not linked.
@@ -55,12 +56,21 @@ MSYS2's `libharfbuzz-0.dll` and `libpangowin32-1.0-0.dll` import `DWrite.dll`, w
 
 The rest of the closure, 64 DLLs, was present in W303. The 8 KiB `usp10.dll` is Wine's forwarder to gdi32, not a stub. The Unix side compiles with the console toolchain, and its only undefined symbols are FreeType's 28 functions, which `build/freetype-ps4` defines, plus ntdll's debug output and libc. It needs a new boot ELF (`build-unixlibs-ps4.py`, then `link-wine-boot.py`); it was not linked or run.
 
+### Rendering on the console
+
+In run-0062 MangoJuice opened, but its text had strokes and whole letters missing ("GPU" read "GP"), and the "…" menu sat in a black rectangle.
+
+- **Text.** Pango 1.58's Windows backend lists fonts through DirectWrite, and pangocairo draws them with cairo's DirectWrite font faces, so every glyph went through Wine's dwrite and its new FreeType Unix side on the console. That route is where the strokes were lost; exactly which step was not isolated. pangocairo has a second backend: `PANGOCAIRO_BACKEND=fontconfig` uses fontconfig and MSYS2's own FreeType inside the process, as GIMP and Inkscape do on Windows. MSYS2's `etc/fonts` (fonts.conf and conf.d) ships next to `bin`, where fontconfig looks for it. It scans `C:\windows\Fonts` and caches in `%LOCALAPPDATA%\fontconfig`. The console has only Tahoma and Marlett there, so a generated `local.conf` makes Tahoma the choice for sans-serif, serif, monospace, system-ui, Adwaita Sans, Cantarell and Segoe UI.
+- **Black popovers.** GTK draws popovers and tooltips as separate windows with a transparent shadow margin. Without DirectComposition, which is opt-in (`GDK_DEBUG=dcomp`) and would need Direct3D 11, it asks DWM for alpha through `DwmEnableBlurBehindWindow`. Wine composites no alpha, so the margin came out black. CSS at user priority (`popover > contents, popover > arrow, tooltip { box-shadow: none; border-radius: 0; }`) leaves no transparent pixels.
+
+The desktop is 1280×720 scaled up to the TV, so MangoJuice will never look as sharp there as on a PC.
+
 ## Result of this build
 
 | | |
 | --- | --- |
-| `mangojuice.exe` | sha256 `51a7bb9b50d233ef63e085ccac76e8c63e7ba0c376ef2f418a3ccb7c3cf55788`; two links identical, and the same in three separate builds |
-| Staged | 963 files, 52.1 MiB: 62 DLLs (`libgtk-4-1.dll` alone is 12.0 MiB), icons 4.9 MiB |
+| `mangojuice.exe` | sha256 `b672c722e30d1342985a9de12efc3c6b8cec513f1e3643748911fd51ae18297a`; two links identical (the revisions of run-0062; before them it was `51a7bb9b…` in three separate builds) |
+| Staged | 989 files, 52.2 MiB: 62 DLLs (`libgtk-4-1.dll` alone is 12.0 MiB), icons 4.9 MiB |
 | Windows DLLs from Wine | 46, including `opengl32`, `d3d11`, `d3d12`, `dcomp`, `dwrite`, `gdiplus` and `usp10` |
 | Not shipped | MSYS2's `vulkan-1.dll`: system32's is OrbisDesk's Khronos loader |
 | Build time | 7 to 10 minutes on `/mnt/c`, most of it unpacking the MSYS2 tree |

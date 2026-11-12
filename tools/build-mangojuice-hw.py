@@ -189,6 +189,19 @@ def build(pins):
         Environment.set_variable("GDK_DISABLE", "gl,vulkan", false);
         var app = new MangoJuice();
         return app.run(args);''','GTK draws with cairo; no GL or Vulkan context for the settings window.')
+    # run-0062: text drawn through Wine's DirectWrite (pango's win32 font map, cairo's dwrite font faces) lost strokes
+    # and letters; pango's fontconfig map draws with MSYS2's FreeType from C:\windows\Fonts (etc/fonts below).
+    # Popovers and tooltips are transparent around a shadow, which GTK gets from DWM's blur-behind; Wine composites
+    # no alpha, so that margin was black. Without a shadow or rounded corners the popover surface is opaque.
+    revise('src/mangojuice.vala','''        var app = new MangoJuice();
+        return app.run(args);''','''        Environment.set_variable("PANGOCAIRO_BACKEND", "fontconfig", false);
+        var app = new MangoJuice();
+        app.startup.connect (() => {
+            var css = new Gtk.CssProvider ();
+            css.load_from_string ("popover > contents, popover > arrow, tooltip { box-shadow: none; border-radius: 0; }");
+            Gtk.StyleContext.add_provider_for_display (Gdk.Display.get_default (), css, Gtk.STYLE_PROVIDER_PRIORITY_USER);
+        });
+        return app.run(args);''','Text through fontconfig and FreeType, not DirectWrite; opaque popovers and tooltips (no DWM alpha).')
     revise('src/mangojuice.vala','''        // Windows Game Manager -- deploy/remove proxy dxgi.dll per game
         var game_manager = new GameManager ();
         var game_manager_scrolled = create_scrolled_window (game_manager);
@@ -237,13 +250,21 @@ def build(pins):
     for xml in sorted((usr/'share/glib-2.0/schemas').glob('*.gschema.xml')):shutil.copyfile(xml,schemas/xml.name)
     run(['glib-compile-schemas',str(schemas)])
     for theme in ('hicolor','Adwaita'):shutil.copytree(usr/'share/icons'/theme,app/'share/icons'/theme)
+    # fontconfig reads <bin>/../etc/fonts/fonts.conf: MSYS2's, which scans C:\windows\Fonts and caches in
+    # %LOCALAPPDATA%\fontconfig. The console has Tahoma and Marlett only; local.conf names Tahoma for GTK's families.
+    shutil.copytree(usr/'etc/fonts',app/'etc/fonts')
+    (app/'etc/fonts/local.conf').write_text('<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n'
+        '<!-- OrbisDesk (tools/build-mangojuice-hw.py): the console\'s UI font for every family GTK asks for -->\n<fontconfig>\n'
+        +''.join('  <alias binding="same"><family>%s</family><prefer><family>Tahoma</family></prefer></alias>\n'%family
+                 for family in ('sans-serif','serif','monospace','system-ui','Adwaita Sans','Cantarell','Segoe UI'))
+        +'</fontconfig>\n')
     apps=app/'share/icons/hicolor/scalable/apps'
     for svg in sorted((work/'data/assets/icons').glob('*.svg'))+[work/'data/icons/hicolor/scalable/apps/io.github.radiolamp.mangojuice.svg']:
         shutil.copyfile(svg,apps/svg.name)
     licences=app/'licenses';(licences/'mangojuice').mkdir(parents=True)
     shutil.copyfile(SOURCE/'LICENSE',licences/'mangojuice/LICENSE')
     packages_shipped=sorted({owner['ucrt64/bin/'+dll] for dll in shipped}|{owner[k] for k in owner
-                             if k.startswith(('ucrt64/share/icons/','ucrt64/share/glib-2.0/schemas/'))})
+                             if k.startswith(('ucrt64/share/icons/','ucrt64/share/glib-2.0/schemas/','ucrt64/etc/fonts/'))})
     standard_licence=[]
     for package in packages_shipped:
         folder=usr/'share/licenses'/package[len(PREFIX):]
