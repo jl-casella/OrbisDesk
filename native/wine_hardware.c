@@ -28,6 +28,7 @@
 #include "pw_wine_context.h"
 #include "pw_wine_net.h"
 #include "pw_trace.h"
+#include "pop_loader_spawn.h"
 #include <limits.h>
 #include <pthread.h>
 /* W001 and W002 sources and evidence: reports/wine-hardware-w00N/release-w00N. */
@@ -183,6 +184,12 @@ static void pw_hw_jailbreak(void)
     pthread_t watcher;int watch_rc=pthread_create(&watcher,NULL,usb_watch,NULL);
     if(!watch_rc) pthread_detach(watcher);
     n=snprintf(message,sizeof(message),HW_BUILD " PWJB usb_watch rc=%d\n",watch_rc);
+    jailbreak_line(message,n);
+    /* Phase B / P014: watch for kernelbase's PW_EXEC_SEPARATE request and spawn the separate-process child
+     * (native/pop_loader_spawn.h). Runs after setuid, so it publishes the title's app uid for the child. */
+    pthread_t separate;int sep_rc=pthread_create(&separate,NULL,pop_separate_watch,NULL);
+    if(!sep_rc) pthread_detach(separate);
+    n=snprintf(message,sizeof(message),HW_BUILD " PWSEP separate_watch rc=%d\n",sep_rc);
     jailbreak_line(message,n);
 }
 static void pw_hw_unjailbreak(const char *who)

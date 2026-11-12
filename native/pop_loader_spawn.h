@@ -1,0 +1,292 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Title-side (eboot) spawn of the Phase B / P014 separate process. kernelbase's PW_EXEC_SEPARATE hook writes
+ * the target app path to POP_SEP_REQUEST; this watcher thread, running in the native eboot (which has the
+ * network libraries), sends the bundled child ELF to the GoldHEN resident loader on 127.0.0.1:9021 (the same
+ * ELF path Phase A used, with the SCHED_RR MAX loader fix). The loader spawns it as a genuine second native
+ * process; the child joins the title's real wineserver (native/process_p014_child.c). sceNet is declared
+ * with a void* sockaddr so no SDK net header is required; the eboot link gains -lSceNet
+ * (tools/build-wine-hardware.py). Loader-dependent research substrate, not a shippable feature. */
+#ifndef POP_LOADER_SPAWN_H
+#define POP_LOADER_SPAWN_H
+#include <errno.h>
+#include <stdint.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include "pop_separate.h"
+
+typedef struct {uint32_t events,pad;uint64_t ident,data;} PopNetEvent;
+extern int sceNetInit(void);
+extern int sceNetSocket(const char *,int,int,int);
+extern int sceNetSetsockopt(int,int,int,const void *,unsigned);
+extern int sceNetGetsockopt(int,int,int,void *,unsigned *);
+extern int sceNetConnect(int,const void *,unsigned);
+extern int sceNetSend(int,const void *,size_t,int);
+extern int sceNetRecv(int,void *,size_t,int);
+extern int sceNetShutdown(int,int);
+extern int sceNetSocketClose(int);
+extern int sceNetEpollCreate(const char *,int);
+extern int sceNetEpollControl(int,int,int,PopNetEvent *);
+extern int sceNetEpollWait(int,PopNetEvent *,int,int);
+extern int sceNetEpollDestroy(int);
+extern int *sceNetErrnoLoc(void);
+
+static int pop_net_error(void){int e=*sceNetErrnoLoc();return e?-e:-5;}
+static int pop_wait_socket(int fd,int events,int milliseconds){
+    int epoll=sceNetEpollCreate("p014-wait",0);if(epoll<0)return pop_net_error();
+    PopNetEvent item={events==4?2u:1u,0,(uint64_t)fd,0};
+    int result=sceNetEpollControl(epoll,1,fd,&item);
+    if(!result)result=sceNetEpollWait(epoll,&item,1,milliseconds*1000);
+    int error=result<0?pop_net_error():result?0:-60;sceNetEpollDestroy(epoll);return error;
+}
+static void pop_sep_log(FILE *log,const char *event,long value){
+    if(log){fprintf(log,"{\"build\":\"P014\",\"side\":\"title\",\"event\":\"%s\",\"value\":%ld}\n",event,value);fflush(log);fsync(fileno(log));}
+}
+
+/* pick the first child-ELF path that exists: post-jailbreak /app0 is gone, but the sandbox mount and /data
+ * are reachable from the escaped root. Logs which one was used (or -1 if none). */
+static const char *pop_pick_child_elf(FILE *log){
+    /* logged index: 0 = /data (FTP-uploaded iteration), 1 = sandbox (installed), 2 = /app0 */
+    static const char *const candidates[]={POP_SEP_CHILD_ELF_DATA,POP_SEP_CHILD_ELF_SANDBOX,POP_SEP_CHILD_ELF};
+    for(unsigned i=0;i<sizeof(candidates)/sizeof(candidates[0]);i++){
+        struct stat st;if(stat(candidates[i],&st)==0){pop_sep_log(log,"child_elf_path",(long)i);return candidates[i];}
+    }
+    pop_sep_log(log,"child_elf_not_found",-1);return NULL;
+}
+
+/* send the bundled child ELF to the loader's socksrv (raw ELF bytes -> elfldr_spawn). Returns bytes sent, or <0 */
+static long pop_loader_spawn_elf(const char *elf_path,FILE *log){
+    long sock=sceNetSocket("p014-loader",2,1,0);if(sock<0){pop_sep_log(log,"loader_socket_failed",sock);return sock;}
+    long result=-1;FILE *elf=NULL;
+    int one=1;if(sceNetSetsockopt((int)sock,0xffff,0x1200,&one,sizeof(one))<0){pop_sep_log(log,"loader_nonblock_failed",pop_net_error());goto done;}
+    struct {uint8_t len,family;uint16_t port;uint8_t ip[4],zero[8];} address={16,2,0,{127,0,0,1},{0}};
+    address.port=(uint16_t)((9021>>8)|((9021&255)<<8));
+    long rc=sceNetConnect((int)sock,&address,sizeof(address));if(rc<0)rc=pop_net_error();
+    if(rc<0 && rc!=-36){pop_sep_log(log,"loader_connect_failed",rc);goto done;}
+    if(rc<0){
+        rc=pop_wait_socket((int)sock,4,2000);int error=0;unsigned bytes=sizeof(error);
+        if(!rc)rc=sceNetGetsockopt((int)sock,0xffff,0x1007,&error,&bytes);
+        if(rc || error){pop_sep_log(log,"loader_unavailable",rc?rc:-error);goto done;}
+    }
+    pop_sep_log(log,"loader_connected",9021);
+    elf=fopen(elf_path,"rb");if(!elf){pop_sep_log(log,"child_elf_open_failed",errno);goto done;}
+    unsigned char buf[4096];size_t n;unsigned total=0;
+    while((n=fread(buf,1,sizeof(buf),elf))){
+        if(total+n>1048576){pop_sep_log(log,"child_elf_too_large",total+n);goto done;}
+        for(size_t off=0;off<n;){
+            rc=pop_wait_socket((int)sock,4,1000);if(rc){pop_sep_log(log,"loader_send_wait_failed",rc);goto done;}
+            long sent=sceNetSend((int)sock,buf+off,n-off,0x20000);
+            if(sent<=0){pop_sep_log(log,"loader_send_failed",sent);goto done;}off+=(size_t)sent;
+        }
+        total+=(unsigned)n;
+    }
+    pop_sep_log(log,"child_elf_bytes_sent",total);sceNetShutdown((int)sock,1);
+    result=(long)total;
+    /* drain the child's stdout stream for a short while (evidence of the loader actually running it) */
+    char path[224];snprintf(path,sizeof(path),POP_SEP_DIR "/loader-stream.log");FILE *stream=fopen(path,"wb");
+    for(unsigned k=0;k<40;k++){
+        rc=pop_wait_socket((int)sock,1,200);if(rc)continue;
+        rc=sceNetRecv((int)sock,buf,sizeof(buf),0);if(rc<0)rc=pop_net_error();
+        if(!rc){pop_sep_log(log,"loader_stream_eof",0);break;}
+        if(rc<0){if(rc==-35)continue;pop_sep_log(log,"loader_stream_error",rc);break;}
+        if(stream){fwrite(buf,1,(size_t)rc,stream);fflush(stream);}
+    }
+    if(stream){fsync(fileno(stream));fclose(stream);}
+done:
+    if(elf)fclose(elf);sceNetSocketClose((int)sock);
+    return result;
+}
+
+/* OpenOrbis' musl sockaddr_un has no sun_len (sun_family is byte 0), but the PS4 kernel is BSD: it reads
+ * byte 0 as the length and byte 1 as the family, so a musl-layout bind fails with EINVAL (hardware,
+ * 2026-11-12). Build the BSD layout by hand: len, AF_UNIX, path, NUL. */
+static int pop_bsd_unix_addr(unsigned char *addr,size_t cap,const char *path){
+    size_t n=strlen(path);if(n+3>cap||n+3>255)return -1;
+    memset(addr,0,cap);addr[1]=AF_UNIX;memcpy(addr+2,path,n+1);addr[0]=(unsigned char)(n+3);
+    return (int)(n+3);
+}
+/* exported by the in-process wineserver (tools/prepare-wine-boot.py, server/request.c) */
+extern int pw_wine_server_adopt_client(int fd);
+/* Bridge: WINE_INPROCESS_SERVER has no socket file, so listen at <server dir>/socket -- where a separate
+ * process looks for the master socket -- and hand every accepted connection to the server thread. The dir
+ * is 0700 and owned by the app uid; the child adopts that uid before connecting. */
+static void *pop_sep_bridge(void *arg){
+    FILE *log=arg;char dir[400],sock[420];struct stat st;int ready=0;
+    for(int t=0;t<600&&!ready;t++){  /* up to 5 minutes for the server to create its directory */
+        if(stat(POP_SEP_PREFIX,&st)==0){
+            snprintf(dir,sizeof(dir),"%s/.wineserver/server-%llx-%llx",POP_SEP_PREFIX,
+                     (unsigned long long)st.st_dev,(unsigned long long)st.st_ino);
+            ready=stat(dir,&st)==0;
+        }
+        if(!ready)usleep(500000);
+    }
+    if(!ready){pop_sep_log(log,"bridge_no_server_dir",errno);return NULL;}
+    snprintf(sock,sizeof(sock),"%s/socket",dir);unlink(sock);
+    unsigned char addr[128];int len=pop_bsd_unix_addr(addr,sizeof(addr),sock);
+    int fd=len<0?-1:socket(AF_UNIX,SOCK_STREAM,0),err=len<0?ENAMETOOLONG:fd<0?errno:0;
+    if(!err&&bind(fd,(struct sockaddr*)addr,(socklen_t)len))err=errno;
+    if(!err&&chmod(sock,0600))err=errno;
+    if(!err&&listen(fd,16))err=errno;
+    pop_sep_log(log,"bridge_listen_errno",err);
+    if(err){if(fd>=0)close(fd);return NULL;}
+    for(;;){
+        int client=accept(fd,NULL,NULL);
+        if(client<0){if(errno!=EINTR){pop_sep_log(log,"bridge_accept_errno",errno);usleep(100000);}continue;}
+        int rc=pw_wine_server_adopt_client(client);
+        pop_sep_log(log,"bridge_adopt",rc?-(long)errno:(long)client);
+        close(client);
+    }
+    return NULL;
+}
+static void pop_sep_log_stat(FILE *log,const char *what,const char *path){
+    char event[64];struct stat st;
+    if(stat(path,&st)){snprintf(event,sizeof(event),"%s_stat_errno",what);pop_sep_log(log,event,errno);return;}
+    /* mode logged in octal digits as a decimal number (e.g. 140600 = socket, 0600) */
+    char octal[16];snprintf(octal,sizeof(octal),"%o",(unsigned)st.st_mode);
+    snprintf(event,sizeof(event),"%s_mode_octal",what);pop_sep_log(log,event,atol(octal));
+    snprintf(event,sizeof(event),"%s_uid",what);pop_sep_log(log,event,(long)st.st_uid);
+    snprintf(event,sizeof(event),"%s_gid",what);pop_sep_log(log,event,(long)st.st_gid);
+}
+/* Phase C / P015 (title side): the separate process streams its window's pixels here (POP_SEP_SURFACE); the
+ * sink composites the latest frame at the window's desktop rectangle on every output frame
+ * (pw_hw_separate_draw, called from platform/ps4/pw_wine_sink_ps4.c), and a new frame requests a re-show,
+ * like a pointer move. The window itself lives in the wineserver (the child created it there), so hit testing
+ * and input routing are the server's; only the pixels travel this way. Shown only while the child is
+ * connected: a closed connection removes the picture. */
+static pthread_mutex_t pop_sep_surface_lock=PTHREAD_MUTEX_INITIALIZER;
+static struct pop_sep_frame pop_sep_shown;      /* header of the frame on screen */
+static uint32_t *pop_sep_pixels;               /* its pixels, pop_sep_shown.w * .h */
+static size_t pop_sep_pixels_cap;
+static int pop_sep_visible;
+extern void pw_hw_cursor_moved(void);           /* platform/ps4/pw_wine_sink_ps4.c: re-show the output */
+
+static int pop_sep_read_all(int fd,void *buf,size_t len){
+    char *p=buf;
+    while(len){ssize_t r=recv(fd,p,len,0);if(r==0)return -1;if(r<0){if(errno==EINTR)continue;return -1;}p+=r;len-=(size_t)r;}
+    return 0;
+}
+static void *pop_sep_surface_thread(void *arg){
+    FILE *log=arg;
+    unlink(POP_SEP_SURFACE);
+    unsigned char addr[128];int len=pop_bsd_unix_addr(addr,sizeof(addr),POP_SEP_SURFACE);
+    int fd=len<0?-1:socket(AF_UNIX,SOCK_STREAM,0),err=len<0?ENAMETOOLONG:fd<0?errno:0;
+    if(!err&&bind(fd,(struct sockaddr*)addr,(socklen_t)len))err=errno;
+    if(!err&&chmod(POP_SEP_SURFACE,0666))err=errno;
+    if(!err&&listen(fd,4))err=errno;
+    pop_sep_log(log,"surface_listen_errno",err);
+    if(err){if(fd>=0)close(fd);return NULL;}
+    uint32_t *incoming=NULL;size_t incoming_cap=0;
+    for(;;){
+        int client=accept(fd,NULL,NULL);
+        if(client<0){if(errno!=EINTR){pop_sep_log(log,"surface_accept_errno",errno);usleep(100000);}continue;}
+        pop_sep_log(log,"surface_connected",client);
+        unsigned long frames=0;
+        for(;;){
+            struct pop_sep_frame hdr;
+            if(pop_sep_read_all(client,&hdr,sizeof(hdr)))break;
+            if(hdr.magic!=POP_SEP_FRAME_MAGIC||hdr.w<=0||hdr.h<=0||hdr.w>1920||hdr.h>1080){
+                pop_sep_log(log,"surface_bad_header",(long)hdr.magic);break;
+            }
+            size_t bytes=(size_t)hdr.w*(size_t)hdr.h*4;
+            if(bytes>incoming_cap){free(incoming);incoming=malloc(bytes);incoming_cap=incoming?bytes:0;if(!incoming)break;}
+            if(pop_sep_read_all(client,incoming,bytes))break;
+            pthread_mutex_lock(&pop_sep_surface_lock);
+            uint32_t *old=pop_sep_pixels;size_t old_cap=pop_sep_pixels_cap;
+            pop_sep_pixels=incoming;pop_sep_pixels_cap=incoming_cap;
+            incoming=old;incoming_cap=old_cap;
+            pop_sep_shown=hdr;pop_sep_visible=1;
+            pthread_mutex_unlock(&pop_sep_surface_lock);
+            if(!frames++)pop_sep_log(log,"surface_first_frame",(long)hdr.window);
+            pw_hw_cursor_moved();
+        }
+        pthread_mutex_lock(&pop_sep_surface_lock);pop_sep_visible=0;pthread_mutex_unlock(&pop_sep_surface_lock);
+        pw_hw_cursor_moved();
+        pop_sep_log(log,"surface_closed_frames",(long)frames);
+        close(client);
+    }
+    return NULL;
+}
+/* Called by the sink on each output frame: the desktop (desk_w x desk_h) is shown scaled at
+ * (left,top,scale_w,scale_h) of the output; draw the separate window's pixels at its desktop rectangle with
+ * the same mapping. Returns 1 when something was drawn (the sink then redraws the pointer over it). */
+int pw_hw_separate_draw(uint32_t *target,unsigned pitch,unsigned out_w,unsigned out_h,unsigned left,unsigned top,
+                        unsigned scale_w,unsigned scale_h,unsigned desk_w,unsigned desk_h);
+int pw_hw_separate_draw(uint32_t *target,unsigned pitch,unsigned out_w,unsigned out_h,unsigned left,unsigned top,
+                        unsigned scale_w,unsigned scale_h,unsigned desk_w,unsigned desk_h){
+    if(!desk_w||!desk_h||!scale_w||!scale_h)return 0;
+    if(pthread_mutex_trylock(&pop_sep_surface_lock))return 0;   /* never stall the presenter */
+    int drawn=0;
+    if(pop_sep_visible&&pop_sep_pixels){
+        const struct pop_sep_frame *f=&pop_sep_shown;
+        long x0=(long)left+(long)f->x*scale_w/desk_w,y0=(long)top+(long)f->y*scale_h/desk_h;
+        long x1=(long)left+(long)(f->x+f->w)*scale_w/desk_w,y1=(long)top+(long)(f->y+f->h)*scale_h/desk_h;
+        if(x0<0)x0=0;if(y0<0)y0=0;if(x1>(long)out_w)x1=out_w;if(y1>(long)out_h)y1=out_h;
+        long ow=(long)(f->w)*scale_w/desk_w,oh=(long)(f->h)*scale_h/desk_h;
+        long ox=(long)left+(long)f->x*scale_w/desk_w,oy=(long)top+(long)f->y*scale_h/desk_h;
+        if(ow>0&&oh>0)for(long y=y0;y<y1;y++){
+            long sy=(y-oy)*f->h/oh;if(sy<0||sy>=f->h)continue;
+            const uint32_t *row=pop_sep_pixels+(size_t)sy*f->w;uint32_t *out=target+(size_t)y*pitch;
+            for(long x=x0;x<x1;x++){long sx=(x-ox)*f->w/ow;if(sx>=0&&sx<f->w)out[x]=row[sx]|0xff000000u;}
+        }
+        drawn=1;
+    }
+    pthread_mutex_unlock(&pop_sep_surface_lock);
+    return drawn;
+}
+/* watcher thread: when kernelbase drops POP_SEP_REQUEST, spawn the child once and log the outcome */
+static void *pop_separate_watch(void *arg){
+    (void)arg;
+    int init=sceNetInit();  /* harmless if the title already initialised the network */
+    mkdir("/data/orbisdesk",0755);mkdir(POP_SEP_DIR,0777);
+    FILE *log=fopen(POP_SEP_DIR "/title.jsonl","a");
+    /* the eboot has already dropped to the title's app uid (W228); publish it so the root child can adopt it */
+    FILE *uf=fopen(POP_SEP_APP_UID,"w");if(uf){fprintf(uf,"%d\n",(int)getuid());fclose(uf);}
+    pop_sep_log(log,"watch_started",init);pop_sep_log(log,"app_uid",(long)getuid());
+    pop_sep_log(log,"app_euid",(long)geteuid());pop_sep_log(log,"app_gid",(long)getgid());
+    {pthread_t bridge;pop_sep_log(log,"bridge_thread",pthread_create(&bridge,NULL,pop_sep_bridge,log));}
+    {pthread_t surface;pop_sep_log(log,"surface_thread",pthread_create(&surface,NULL,pop_sep_surface_thread,log));}
+    /* one-time boot self-test: prove the separate-process JOIN on hardware without needing a guest to launch
+     * a Separados-flagged EXE. Delay so the in-process wineserver is up (the child also retries its connect).
+     * Disable by creating POP_SEP_DIR/no-selftest. The kernelbase PW_EXEC_SEPARATE path still works too. */
+    {
+        struct stat st;int disabled=stat(POP_SEP_DIR "/no-selftest",&st)==0;
+        pop_sep_log(log,"selftest_disabled",disabled);
+        if(!disabled){
+            for(int s=0;s<20;s++)sleep(1);
+            {   /* the wineserver is up by now: its directory and socket as the title sees them */
+                struct stat pst;char dir[400],sock[420];
+                if(stat(POP_SEP_PREFIX,&pst)==0){
+                    snprintf(dir,sizeof(dir),"%s/.wineserver/server-%llx-%llx",POP_SEP_PREFIX,
+                             (unsigned long long)pst.st_dev,(unsigned long long)pst.st_ino);
+                    snprintf(sock,sizeof(sock),"%s/socket",dir);
+                    pop_sep_log_stat(log,"server_dir",dir);pop_sep_log_stat(log,"server_socket",sock);
+                }else pop_sep_log(log,"prefix_stat_errno",errno);
+            }
+            pop_sep_log(log,"selftest_spawn",0);
+            const char *elf=pop_pick_child_elf(log);
+            long sent=elf?pop_loader_spawn_elf(elf,log):-1;
+            pop_sep_log(log,"selftest_spawn_done",sent);
+        }
+    }
+    for(;;){
+        FILE *req=fopen(POP_SEP_REQUEST,"rb");
+        if(req){
+            char app[512];size_t got=fread(app,1,sizeof(app)-1,req);app[got]=0;fclose(req);
+            unlink(POP_SEP_REQUEST);
+            pop_sep_log(log,"spawn_requested",(long)got);
+            const char *elf=pop_pick_child_elf(log);
+            long sent=elf?pop_loader_spawn_elf(elf,log):-1;
+            pop_sep_log(log,"spawn_done",sent);
+        }
+        usleep(200000);
+    }
+    return NULL;
+}
+
+#endif

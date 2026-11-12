@@ -189,7 +189,7 @@ steam_build=json.loads((ROOT/'build/steam-hosted/manifest.json').read_text())
 steam_object=ROOT/steam_build['object']
 if sha(steam_object)!=steam_build['object_sha256']:raise SystemExit('Steam object differs from its build')
 command[1:1]=[str(steam_object)]
-command[1:1]=['--wrap=exit','--wrap=_exit','--wrap=sceKernelDebugOutText','--wrap=write','--wrap=vfprintf','--wrap=fprintf','--wrap=fputs','--wrap=fwrite',str(wrapper),str(pad),str(overlay_obj)];command+=['-lSceSysmodule','-lSceSystemService','-lScePad','-lSceUserService','-lSceRtc','-lSceAudioOut']
+command[1:1]=['--wrap=exit','--wrap=_exit','--wrap=sceKernelDebugOutText','--wrap=write','--wrap=vfprintf','--wrap=fprintf','--wrap=fputs','--wrap=fwrite',str(wrapper),str(pad),str(overlay_obj)];command+=['-lSceSysmodule','-lSceSystemService','-lScePad','-lSceUserService','-lSceRtc','-lSceAudioOut','-lSceNet']
 run(command)
 def symbols(elf,flag):
     listing=subprocess.run(['llvm-nm-14',flag,str(elf)],capture_output=True,text=True,check=True).stdout
@@ -202,6 +202,15 @@ with (work/'build.log').open('a') as log:subprocess.run([str(sdk/'bin/linux/crea
     '-out=wine.oelf','--eboot',str(app.relative_to(work)/'eboot.bin'),'--paid','0x3800000000000011'],
     cwd=work,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
 (work/'wine.exec.oelf').write_bytes(set_exec_type(work/'wine.oelf',app/'eboot.bin'))
+# Phase B / P014 (separate-process research): the slim Wine child, bundled at /app0/pop-wine-join.elf. Built
+# with the PS4 payload SDK (like elfldr's own samples) so the GoldHEN resident loader's ELF path runs it;
+# the eboot's PWSEP watcher (native/pop_loader_spawn.h) sends it to the loader and it joins THIS title's
+# in-process wineserver by path (native/process_p014_child.c). Loader-dependent substrate, not shippable.
+PAYLOAD_SDK=ROOT/'.deps/process-loader/sdk/ps4-payload-sdk'
+sep_child_elf=app/'pop-wine-join.elf'
+subprocess.run([str(PAYLOAD_SDK/'bin/orbis-clang'),'-Wall','-O2','-ffile-prefix-map=%s=.'%ROOT,
+                '-I',str(ROOT/'native'),'-o',str(sep_child_elf),str(ROOT/'native/process_p014_child.c')],
+               cwd=ROOT,env=dict(os.environ,PS4_PAYLOAD_SDK=str(PAYLOAD_SDK)),check=True)
 # Stage the same sealed prefix without DOS links: PS4 applications cannot use symbolic
 # links, so pw_wine_fs serves c: and z: from a fixed mount table.
 data=work/'runtime';data.mkdir(exist_ok=True)
@@ -412,6 +421,12 @@ for compiler,name in (('x86_64-w64-mingw32-gcc','d3d11test64.exe'),('i686-w64-mi
     subprocess.run([compiler,'-O2','-mwindows','-Wl,--no-insert-timestamp',str(ROOT/'fixtures/win32/d3d11test.c'),
                     '-o',str(work/name),'-ld3d11','-ldxgi','-luuid'],check=True)
     shutil.copyfile(work/name,prefix/'drive_c/orbis'/name)
+# Phase B / P014: a desktop EXE seeded to the "separate" execution mode (user.reg above). Launching it from
+# the desktop routes through kernelbase's PW_EXEC_SEPARATE path (tools/build-guest-hw.py), which spawns the
+# separate-process child that joins this wineserver and logs the PWSEP shared-object confirmation.
+subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-mwindows','-Wl,--no-insert-timestamp',
+                str(ROOT/'fixtures/win32/separate_probe.c'),'-o',str(work/'separate_probe64.exe')],check=True)
+shutil.copyfile(work/'separate_probe64.exe',prefix/'drive_c/orbis/separate_probe64.exe')
 # W181: pad key profiles for keyboard-only games (native/hw_pad.c reads C:\orbis\padmaps\<exe>.ini when
 # the launcher runs that program); SuperMarioKart.exe's maps the pad to its arrows, space and Enter.
 (prefix/'drive_c/orbis/padmaps').mkdir(exist_ok=True)
@@ -886,6 +901,10 @@ text+='\n[Software\\\\Wine\\\\Drivers] 1793390636\n#time=1dd68a9cb52bf36\n"Audio
 if '[Software\\\\Wine\\\\AppDefaults\\\\explorer.exe\\\\DllOverrides]' in text:raise SystemExit('user.reg: unexpected explorer.exe DllOverrides')
 text+='\n[Software\\\\Wine\\\\AppDefaults\\\\explorer.exe\\\\DllOverrides] 1793390636\n#time=1dd68a9cb52bf36\n"dxgi"="builtin"\n'
 # d3d11test64.exe now works as a desktop guest. Do not seed an exclusive execution rule.
+# Phase B / P014: seed separate_probe64.exe to the "separate" execution mode so launching it from the
+# desktop exercises the PW_EXEC_SEPARATE path (tools/build-guest-hw.py), which spawns the separate-process
+# child that joins this wineserver. ps4_execution_mode reads AppDefaults\<base>\OrbisExecutionMode (HKCU).
+text+='\n[Software\\\\Wine\\\\AppDefaults\\\\separate_probe64.exe] 1793390636\n#time=1dd68a9cb52bf36\n"OrbisExecutionMode"="separate"\n'
 # W045: a dark scheme through the system colours (the prefix's Colors key is empty, so Wine
 # used its classic grey). Light text on every dark face: buttons and taskbar, menus,
 # captions, windows, tooltips; blue selection with white text.

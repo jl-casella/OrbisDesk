@@ -211,6 +211,44 @@ revise('server/unicode.c','#elif defined (__FreeBSD__) || defined(__DragonFly__)
 revise('server/sock.c','#include "request.h"', '#include "request.h"\n#ifdef __ORBIS__\n#undef SO_ATTACH_FILTER /* No Linux BPF on the PS4 socket API. */\n#endif')
 revise('server/mapping.c','    host_page_mask = sysconf( _SC_PAGESIZE ) - 1;', '#ifdef __ORBIS__\n    host_page_mask = 0x3fff;\n#else\n    host_page_mask = sysconf( _SC_PAGESIZE ) - 1;\n#endif')
 revise('server/request.c','    if (st.st_uid != getuid())\n        fatal_error( "%s is not owned by you\\n", config_dir );', '#ifndef __ORBIS__ /* The title prefix has no meaningful Unix owner identity. */\n    if (st.st_uid != getuid())\n        fatal_error( "%s is not owned by you\\n", config_dir );\n#endif')
+# OrbisDesk PoP Phase B: WINE_INPROCESS_SERVER creates no socket file, so a separate native process cannot
+# reach the server by path. The title listens on <server dir>/socket (native/pop_loader_spawn.h) and hands
+# each accepted connection to the server thread through the same channel connect_inprocess_client uses.
+# The pw_wine prefix keeps the symbol out of link-wine-boot.py's pwserver_ namespacing.
+revise('server/request.c','''    close( pair[0] );
+    return pair[1];
+}
+#endif
+''','''    close( pair[0] );
+    return pair[1];
+}
+
+/* hand an already-connected socket (accepted from another native process) to the server thread as a new
+ * client, exactly like the server end of connect_inprocess_client; the caller keeps and closes its fd */
+__attribute__((visibility("default"))) int pw_wine_server_adopt_client( int fd )
+{
+    char dummy = 0;
+    struct iovec vec = { &dummy, 1 };
+    union { struct cmsghdr header; char buffer[CMSG_SPACE( sizeof(int) )]; } control;
+    struct msghdr msg;
+    struct cmsghdr *cmsg;
+
+    if (client_channel == -1 || fd < 0) return -1;
+    memset( &msg, 0, sizeof(msg) );
+    memset( &control, 0, sizeof(control) );
+    msg.msg_iov = &vec;
+    msg.msg_iovlen = 1;
+    msg.msg_control = &control;
+    msg.msg_controllen = CMSG_SPACE( sizeof(int) );
+    cmsg = CMSG_FIRSTHDR( &msg );
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN( sizeof(int) );
+    memcpy( CMSG_DATA( cmsg ), &fd, sizeof(int) );
+    return sendmsg( client_channel, &msg, 0 ) == 1 ? 0 : -1;
+}
+#endif
+''')
 revise('dlls/ntdll/unix/loader.c','    if (!dladdr( init_paths, &info ) || !(ntdll_dir = realpath_dirname( info.dli_fname )))\n        fatal_error( "cannot get path to ntdll.so\\n" );', '''#ifdef __ORBIS__
     const char *directory = getenv( "WINE_PS4_NTDLL_DIR" );
     if (!directory || directory[0] != '/') fatal_error( "WINE_PS4_NTDLL_DIR must locate the staged Unix runtime\\n" );

@@ -306,6 +306,9 @@ void pw_hw_sink_stats(unsigned *vk_tenths,int *vk_fresh,unsigned *frames_tenths,
 extern void pw_hw_overlay_draw(uint32_t *pixels,unsigned pitch,unsigned width,unsigned height);
 /* the Steam client inside the title (native/steam/steam_ui.c): its page over the whole frame while open */
 extern int pw_hw_steam_draw(uint32_t *pixels,unsigned pitch,unsigned width,unsigned height);
+/* PoP Phase C (native/pop_loader_spawn.h): a separate process's window pixels, at its desktop rectangle */
+extern int pw_hw_separate_draw(uint32_t *target,unsigned pitch,unsigned out_w,unsigned out_h,unsigned left,unsigned top,
+                               unsigned scale_w,unsigned scale_h,unsigned desk_w,unsigned desk_h);
 #endif
 static int show(void)
 {
@@ -370,6 +373,8 @@ static int show(void)
 flip:;
 #endif
 #ifdef PW_SINK_EXTERNAL_INPUT
+    if(pw_hw_separate_draw(target,pitch,OUT_WIDTH,OUT_HEIGHT,left,top,scale_w,scale_h,width,height))
+        draw_cursor(target,left,top,scale_w,scale_h);  /* the pointer stays over the separate window */
     draw_busy(target,left,top,scale_w,scale_h);  /* W293 */
     draw_fps(target,sceKernelGetProcessTime());
     pw_hw_steam_draw(target,pitch,OUT_WIDTH,OUT_HEIGHT);

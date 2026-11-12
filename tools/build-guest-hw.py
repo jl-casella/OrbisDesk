@@ -906,7 +906,40 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
 
     if (ps4_execution_mode( app_name ) == PW_EXEC_SEPARATE)
     {
-        ERR( "PWOPEN separate_processes_unavailable image=%s\\n", debugstr_w(app_name) );
+        /* Phase B / P014: route to the separate-process path. Drop a request for the eboot watcher
+         * (native/pop_loader_spawn.h) to spawn a second NATIVE process through the GoldHEN loader; that
+         * process joins THIS wineserver by path (native/process_p014_child.c) and creates a named object
+         * in \\\\KernelObjects. We then confirm the shared namespace by opening it with NtOpenMutant -- the
+         * cross-process rendezvous a dual-fixed-base launcher game (Prince of Persia) needs. Research
+         * probe: the target EXE itself is not launched here; the proof is in the PWSEP log. */
+        HANDLE req = CreateFileW( L"Z:\\\\data\\\\orbisdesk\\\\process-p014\\\\spawn-request",
+                                  GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL );
+        if (req != INVALID_HANDLE_VALUE)
+        {
+            char utf8[520]; DWORD wrote = 0;
+            int len = WideCharToMultiByte( CP_UTF8, 0, app_name, -1, utf8, sizeof(utf8), NULL, NULL );
+            if (len > 1) WriteFile( req, utf8, len - 1, &wrote, NULL );
+            CloseHandle( req );
+            ERR( "PWSEP separate_request image=%s wrote=%lu\\n", debugstr_w(app_name), wrote );
+        }
+        else ERR( "PWSEP separate_request_failed image=%s error=%lu\\n", debugstr_w(app_name), GetLastError() );
+        {
+            UNICODE_STRING object_name; OBJECT_ATTRIBUTES oa; HANDLE shared = NULL; int tries;
+            RtlInitUnicodeString( &object_name, L"\\\\KernelObjects\\\\OrbisSeparateJoin" );
+            InitializeObjectAttributes( &oa, &object_name, 0, NULL, NULL );
+            for (tries = 0; tries < 60; tries++)
+            {
+                if (!NtOpenMutant( &shared, SYNCHRONIZE, &oa )) break;
+                shared = NULL; Sleep( 100 );
+            }
+            if (shared)
+            {
+                ERR( "PWSEP separate_join_confirmed image=%s object=KernelObjects/OrbisSeparateJoin tries=%d\\n",
+                     debugstr_w(app_name), tries );
+                NtClose( shared );
+            }
+            else ERR( "PWSEP separate_join_pending image=%s (child object not visible)\\n", debugstr_w(app_name) );
+        }
         status = STATUS_NOT_SUPPORTED;
         goto done;
     }
