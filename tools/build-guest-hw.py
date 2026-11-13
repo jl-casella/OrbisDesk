@@ -599,6 +599,78 @@ static void ps4_guest_unload( struct ps4_guest *guest )
                 in_use++;
             }
         }
+        /* d14 (run-0077: with GIO unloaded, MangoJuice's second start got past g_object_new, then GDK aborted
+         * with status 3): GDK registers its classes under libgtk's instance, which the pass above does not
+         * visit, and libgtk is unloaded with the EXE below; its classes stayed registered and the next start's
+         * RegisterClassExW failed. The modules of the guest's own folder loaded after its start are visited
+         * here, while still loaded: a class registered under one of them whose procedure is in the guest's own
+         * code (them or its image) ends with it */
+        {
+            LDR_DATA_TABLE_ENTRY *self;
+            WCHAR dir[MAX_PATH], *slash;
+            void *bases[256];
+            SIZE_T sizes[256];
+            UINT count = 0, j, k;
+            ULONG_PTR magic;
+
+            dir[0] = 0;
+            if (!LdrFindEntryForAddress( guest->module, &self ) && self->FullDllName.Buffer)
+            {
+                lstrcpynW( dir, self->FullDllName.Buffer, MAX_PATH );
+                if ((slash = wcsrchr( dir, '\\\\' ))) slash[1] = 0;
+                else dir[0] = 0;
+            }
+            if (dir[0] && !LdrLockLoaderLock( 0, NULL, &magic ))
+            {
+                LIST_ENTRY *list = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList, *entry;
+
+                for (entry = list->Flink; entry != list && count < ARRAY_SIZE(bases); entry = entry->Flink)
+                {
+                    LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
+
+                    if (mod->DllBase == (void *)guest->module || !mod->FullDllName.Buffer ||
+                        wcsnicmp( mod->FullDllName.Buffer, dir, wcslen( dir ) )) continue;
+                    for (j = 0; j < guest->modules_before_count; j++)
+                        if ((void *)guest->modules_before[j] == mod->DllBase) break;
+                    if (j < guest->modules_before_count) continue;
+                    bases[count] = mod->DllBase;
+                    sizes[count++] = mod->SizeOfImage;
+                }
+                LdrUnlockLoaderLock( 0, magic );
+            }
+            for (atom = 0xc000, unused = 0; count && atom <= 0xffff && unused < 256; atom++)
+            {
+                if (!atom_name( atom, name, ARRAY_SIZE(name) )) { unused++; continue; }
+                unused = 0;
+                for (k = 0; k < count; k++)
+                {
+                    BOOL ours;
+
+                    info.size = sizeof(info);
+                    if (!class_info( (HINSTANCE)bases[k], (const WCHAR *)(ULONG_PTR)atom, &info )) continue;
+                    if (((ULONG_PTR)info.proc >> 16) == 0xffff)
+                    {
+                        info.size = sizeof(info);
+                        if (!class_infoA( (HINSTANCE)bases[k], (const char *)(ULONG_PTR)atom, &info )) continue;
+                    }
+                    ours = (char *)info.proc >= image && (char *)info.proc < image_end;
+                    for (j = 0; !ours && j < count; j++)
+                        ours = (char *)info.proc >= (char *)bases[j] && (char *)info.proc < (char *)bases[j] + sizes[j];
+                    if (!ours) continue;
+                    if (unregister( (const WCHAR *)(ULONG_PTR)atom, (HINSTANCE)bases[k] ))
+                    {
+                        ERR( "PWGUEST class %s of module %p unregistered\\n", debugstr_w(name), bases[k] );
+                        unregistered++;
+                    }
+                    else
+                    {
+                        ERR( "PWGUEST class %s of module %p kept (error %lu)\\n", debugstr_w(name), bases[k], GetLastError() );
+                        in_use++;
+                    }
+                    break;
+                }
+            }
+        }
         ERR( "PS4 guest module %p unloads, %u window classes unregistered, %u still in use, %u of other modules kept\\n",
              guest->module, unregistered, in_use, kept );
         /* W114: the unhandled-exception filter is process-wide. A guest's CRT installs one
@@ -1643,7 +1715,7 @@ static BOOL ps4_guest_thread_in( DWORD tid, const struct ps4_guest_own *own, UIN
 }
 
 /* the threads of the process, other than this one, in the guest's own code; ~0u when unknown */
-static UINT ps4_guest_threads_in( const struct ps4_guest_own *own, UINT own_count )
+static UINT ps4_guest_threads_in( const struct ps4_guest_own *own, UINT own_count, BOOL end )
 {
     SYSTEM_PROCESS_INFORMATION *spi;
     ULONG size = 0x40000;
@@ -1671,7 +1743,16 @@ static UINT ps4_guest_threads_in( const struct ps4_guest_own *own, UINT own_coun
             for (i = 0; i < spi->dwThreadCount; i++)
             {
                 DWORD tid = HandleToULong( spi->ti[i].ClientId.UniqueThread );
-                if (tid != self && ps4_guest_thread_in( tid, own, own_count )) found++;
+                if (tid == self || !ps4_guest_thread_in( tid, own, own_count )) continue;
+                found++;
+                if (end)
+                {
+                    HANDLE thread = OpenThread( THREAD_TERMINATE | SYNCHRONIZE, FALSE, tid );
+                    DWORD wait = WAIT_FAILED;
+                    if (thread && TerminateThread( thread, 0 )) wait = WaitForSingleObject( thread, 1000 );
+                    ERR( "PWGUEST ended: thread %04lx wait=%lu\\n", tid, wait );
+                    if (thread) CloseHandle( thread );
+                }
             }
             break;
         }
@@ -1800,7 +1881,8 @@ static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
     {
         LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
 
-        if (mod->LoadCount == -1 || !ps4_guest_outside_windows( &mod->FullDllName )) continue;
+        if (!ps4_guest_outside_windows( &mod->FullDllName )) continue;
+        if (mod->LoadCount == -1 && leftovers) continue;  /* d13: a pinned one only with its guest */
         for (j = 0; j < guest->modules_before_count; j++) if (guest->modules_before[j] == mod->DllBase) break;
         if (j < guest->modules_before_count) continue;
         for (k = 0; k < live_dir_count; k++)
@@ -1827,7 +1909,34 @@ static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
         ERR( "PWGUEST own %s base=%p size=%Ix refcount=%d\\n", debugstr_w(own[i].name), own[i].base, own[i].size, own[i].count );
     if (!own_count) goto done;
 
-    threads = ps4_guest_threads_in( own, own_count );
+    threads = ps4_guest_threads_in( own, own_count, FALSE );
+    /* run-0065 (MangoJuice did not start a second time): a thread of the ended guest's own DLLs that the guest
+     * did not create through CreateThread (GIO's work on a thread of ntdll's pool) kept GLib loaded, and the
+     * next start ran on that GLib's state and showed no window. The guest has ended, and its process would
+     * take every thread with it on Windows: those threads end too, while the loader lock is held here, so
+     * none of them owns it (W122), and the modules are counted again */
+    if (threads && threads != ~0u && !trace_only)
+    {
+        ULONG lock_state = 0;
+        ULONG_PTR end_magic = 0;
+        int tries;
+
+        for (tries = 0; tries < 100; tries++)
+        {
+            if (!LdrLockLoaderLock( 2 /* LDR_LOCK_LOADER_LOCK_FLAG_TRY_ONLY */, &lock_state, &end_magic ) &&
+                lock_state == 1) break;
+            Sleep( 10 );
+        }
+        if (lock_state == 1)
+        {
+            UINT ended = ps4_guest_threads_in( own, own_count, TRUE );
+            LdrUnlockLoaderLock( 0, end_magic );
+            threads = ps4_guest_threads_in( own, own_count, FALSE );
+            ERR( "PWGUEST own_modules module=%p ended %u threads in their code, %u left\\n",
+                 guest->module, ended == ~0u ? 0 : ended, threads == ~0u ? 0 : threads );
+        }
+        else ERR( "PWGUEST own_modules module=%p threads not ended: the loader lock is busy\\n", guest->module );
+    }
     if (threads == ~0u) ERR( "PWGUEST own_modules module=%p kept: the thread list is not available\\n", guest->module );
 
     /* window classes whose procedure is in them (W068 for the EXE, the same test for these). A
@@ -1884,7 +1993,20 @@ static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
                 LDR_DATA_TABLE_ENTRY *mod;
 
                 if (!LdrFindEntryForAddress( own[i].base, &mod ) && mod->DllBase == own[i].base)
+                {
                     mod->Flags &= ~LDR_PROCESS_ATTACHED;
+                    /* d13 (run-0076: MangoJuice's second start ended at once with c000001d): GIO pins
+                     * itself, so it outlived the program, and with it the first start's GApplication type
+                     * and class, whose property specs pointed into the freed libgobject; the next start
+                     * jumped there. A module of the program's own that it pinned ends with it, as its
+                     * process would */
+                    if (mod->LoadCount == -1)
+                    {
+                        ERR( "PWGUEST own %s was pinned by the program: unpinned\\n",
+                             debugstr_w( mod->BaseDllName.Buffer ) );
+                        mod->LoadCount = 1;
+                    }
+                }
             }
             LdrUnlockLoaderLock( 0, magic );
         }
@@ -1985,6 +2107,37 @@ revise('kernelbase','debug','''        if (top_filter && !nested)
         {
             ERR( "PWGUEST unhandled exception %08lx at %p on thread %04lx: the guest ends\\n",
                  rec->ExceptionCode, rec->ExceptionAddress, GetCurrentThreadId() );
+#ifdef __x86_64__
+            /* d11 (run-0074: MangoJuice's second start ended with c000001d in the middle of an instruction of the
+             * first start's libgobject, and nothing said who jumped there): where the address, the argument
+             * registers and the return addresses on the stack are */
+            {
+                CONTEXT *ctx = epointers->ContextRecord;
+                ULONG_PTR *sp = (ULONG_PTR *)ctx->Rsp;
+                void *regs[8] = { rec->ExceptionAddress, (void *)ctx->Rax, (void *)ctx->Rcx, (void *)ctx->Rdx,
+                                  (void *)ctx->R8, (void *)ctx->R9, (void *)ctx->R10, (void *)ctx->R11 };
+                static const char * const names[8] = { "pc", "rax", "rcx", "rdx", "r8", "r9", "r10", "r11" };
+                LDR_DATA_TABLE_ENTRY *mod;
+                MEMORY_BASIC_INFORMATION info;
+                unsigned int i, shown = 0;
+
+                for (i = 0; i < 8; i++)
+                    if (!LdrFindEntryForAddress( regs[i], &mod ) && mod->BaseDllName.Buffer)
+                        ERR( "PWGUEST fault %s=%p %s+%lx\\n", names[i], regs[i], debugstr_w(mod->BaseDllName.Buffer),
+                             (ULONG)((char *)regs[i] - (char *)mod->DllBase) );
+                if (VirtualQuery( rec->ExceptionAddress, &info, sizeof(info) ))
+                    ERR( "PWGUEST fault pc region=%p allocation=%p size=%lx state=%lx type=%lx protect=%lx\\n",
+                         info.BaseAddress, info.AllocationBase, (ULONG)info.RegionSize, info.State, info.Type,
+                         info.Protect );
+                for (i = 0; i < 96 && shown < 16; i++)
+                {
+                    if (LdrFindEntryForAddress( (void *)sp[i], &mod ) || !mod->BaseDllName.Buffer) continue;
+                    ERR( "PWGUEST fault stack[%u]=%p %s+%lx\\n", i, (void *)sp[i], debugstr_w(mod->BaseDllName.Buffer),
+                         (ULONG)((char *)sp[i] - (char *)mod->DllBase) );
+                    shown++;
+                }
+            }
+#endif
             TerminateProcess( GetCurrentProcess(), rec->ExceptionCode );
         }
 ''','An unhandled exception on a guest thread ends the guest (W208).')
