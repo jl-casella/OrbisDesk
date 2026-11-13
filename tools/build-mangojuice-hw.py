@@ -191,17 +191,21 @@ def build(pins):
         return app.run(args);''','GTK draws with cairo; no GL or Vulkan context for the settings window.')
     # run-0062: text drawn through Wine's DirectWrite (pango's win32 font map, cairo's dwrite font faces) lost strokes
     # and letters; pango's fontconfig map draws with MSYS2's FreeType from C:\windows\Fonts (etc/fonts below).
-    # Popovers and tooltips are transparent around a shadow, which GTK gets from DWM's blur-behind; Wine composites
-    # no alpha, so that margin was black. Without a shadow or rounded corners the popover surface is opaque.
+    # Popovers, tooltips and the CSD window are transparent around a shadow, which GTK gets from DWM's blur-behind;
+    # Wine composites no alpha, so that margin was black (the window's until maximized, run-0064). Without a shadow
+    # or rounded corners those surfaces are opaque. A decorated CSD window still keeps a margin as wide as GTK's
+    # resize handles (run-0066, the CSS alone left it black), so windows are undecorated: libadwaita draws its own
+    # header bar and window buttons inside the window.
     revise('src/mangojuice.vala','''        var app = new MangoJuice();
         return app.run(args);''','''        Environment.set_variable("PANGOCAIRO_BACKEND", "fontconfig", false);
         var app = new MangoJuice();
         app.startup.connect (() => {
             var css = new Gtk.CssProvider ();
-            css.load_from_string ("popover > contents, popover > arrow, tooltip { box-shadow: none; border-radius: 0; }");
+            css.load_from_string ("window, window.csd, window.background, popover, popover > contents, popover > arrow, tooltip { box-shadow: none; border-radius: 0; } popover > contents { margin: 0; }");
             Gtk.StyleContext.add_provider_for_display (Gdk.Display.get_default (), css, Gtk.STYLE_PROVIDER_PRIORITY_USER);
         });
-        return app.run(args);''','Text through fontconfig and FreeType, not DirectWrite; opaque popovers and tooltips (no DWM alpha).')
+        app.window_added.connect ((window) => { window.set_decorated (false); });
+        return app.run(args);''','Text through fontconfig and FreeType, not DirectWrite; opaque window, popovers and tooltips (no DWM alpha).')
     revise('src/mangojuice.vala','''        // Windows Game Manager -- deploy/remove proxy dxgi.dll per game
         var game_manager = new GameManager ();
         var game_manager_scrolled = create_scrolled_window (game_manager);
@@ -210,6 +214,69 @@ def build(pins):
 ''','''        // OrbisDesk: no Games page. It starts a standalone MangoHud.exe on a running game and registers
         // the layer in HKLM through reg.exe; OrbisDesk loads MangoHud as an implicit layer already.
 ''','No Games page (standalone MangoHud.exe and HKLM layer registration do not apply).')
+    # The Windows fork stubs vkcube and glxgears out (Linux test tools), so every start showed "vkcube and glxgears not
+    # found" and no test button. OrbisDesk ships both in C:\orbis (tools/make-start-menu.py's Graphics Tools); the test
+    # button starts one of them as a guest with MangoHud on it. Whether one is running is not tracked (no restart on save).
+    revise('src/mangojuice.vala','''    void restart_vkcube () {
+        // vkcube is not available on Windows.
+    }
+
+    void restart_glxgears () {
+        // glxgears is not available on Windows.
+    }''','''    // OrbisDesk: its own test programs (tools/make-start-menu.py)
+    const string ORBIS_VKCUBE = "C:\\\\orbis\\\\vkcube.exe";
+    const string ORBIS_GLXGEARS = "C:\\\\orbis\\\\glxgears.exe";
+
+    [CCode (cname = "WinExec", cheader_filename = "windows.h")]
+    static extern uint win_exec (string command, uint show);
+
+    void start_orbis_tool (string path) {
+        uint result = win_exec ("\\"" + path + "\\"", 1 /* SW_SHOWNORMAL */);
+        if (result <= 31) stderr.printf ("Could not start %s: %u\\n", path, result);
+    }
+
+    void restart_vkcube () {
+        start_orbis_tool (ORBIS_VKCUBE);
+    }
+
+    void restart_glxgears () {
+        start_orbis_tool (ORBIS_GLXGEARS);
+    }''','vkcube and glxgears: OrbisDesk\'s own, started by the test button.')
+    revise('src/mangojuice.vala','''    public bool is_vkcube_available () {
+        // vkcube is a Linux Vulkan test tool; not available on Windows.
+        return false;
+    }''','''    public bool is_vkcube_available () {
+        return FileUtils.test (ORBIS_VKCUBE, FileTest.EXISTS);
+    }''','vkcube is available when OrbisDesk\'s is present.')
+    revise('src/mangojuice.vala','''    public bool is_glxgears_available () {
+        // glxgears is a Linux OpenGL test tool; not available on Windows.
+        return false;
+    }''','''    public bool is_glxgears_available () {
+        return FileUtils.test (ORBIS_GLXGEARS, FileTest.EXISTS);
+    }''','glxgears is available when OrbisDesk\'s is present.')
+    # The fork's run_test only made sure MangoHud.conf exists (d8: the Test button opened nothing)
+    revise('src/mangojuice.vala','''                Idle.add (() => {
+                    test_button_pressed = true;
+                    return false;
+                });''','''                Idle.add (() => {
+                    test_button_pressed = true;
+                    if (is_vkcube_available ()) restart_vkcube ();
+                    else if (is_glxgears_available ()) restart_glxgears ();
+                    return false;
+                });''','The Test button starts OrbisDesk\'s vkcube or glxgears.')
+    # d8: with no shadow the popovers still had a transparent band around them (the arrow's and the contents'
+    # margin), black under Wine. The popovers have no arrow, and their contents no margin (CSS above)
+    revise('src/mangojuice.vala','''        menu_button.set_menu_model (menu_model);
+''','''        menu_button.set_menu_model (menu_model);
+        menu_button.get_popover ().set_has_arrow (false);
+''','The main menu has no arrow (no transparent band under Wine).')
+    revise('src/mangojuice.vala','''        popover.set_has_arrow(true);
+        popover.set_parent(font_button);''','''        popover.set_has_arrow(false);
+        popover.set_parent(font_button);''','The font popover has no arrow.')
+    revise('src/dialog.vala','''        var popover = new Gtk.Popover();
+        var popover_label''','''        var popover = new Gtk.Popover();
+        popover.set_has_arrow(false);
+        var popover_label''','The presets hint popover has no arrow.')
     (work/'gen').mkdir();(work/'obj').mkdir()
     vala=sorted(str(p.relative_to(work)) for p in src.rglob('*.vala'))
     run([str(tools/'usr/bin/valac-0.56'),'-C','-d','gen','--vapidir',str(usr/'share/vala-0.56/vapi'),

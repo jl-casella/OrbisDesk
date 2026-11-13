@@ -61,15 +61,31 @@ El resto del cierre, 64 DLL, estaba en W303. El `usp10.dll` de 8 KiB es el reenv
 En run-0062 MangoJuice se abrió, pero a su texto le faltaban trazos y letras enteras («GPU» se leía «GP»), y el menú «…» aparecía dentro de un rectángulo negro.
 
 - **Texto.** El backend Windows de Pango 1.58 enumera las fuentes con DirectWrite, y pangocairo las dibuja con las caras de fuente DirectWrite de cairo, así que cada glifo pasaba por el dwrite de Wine y su nuevo lado Unix con FreeType en la consola. En ese camino se perdían los trazos; no se aisló en qué paso exactamente. pangocairo tiene un segundo backend: `PANGOCAIRO_BACKEND=fontconfig` usa fontconfig y el FreeType propio de MSYS2 dentro del proceso, como hacen GIMP e Inkscape en Windows. El `etc/fonts` de MSYS2 (fonts.conf y conf.d) se incluye junto a `bin`, donde fontconfig lo busca. Recorre `C:\windows\Fonts` y guarda su caché en `%LOCALAPPDATA%\fontconfig`. La consola solo tiene ahí Tahoma y Marlett, así que un `local.conf` generado hace que Tahoma sea la elegida para sans-serif, serif, monospace, system-ui, Adwaita Sans, Cantarell y Segoe UI.
-- **Popovers negros.** GTK dibuja los popovers y los tooltips como ventanas aparte con un margen de sombra transparente. Sin DirectComposition, que es opcional (`GDK_DEBUG=dcomp`) y necesitaría Direct3D 11, pide la transparencia a DWM con `DwmEnableBlurBehindWindow`. Wine no compone el canal alfa, así que ese margen salía negro. Un CSS con prioridad de usuario (`popover > contents, popover > arrow, tooltip { box-shadow: none; border-radius: 0; }`) no deja píxeles transparentes.
+- **Popovers negros.** GTK dibuja los popovers y los tooltips como ventanas aparte con un margen de sombra transparente. Sin DirectComposition, que es opcional (`GDK_DEBUG=dcomp`) y necesitaría Direct3D 11, pide la transparencia a DWM con `DwmEnableBlurBehindWindow`. Wine no compone el canal alfa, así que ese margen salía negro. Un CSS con prioridad de usuario (`window, window.csd, window.background, popover, popover > contents, popover > arrow, tooltip { box-shadow: none; border-radius: 0; } popover > contents { margin: 0; }`) no deja píxeles transparentes alrededor de la sombra. Aun así quedaban dos franjas transparentes:
+  - La ventana principal tenía un marco negro hasta maximizarla (run-0064). El CSS solo no lo quitó (run-0066), porque una ventana con decoración del lado del cliente conserva un margen tan ancho como los bordes de redimensionado de GTK. Ahora ninguna ventana tiene decoración (`set_decorated (false)` en `window_added`); libadwaita dibuja su propia barra de título y sus botones dentro de la ventana.
+  - Los popovers conservaban la franja de su flecha. El menú principal, el popover de fuentes y el de la ayuda de presets no tienen flecha.
 
 El escritorio es de 1280×720 escalado al televisor, así que MangoJuice nunca se verá ahí tan nítido como en un PC.
+
+### El botón de prueba
+
+El fork de Windows desactiva vkcube y glxgears por ser herramientas de Linux. Cada arranque mostraba un aviso «vkcube and glxgears not found», y el botón de prueba solo se aseguraba de que existiera `MangoHud.conf`. OrbisDesk incluye los dos programas en `C:\orbis` (Inicio > Graphics Tools, [make-start-menu.py](../tools/make-start-menu.py)). Cada uno figura como disponible cuando existe su archivo, y el botón de prueba abre vkcube, o glxgears si falta vkcube, con `WinExec`, como guest con MangoHud encima. No se lleva la cuenta de si ya hay uno abierto, así que guardar no lo reinicia.
+
+### Reabrir después de cerrar
+
+MangoJuice corre como guest dentro del proceso compartido de explorer, así que lo que dejan sus DLL lo sobrevive. Su segundo arranque fallaba hasta que se quitaron tres restos. Los tres arreglos son cambios generales del ciclo de vida de los guests en [build-guest-hw.py](../tools/build-guest-hw.py):
+
+1. **Un hilo de GLib en su propio código** (run-0065). `guest->threads` solo registra los hilos que los hilos del guest crean con `CreateThread`, así que un hilo del threadpool que corría en `libglib` no estaba registrado, y la descarga conservaba todos los módulos del programa. Ahora los hilos que siguen corriendo en los módulos propios del guest se terminan, con el loader lock tomado, antes de descargar esos módulos.
+2. **GIO fijada en memoria** (run-0076). GIO se fija a sí misma, así que `libgio` sobrevivía al programa, y con ella el tipo y la clase GApplication del primer arranque, cuyas especificaciones de propiedad apuntaban al `libgobject` ya liberado. El primer `g_object_new` del siguiente arranque saltaba ahí (c000001d en una dirección dentro de `libgraphene`, run-0075). Ahora un módulo de la carpeta del programa que el propio programa fijó se libera y se descarga con él, como pasaría al terminar su proceso; la limpieza de restos al lanzar un programa sigue sin tocar los módulos fijados.
+3. **Las clases de ventana de GDK** (run-0077). Sin GIO, el segundo arranque pasaba de `g_object_new` y luego abortaba con estado 3. GDK registra `gdkSurfaceToplevel`, `GdkDisplayChange` y `GdkClipboardNotification` a nombre de la instancia de libgtk, que la pasada de clases de la descarga nunca visitaba, y libgtk se descarga con el EXE. Ahora la pasada también visita, mientras siguen cargados, los módulos de la carpeta del guest cargados después de su arranque. Se desregistra toda clase registrada a nombre de uno de ellos cuyo procedimiento esté en el código propio del guest.
+
+Una excepción no manejada en un hilo de un guest ahora también registra el módulo y el desplazamiento de la dirección del fallo, de los registros de argumentos y de hasta 16 direcciones de retorno de la pila (`PWGUEST fault`). Así se encontró la causa 2.
 
 ## Resultado de esta compilación
 
 | | |
 | --- | --- |
-| `mangojuice.exe` | sha256 `b672c722e30d1342985a9de12efc3c6b8cec513f1e3643748911fd51ae18297a`; dos enlaces idénticos (con las revisiones de run-0062; antes era `51a7bb9b…` en tres compilaciones separadas) |
+| `mangojuice.exe` | sha256 `000df9f886710b74b988f22c3acaaf0d89dca51fbb4948b1663ca625e5db8f31`, una compilación con las revisiones de ventana, popovers y botón de prueba (la de run-0062 era `b672c722…`, dos enlaces idénticos) |
 | Instalado | 989 archivos, 52,2 MiB: 62 DLL (solo `libgtk-4-1.dll` ocupa 12,0 MiB), iconos 4,9 MiB |
 | DLL de Windows que aporta Wine | 46, entre ellas `opengl32`, `d3d11`, `d3d12`, `dcomp`, `dwrite`, `gdiplus` y `usp10` |
 | No incluida | `vulkan-1.dll` de MSYS2: la de system32 es el cargador Khronos de OrbisDesk |
@@ -85,27 +101,22 @@ El archivo del usuario sobrevive a las actualizaciones. `tools/console_state.py`
 
 ## Qué se comprobó y qué no
 
-- El builder se ejecutó de principio a fin. Los dos enlaces fueron idénticos.
-- En la consola, MangoJuice no cargó porque faltaba DWrite.dll (run-0060, arriba). Eso ya está corregido en la build, pero la corrección no se ha probado en la consola.
+- El builder se ejecutó de principio a fin.
+- En la consola (PS4 Pro, paquete W303 con runtimes de prueba, NORMAL/ROOT abierto por el usuario):
+  - MangoJuice abre con el texto legible (desde run-0062) y sin marco negro alrededor de su ventana (desde run-0068).
+  - El menú «…» no tiene borde negro, ya no aparece el aviso «not found», y el botón de prueba abrió vkcube, que arrancó y se cerró limpiamente (run-0074).
+  - Se abrió, se cerró y se volvió a abrir con su ventana las dos veces, y cada arranque terminó con estado 0. En cada cierre se desregistraron las tres clases de GDK y se liberó GIO (run-0078, `reports/pop-phase-b/physical/20261113T055814Z`).
+  - El usuario también informó que WFM y un juego funcionaban después de cerrar MangoJuice (run-0074). Los cambios del ciclo de vida de los guests no se comprobaron con arranques repetidos de otros programas, ni con dos guests de la misma carpeta a la vez.
 - `hw_overlay.c` compila con las opciones de compilación de la propia consola (`helper_compile_flags`). En el harness de vista previa del host:
   - un archivo como los de MangoJuice (`legacy_layout=false`, `fps`, `ram`) dio `gpu=0 cpu=0 ram=1 fps=1 frametime=0 frame_timing=0`;
   - el archivo por defecto de la build siguió dando las filas por defecto.
 - `native/hw_install.h`: solo comprobación de sintaxis en el host.
 - Los iconos se revisaron a 16, 32 y 48 px sobre el menú oscuro (38,38,40), el menú claro (240,240,240) y el color de selección (0,120,215).
-- **No se ejecutó en ningún sitio:**
-  - el propio MangoJuice: en esta sesión no se permitió ejecutar en el PC de compilación los binarios GTK descargados, y la build de Wine del host no tiene driver de pantalla;
-  - ni en shadPS4, y en la PS4 solo hasta el fallo de DWrite.dll;
-  - su tiempo de arranque, su uso de memoria y la navegación con el mando;
-  - si el camino cairo de GTK 4.24 funciona siquiera bajo el Wine de OrbisDesk.
-
-Una primera prueba en consola:
-
-1. Abrir Graphics Tools > MangoJuice y anotar cuánto tarda la primera ventana.
-2. Desmarcar algunas métricas, cambiar la posición y guardar.
-3. Desactivar y activar Estadisticas, y comparar su línea `PWOVERLAY hud:`.
-4. Abrir vkcube y mirar MangoHud.
-5. Cerrar MangoJuice, reabrir Inicio y comprobar que el escritorio sigue respondiendo.
-6. Instalar la build siguiente y comprobar que los ajustes se mantuvieron.
+- **No se comprobó:**
+  - MangoJuice de forma nativa en el PC de compilación, ni en shadPS4;
+  - su uso de memoria y la navegación con el mando (tarda unos 14 s en mostrar su primera ventana en la consola, `PWSINK busy end … ms=14426`);
+  - guardar ajustes y que el HUD Estadisticas los siga (`PWOVERLAY hud:`);
+  - que los ajustes sobrevivan a la siguiente actualización.
 
 ## El icono de vkSpin
 
