@@ -728,6 +728,20 @@ for key,value in [('Software\\Classes\\OrbisDesk.Text\\shell\\open\\command',
         if key.rsplit('\\',1)[-1].startswith('.'):continue
         raise SystemExit('text association class already exists: '+key)
     system_text+='\n['+escaped+']\n@='+json.dumps(value)+'\n'
+# Batch files from the desktop and from WFM. The sealed prefix has no .bat/.cmd association (wine.inf
+# registers none), so explorer's ShellExecuteExW falls back to CreateProcessW on the script itself
+# (dlls/shell32/shlexec.c, "No association found, trying as Unix binary"), and kernelbase's guest launch
+# refuses a file that is not a PE ("PWOPEN reject_title_replacement"): Wine's create_cmd_process is never
+# reached in this title, because the guest path returns before create_nt_process. Here the extension points
+# at cmd.exe instead, which runs as a console guest with conhost drawing its window (W056/W062). /s keeps
+# the quoted path whole; /k leaves the console open with the script's output until the user closes it.
+for key,value in [('Software\\Classes\\OrbisDesk.Batch','Windows Batch File'),
+                  ('Software\\Classes\\OrbisDesk.Batch\\shell\\open\\command',
+                   '"C:\\windows\\system32\\cmd.exe" /s /k "%1"')]+[
+        ('Software\\Classes\\'+ext,'OrbisDesk.Batch') for ext in ('.bat','.cmd')]:
+    escaped=key.replace('\\','\\\\')
+    if '['+escaped+']' in system_text:raise SystemExit('batch association already exists: '+key)
+    system_text+='\n['+escaped+']\n@='+json.dumps(value)+'\n'
 # W121: COM classes of the audio DLLs added in W120, as their DllRegisterServer would write them
 # (dlls/mmdevapi/mmdevapi_classes.idl, dlls/dsound/dsound_classes.idl). The sealed prefix was
 # made before those DLLs existed: winmm found no MMDeviceEnumerator ("class {bcde0395-...} not
