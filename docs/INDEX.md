@@ -11,7 +11,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [AGENTS.md](../AGENTS.md) — OrbisDesk: guide for AI-assisted development
 - [README.md](../README.md) — OrbisDesk
 - [THIRD_PARTY.md](../THIRD_PARTY.md) — Licences and provenance
-- [CURRENT_STATE.md](CURRENT_STATE.md) — Handoff point: OrbisDesk W288 (03.87), 2026-11-07
+- [CURRENT_STATE.md](CURRENT_STATE.md) — Handoff point: OrbisDesk W303 and the hosted product build, 2026-11-10
 - [DOCUMENTATION_POLICY.md](DOCUMENTATION_POLICY.md) — Documentation policy
 - [REBRANDING_ORBISDESK.md](REBRANDING_ORBISDESK.md) — OrbisDesk: name and update compatibility
 - [REPOSITORY_LAYOUT.md](REPOSITORY_LAYOUT.md) — Repository contents and dependency reconstruction

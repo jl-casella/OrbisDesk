@@ -12,7 +12,7 @@ Revisión de licencias para publicar OrbisDesk alpha-1 como un solo paquete con 
 | --- | --- | --- |
 | Compatibilidad GPL del ELF (Playden GPL-3.0-or-later con Wine, Mesa, Crema, DolphinPS4 y código propio) | No se encontró código GPL-2.0-only; la combinación se puede distribuir como GPL-3.0-or-later | No |
 | Textos de licencia, avisos de copyright e indicación de la fuente dentro del paquete/runtime | Faltan en la W301 (también los de Steam, desde que el cliente pasó al ELF). Cambio aplicado en `tools/build-wine-hardware.py` después de la W301; todavía sin build | **Sí**, hasta que una build los lleve |
-| Fuente correspondiente publicada con el release (código propio, Wine, Mesa, VLC, Wine Gecko, DOSBox Pure, gbe_fork y las bibliotecas del ELF) | Todavía no hay tag de release ni archivo de fuentes | **Sí** |
+| Fuente correspondiente publicada con el release (código propio, Wine, Mesa, VLC, Wine Gecko, DOSBox Pure, gbe_fork y las bibliotecas del ELF) | El publish de `main` crea el tag y adjunta el archivo de fuentes (sección 5); todavía no se publicó ningún release | **Sí**, hasta el primer release publicado |
 | `libcdio.dll` (GPL-3.0-or-later) es un binario precompilado del repositorio de WFM, sin fuente correspondiente conocida | Quitada (decisión del usuario): WFM se compila sin ella y pierde "Load ISO image"; la subida borra la copia de la consola. Todavía sin build | No, cuando salga una build sin ella |
 | Identidad de la PC de build en el runtime (`C:\users\jose`, `JCASELLA`, cadenas `/mnt/c/Users/...`) | Encontrada; los nombres del registro se corrigen en el builder (todavía sin build) | No (privacidad/prolijidad) |
 | Entradas de `THIRD_PARTY.md` | Agregadas (MangoHud, VLC, Wine Gecko, cargador Vulkan, DXVK, DOSBox Pure, GeneralUser GS, WFM, libcdio, pl_mpeg, mingw-w64, código incluido en Mesa, archivos de paquete de OpenOrbis) | Hecho |
@@ -95,7 +95,18 @@ Cambiar sólo `MangoHud.conf` a `orbis` rompería la configuración de MangoHud.
 
 ## 5. Fuente correspondiente por release
 
-Mecanismo propuesto: un tag de Git por versión (`orbisdesk-04.00` para el alpha-1) en el repositorio público y, en la misma página del release que `OrbisDesk.pkg`, un archivo `orbisdesk-04.00-third-party-sources` con su lista de SHA-256. Ofrecer la fuente desde el mismo lugar que el binario cumple la GPL-2 §3 y la GPL-3 §6(d) sin oferta escrita; `SOURCE.txt` además ofrece las fuentes a pedido durante tres años, lo que cubre a quien consiga el paquete por otro lado.
+Mecanismo: un tag de Git por versión en el repositorio público y, en la misma página del release que `OrbisDesk.pkg`, un archivo con las fuentes de terceros y su lista de SHA-256. Ofrecer la fuente desde el mismo lugar que el binario cumple la GPL-2 §3 y la GPL-3 §6(d) sin oferta escrita; `SOURCE.txt` además ofrece las fuentes a pedido durante tres años, lo que cubre a quien consiga el paquete por otro lado.
+
+Implementado en `tools/ci/release.py publish`. El tag es `orbisdesk-<versión>-<commit[:12]>`, el mismo nombre que da el `C:\orbis\licenses\SOURCE.txt` del paquete (`tools/build-wine-hardware.py`). Antes de crear el tag, el job de publicación descarga cada fuente fijada en [third-party-sources.lock.json](../third-party-sources.lock.json) y la verifica contra su SHA-256 o su commit:
+
+- los archivos de fuentes de VLC, Wine Gecko, SeaMonkey y el toolchain de OpenOrbis;
+- las descargas de fuentes de `product-assets.lock.json` (LLVM, las bibliotecas del cliente de Steam, gbe_fork, pl_mpeg);
+- los archivos de Mesa y libdrm;
+- un `git archive` de cada repositorio fijado en `dependencies.lock.json`, salvo el emulador.
+
+Todo va a `<tag>-third-party-sources.tar`, partido en archivos `.partNNN` si pasa de 1900 MiB, con un `SOURCES.txt` adentro que lista el SHA-256 y el origen de cada archivo. El lock está separado de `product-assets.lock.json` para que agregar una fuente no cambie las claves de los bloques precompilados.
+
+Todavía sin empaquetar: los overlays generados de Wine (sus generadores están en el tag) y las fuentes de contrib de VLC.
 
 Qué tiene que contener el archivo (o el tag):
 

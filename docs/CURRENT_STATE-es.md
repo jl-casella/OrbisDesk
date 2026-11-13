@@ -1,8 +1,20 @@
-# Punto de retoma: OrbisDesk W288 (03.87), 2026-11-07
+# Punto de retoma: OrbisDesk W303 y build alojada del producto, 2026-11-10
 
 [English](CURRENT_STATE.md) | [Español](CURRENT_STATE-es.md)
 
-Última build subida: W288, `OrbisDesk.pkg` 03.87. Todavía no se probó en la consola. Detalle de W285–W288: [HARDWARE_W285_W288](HARDWARE_W285_W288-es.md).
+La base actual del producto es **W303**, cuya versión SFO local predeterminada es **04.02**. El commit `208803d` registra validación de instalaciones limpias en consola. La construcción completa del producto en GitHub ya pasa; la base `dev` revisada es `aa43870`. Un candidato de CI tiene su propia versión SFO asignada y SHA, y necesita su propia evidencia de aceptación del runtime.
+
+- **Instalación:** `OrbisDesk.pkg` lleva el runtime. El instalador del primer arranque corre después de elegir NORMAL/ROOT y antes del jailbreak ROOT, mientras `/app0/runtime` sigue accesible. Verifica los archivos copiados y preserva el estado del usuario. Ver [instalación y releases](RELEASES-es.md#instalación-en-el-primer-arranque).
+- **Builds:** la receta alojada limpia incluye el árbol anfitrión completo de Wine y su prefijo verificado, adaptadores PS4, Steam integrado, gráficos, zlib y recursos fijados. Gráficos y Wine pueden venir de cachés Actions verificadas o assets precompilados fijados de releases; cambiar etapas PS4 posteriores no invalida esos bloques. Ver [builds y releases](RELEASES-es.md).
+- **Runtime:** W303 restaura perfiles/carpetas Public, programas de 32 bits, NLS/metadatos y registro del prefijo completo, conserva las métricas de ventanas W302 y reaplica las exclusiones de módulos de consola. Incluye SeaMonkey, suprime la pregunta inicial de privacidad de VLC y aplica la [política de trazas](RELEASE_TRACES-es.md).
+- **Steam:** el cliente nativo está integrado en el título y en la receta del producto. Su aceptación de login/descargas/juegos es distinta de la aceptación de instalación y escritorio; seguir [Steam integrado](STEAM_HOSTED-es.md) y su evidencia enlazada.
+- **Siguiente aceptación:** usar el paquete, manifiesto, SHA y logs del candidato CI exacto para comprobar instalación, escritorio y aplicaciones. Una build exitosa o un acierto de caché no demuestra ejecución de ese candidato en consola o emulador.
+
+<a id="punto-de-retoma-orbisdesk-w288-0387-2026-11-07"></a>
+
+# Retoma anterior: OrbisDesk W288 (03.87), 2026-11-07
+
+En esa retoma, W288 / 03.87 era la última build subida y todavía no se había probado en consola. Las entradas siguientes conservan la evidencia y comprobaciones pendientes de esa fecha. Detalle: [HARDWARE_W285_W288](HARDWARE_W285_W288-es.md).
 
 - **W285:** los streams de audio de un invitado salen del mezclador cuando se descarga (lista de huérfanos, sin liberarlos). Probada con NFS U2 cerrado desde el overlay; en esa corrida el juego liberó su propio stream.
 - **W286:** los logs de GPU de RADV van a `/data/orbisdesk/gpu`. Se borró de la consola la carpeta vieja `/data/orbis-win`.

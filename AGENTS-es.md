@@ -11,7 +11,7 @@ Este es el punto de entrada para una IA o una persona que empieza a trabajar en 
 3. Inspeccionar el builder, sus manifiestos de entrada, el manifiesto de salida y la última evidencia de ejecución/transferencia **antes** de elegir una build o afirmar compatibilidad. Las fechas de archivo y el número más alto no alcanzan.
 4. Leer `git status --short`, comprobar trabajo concurrente y preservar cambios ajenos. Muchos builders comparten directorios de salida; no ejecutarlos en paralelo si se pisan.
 
-Al actualizar esta guía por última vez (2026-11-07), el [estado actual](docs/CURRENT_STATE-es.md) registra W288 como la última build subida y W287 como la última con evidencia física ([W285–W288](docs/HARDWARE_W285_W288-es.md)). Conciliarlo con los manifiestos reales, la evidencia de transferencia y el feedback del usuario en cada sesión.
+Al 2026-11-10, la base del producto es **W303 / 04.02**, con runtime integrado y validación de instalación limpia en consola. La construcción completa del producto en GitHub ya pasa. Leer primero el [estado actual](docs/CURRENT_STATE-es.md) y [builds y releases](docs/RELEASES-es.md). CI asigna su propia versión SFO; identificar cada candidato por SHA, manifiesto y evidencia de corrida, sin suponer la versión local predeterminada de W303 ni transferir su aceptación física a una build nueva. W285–W288 y los incrementos anteriores son evidencia histórica.
 
 ## 2. Modelo del proyecto y reglas fundamentales
 

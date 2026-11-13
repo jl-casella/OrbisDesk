@@ -156,11 +156,21 @@ wine=wine_elves[-1]
 def every_name(path):
     listing=subprocess.run(['llvm-nm-14',str(path)],capture_output=True,text=True,check=True).stdout
     return {line.split()[-1] for line in listing.splitlines() if line.strip() and len(line.split())>=2}
+# (and the libkernel stubs both links name, -lkernel -lkernel_sys: the hardware ELF imports pthread_cond_*
+# and stat from them through its wrapper, which the bootstrap ELF does not, so they are not its imports)
 link_libraries=[ROOT/'build/wine-boot/lib/libc.a',SDK/'lib/libc.a',SDK/'lib/libm.a',VK/'sysroot/lib/libc++.a',
-                VK/'sysroot/lib/libc++abi.a',SDK/'lib/libclang_rt.builtins-x86_64.a']
+                VK/'sysroot/lib/libc++abi.a',SDK/'lib/libclang_rt.builtins-x86_64.a',
+                SDK/'lib/libkernel.so',SDK/'lib/libkernel_sys.so']
 available=every_name(wine)|symbols(wine,True)
 for library in link_libraries:
     if library.is_file():available|=symbols(library,False)
+# Checked against the bootstrap ELF: what the hardware relink adds (tools/build-wine-hardware.py compiles the
+# sink with -DPW_SINK_EXTERNAL_INPUT, which defines pw_hw_cursor_moved), as long as the source still defines it
+HARDWARE_ONLY={'pw_hw_cursor_moved':('platform/ps4/pw_wine_sink_ps4.c','\nvoid pw_hw_cursor_moved(void)\n{')}
+if wine.name=='bootstrap.elf':
+    for name,(source,definition) in HARDWARE_ONLY.items():
+        if definition not in (ROOT/source).read_text():raise SystemExit(source+' no longer defines '+name)
+        available.add(name)
 needed=symbols(out,True)
 missing=sorted(needed-available-NEW_IMPORTS)
 if missing:raise SystemExit('steam_client_hosted.o needs what %s neither defines nor imports: %s'%(wine.relative_to(ROOT),', '.join(missing)))

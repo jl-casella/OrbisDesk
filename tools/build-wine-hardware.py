@@ -226,6 +226,23 @@ for folder in ('wine-home','wine/lib/wine/i386-windows','wine/lib/wine/x86_64-wi
 host_profiles=[p for p in (prefix/'drive_c/users').iterdir() if p.is_dir() and p.name not in ('Public','orbis')]
 if len(host_profiles)!=1:raise SystemExit('prefix: expected one host user profile, found '+str([p.name for p in host_profiles]))
 HOST_PROFILE_REG='C:\\\\users\\\\'+host_profiles[0].name   # as written in a .reg file (C:\\users\\<name>)
+def rename_host(text,name,values):
+    """alpha-1: the name of the machine that made the prefix (this PC, or a CI runner) out of the shipped registry.
+    values: {registry value: replacement}; each value must be there, and afterwards no old name may remain."""
+    old=set()
+    for value,new in values.items():
+        key='"'+value+'"="';parts=text.split(key)
+        if len(parts)<2:raise SystemExit(name+': expected a "'+value+'" value')
+        for i in range(1,len(parts)):
+            data,rest=parts[i].split('"',1)
+            host=data.lstrip('\\')   # LOGONSERVER is \\NAME (written \\\\NAME in a .reg file)
+            if not host:raise SystemExit(name+': empty "'+value+'"')
+            old.add(host)
+            parts[i]=data[:len(data)-len(host)]+new+'"'+rest
+        text=key.join(parts)
+    for host in old-{'ORBISDESK','orbisdesk'}:
+        if host.lower() in text.lower():raise SystemExit(name+': the build machine name '+host+' is still there')
+    return text
 def orbis_profile(text,name,required=True):
     """The host profile's registry paths as C:\\users\\orbis; where required the name must be there (a prefix change shows)."""
     if required and HOST_PROFILE_REG not in text:raise SystemExit(name+': expected '+HOST_PROFILE_REG)
@@ -828,9 +845,7 @@ dshow_reg=ROOT/'out/dshow-i386'/dshow['registry']['path']
 if sha(dshow_reg)!=dshow['registry']['sha256']:raise SystemExit('DirectShow registry differs from its manifest')
 system_text+=dshow_reg.read_text()
 # alpha-1: the build PC's name out of the shipped registry (the prefix was made on the host)
-for old,new in (('"ComputerName"="JCASELLA"','"ComputerName"="ORBISDESK"'),('"Hostname"="jcasella"','"Hostname"="orbisdesk"')):
-    if old not in system_text:raise SystemExit('system.reg: expected '+old)
-    system_text=system_text.replace(old,new)
+system_text=rename_host(system_text,'system.reg',{'ComputerName':'ORBISDESK','Hostname':'orbisdesk'})
 system_text=orbis_profile(system_text,'system.reg')
 system_reg.write_text(system_text)
 # W226: the same registry as a file Wine never rewrites; the launcher appends the keys the console's
@@ -921,9 +936,7 @@ theme=text.index('[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\ThemeMa
 end=text.index('\n\n',theme)
 if text[theme:end].count('"ThemeActive"="1"')!=1:raise SystemExit('user.reg: ThemeManager is not as expected')
 text=text[:theme]+text[theme:end].replace('"ThemeActive"="1"','"ThemeActive"="0"')+text[end:]
-for old,new in (('"LOGONSERVER"="\\\\\\\\JCASELLA"','"LOGONSERVER"="\\\\\\\\ORBISDESK"'),('"USERDOMAIN"="JCASELLA"','"USERDOMAIN"="ORBISDESK"')):
-    if old not in text:raise SystemExit('user.reg: expected '+old)
-    text=text.replace(old,new)
+text=rename_host(text,'user.reg',{'LOGONSERVER':'ORBISDESK','USERDOMAIN':'ORBISDESK'})
 text=orbis_profile(text,'user.reg')
 # W303: the window metrics every build until W302 shipped (twips, no font entries; the console showed Start right
 # with them). A prefix from a complete host tree writes pixel sizes and Tahoma fonts there, and Start looked cut.
@@ -989,14 +1002,16 @@ for source in license_inputs:shutil.copyfile(source,licenses/source.name)
 head=subprocess.run(['git','-C',str(ROOT),'rev-parse','HEAD'],capture_output=True,text=True,check=True).stdout.strip()
 dirty=bool(subprocess.run(['git','-C',str(ROOT),'status','--porcelain','--untracked-files=no'],
                           capture_output=True,text=True,check=True).stdout.strip())
+# the tag and asset names tools/ci/release.py publishes: orbisdesk-<version>-<commit[:12]>
+release_tag='orbisdesk-'+args.app_version+'-'+head[:12]
 (licenses/'SOURCE.txt').write_text(
     'OrbisDesk W303 ('+args.app_version+'): corresponding source\r\n\r\n'
     'OrbisDesk is free software under the GNU GPL version 3 or later (GPL-3.0.txt).\r\n'
-    'Source code: '+SOURCE_REPOSITORY+', tag orbisdesk-'+args.app_version+' (commit '+head+(' plus local changes' if dirty else '')+').\r\n'
-    'Third-party sources (Wine, Mesa, VLC, Wine Gecko, DOSBox Pure, gbe_fork, curl, Mbed TLS and others)\r\n'
-    'are attached to the same release as orbisdesk-'+args.app_version+'-third-party-sources, listed with their SHA-256 in\r\n'
-    'THIRD_PARTY.md. For three years from the release date the same sources are also available on request\r\n'
-    'through the repository\'s issue tracker.\r\n')
+    'Source code: '+SOURCE_REPOSITORY+', tag '+release_tag+' (commit '+head+(' plus local changes' if dirty else '')+').\r\n'
+    'Third-party sources (Wine, Mesa, VLC, Wine Gecko, SeaMonkey, DOSBox Pure, gbe_fork, curl, Mbed TLS and others)\r\n'
+    'are attached to the same release as '+release_tag+'-third-party-sources.tar (split into .partNNN files\r\n'
+    'when large), with the SHA-256 of every source inside it in SOURCES.txt. For three years from the release\r\n'
+    'date the same sources are also available on request through the repository\'s issue tracker.\r\n')
 manifest_licenses={p.name:sha(p) for p in sorted(licenses.iterdir())}
 # Phase 9: the SeaMonkey profile the Start menu shortcut passes with -profile (fixtures/browser).
 # SeaMonkey 2.53 is the browser (the user's choice; W177-W215 staged two Pale Moon profiles, whose
@@ -1072,7 +1087,10 @@ for folder in ('system32','syswow64'):
 # quit, both through DirectWrite), services that do not run, printing, WinRT, 16-bit... W302 had none of them.
 # Keys starting "x86_64 only" apply to system32. Control Panel applets the user keeps (W303) stay.
 from wine_product_seeds import declaration
-KEPT_LEFT_OUT={'appwiz.cpl','desk.cpl','inetcpl.cpl','joy.cpl'}
+# (and the two W302's prefix had: apisetschema.dll, which out/wine-pe64 provides and the prefix preflight requires
+# in system32 (native/wine_prefix_probe.c, dll-pe64; W303's first final build stopped with rc 95 without it), and
+# newdev.dll)
+KEPT_LEFT_OUT={'appwiz.cpl','desk.cpl','inetcpl.cpl','joy.cpl','apisetschema.dll','newdev.dll'}
 left_out_removed=[]
 for reason,names in declaration(ROOT/'tools/stage-wine-i386.py','W261_LEFT_OUT').items():
     for folder in (('system32',) if reason.startswith('x86_64 only') else ('system32','syswow64')):
@@ -1106,11 +1124,24 @@ print(json.dumps({'stripped_modules':stripped['modules'],'mib_before':stripped['
 # drivers, winsxs and i386-guest, and the modules llvm-strip refused above): assembler units (compiler-rt,
 # SymCrypt .S) keep their full source and build paths despite -ffile-prefix-map. Stripped here, with the
 # architecture's MinGW strip when llvm-strip refuses; what still names the build PC fails the check below.
-build_paths=[s.encode() for s in {str(ROOT),str(pathlib.Path.home())}]
+build_identity=sorted({str(ROOT),str(ROOT).replace('/','\\'),str(pathlib.Path.home())}-{'','/','\\'})
+# Prebuilt third-party toolchains carry their own builders' GitHub Actions paths: llvm-mingw's libc++/libunwind
+# (MinGW DLLs and EXEs) and the OpenOrbis SDK's libunwind (the ELF). On a GitHub runner, whose home is also
+# /home/runner, those would read as this build's; they are not, so they are not counted.
+FOREIGN_BUILD_PATHS=('/home/runner/work/llvm-mingw/','/home/runner/work/llvm-project/')
+def names_build_pc(blob):
+    for identity in build_identity:
+        for encoding in ('utf-8','utf-16-le'):
+            needle=identity.encode(encoding)
+            count=blob.count(needle)
+            if not count:continue
+            foreign=sum(blob.count(f.encode(encoding)) for f in FOREIGN_BUILD_PATHS if f.startswith(identity))
+            if count>foreign:return True
+    return False
 stripped['identity']=[]
 for module in sorted(p for p in data.rglob('*') if p.is_file()):
     blob=module.read_bytes()
-    if blob[:2]!=b'MZ' or not any(s in blob for s in build_paths):continue
+    if blob[:2]!=b'MZ' or not names_build_pc(blob):continue
     machine=struct.unpack_from('<H',blob,struct.unpack_from('<I',blob,0x3c)[0]+4)[0] if len(blob)>0x40 else 0
     temporary=module.with_name(module.name+'.stripped')
     for tool in ('llvm-strip-19',{0x8664:'x86_64-w64-mingw32-strip',0x14c:'i686-w64-mingw32-strip'}.get(machine)):
@@ -1177,13 +1208,9 @@ embedded={} if args.runtime_outside_package else {
     **{'runtime/'+path:data/path for path in runtime_files},'runtime/install.json':install_json,'runtime/install.txt':install_txt}
 # alpha-1: nothing of the build PC in what ships. Its checkout and home paths (compilers' __FILE__ and debug
 # strings: -ffile-prefix-map in the builders) and its user's profile, in the runtime and the ELF.
-build_identity=sorted({str(ROOT),str(ROOT).replace('/','\\'),str(pathlib.Path.home())}-{'','/','\\'})
-build_identity_utf16=[s.encode('utf-16-le') for s in build_identity]
 identity_hits=[]
 for path in [app/'eboot.bin',*(p for p in data.rglob('*') if p.is_file())]:
-    blob=path.read_bytes()
-    if any(s.encode() in blob for s in build_identity) or any(s in blob for s in build_identity_utf16):
-        identity_hits.append(str(path.relative_to(work)))
+    if names_build_pc(path.read_bytes()):identity_hits.append(str(path.relative_to(work)))
 if (prefix/'drive_c/users'/host_profiles[0].name).exists():identity_hits.append('host profile folder')
 if identity_hits and not args.allow_build_paths:
     raise SystemExit('build PC paths in %d shipped files (first: %s); rebuild them with -ffile-prefix-map, '
