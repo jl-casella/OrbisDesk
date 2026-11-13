@@ -1055,6 +1055,41 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
         else if (GetEnvironmentVariableW( L"WINE_PS4_GUESTS", mode, ARRAY_SIZE(mode) ) &&
             wcsicmp( name, L"wineboot.exe" ))
         {
+            const WCHAR *ext = wcsrchr( name, '.' );
+
+            /* Batch files (hardware 2026-11-13, NFS Most Wanted's .bat files from the desktop): a batch file runs
+             * through cmd.exe, as CreateProcess does on Windows (Wine's create_cmd_process, which this guest path
+             * never reaches); explorer's ShellExecute hands .bat and .cmd to CreateProcess as executables. cmd.exe
+             * runs as a console guest (W056/W062). */
+            if (ext && (!wcsicmp( ext, L".bat" ) || !wcsicmp( ext, L".cmd" )))
+            {
+                const WCHAR *what = tidy_cmdline ? tidy_cmdline : app_name;
+                SIZE_T length = lstrlenW( what ) + 64;
+                WCHAR *batch = HeapAlloc( GetProcessHeap(), 0, length * sizeof(WCHAR) ), dir[MAX_PATH];
+                const WCHAR *slash = wcsrchr( app_name, '\\\\' );
+                BOOL ok = FALSE;
+
+                if (!cur_dir && slash && slash - app_name < MAX_PATH)
+                {
+                    memcpy( dir, app_name, (slash - app_name) * sizeof(WCHAR) );
+                    dir[slash - app_name] = 0;
+                }
+                else dir[0] = 0;
+                if (batch)
+                {
+                    swprintf( batch, length, L"C:\\\\windows\\\\system32\\\\cmd.exe /s /c \\"%ls\\"", what );
+                    ok = CreateProcessInternalW( token, NULL, batch, process_attr, thread_attr, inherit, flags, env,
+                                                 cur_dir ? cur_dir : dir[0] ? dir : NULL, startup_info, info, NULL );
+                    ERR( "PWOPEN batch image=%s command=%s ok=%d error=%lu\\n", debugstr_w(app_name), debugstr_w(batch), ok,
+                         ok ? 0 : GetLastError() );
+                    HeapFree( GetProcessHeap(), 0, batch );
+                }
+                if (ok)
+                {
+                    status = STATUS_SUCCESS;
+                    goto done;
+                }
+            }
             ERR( "PWOPEN reject_title_replacement image=%s\\n", debugstr_w(app_name) );
             status = STATUS_NOT_SUPPORTED;
             goto done;
