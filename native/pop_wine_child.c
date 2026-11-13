@@ -521,6 +521,45 @@ void __wrap_virtual_set_large_address_space(void){
     __real_virtual_set_large_address_space();
 }
 
+/* Phase D.4a: the title's offscreen Vulkan probe and Wine's Vulkan entry, run on a thread of their own */
+static void *gpu_probe_thread(void *arg){
+    extern void pw_vk_probe(void);
+    extern void pw_vk_runtime_init(void);
+    (void)arg;
+    pw_vk_probe();
+    pw_vk_runtime_init();
+    return NULL;
+}
+
+/* Wine asks only for the codeset (env.c init_unix_codepage), and musl answers from the thread's locale,
+ * which in this PRX is not musl's thread data: the console's names are UTF-8 */
+#include <langinfo.h>
+extern char *__real_nl_langinfo(nl_item item);
+char *__wrap_nl_langinfo(nl_item item);
+char *__wrap_nl_langinfo(nl_item item){
+    if(item == CODESET) return (char *)"UTF-8";
+    return __real_nl_langinfo(item);
+}
+
+/* System modules: Mesa's PS4 layer names them under the application sandbox's random directory
+ * (/<word>/common/lib/...), which exists only inside an application's sandbox; this process runs from the real
+ * root, where they are /system/common/lib/... (hardware 2026-11-12: libSceGnmDriver.sprx 0x80020002) */
+extern int __real_sceKernelLoadStartModule(const char *path, size_t args, const void *argp, uint32_t flags, void *opt, int *res);
+int __wrap_sceKernelLoadStartModule(const char *path, size_t args, const void *argp, uint32_t flags, void *opt, int *res);
+int __wrap_sceKernelLoadStartModule(const char *path, size_t args, const void *argp, uint32_t flags, void *opt, int *res){
+    int handle = __real_sceKernelLoadStartModule(path, args, argp, flags, opt, res);
+    const char *lib = path ? strstr(path, "/common/lib/") : NULL;
+    if(handle < 0 && lib && strncmp(path, "/system/", 8)){
+        char system_path[256];
+        snprintf(system_path, sizeof(system_path), "/system%s", lib);
+        int retry = __real_sceKernelLoadStartModule(system_path, args, argp, flags, opt, res);
+        clog("{\"build\":\"P020\",\"event\":\"module_retry\",\"path\":\"%s\",\"first\":\"0x%08x\",\"system\":\"0x%08x\"}",
+             system_path, (unsigned)handle, (unsigned)retry);
+        return retry;
+    }
+    return handle;
+}
+
 __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, const char *exe, const char *log_path);
 __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, const char *exe, const char *log_path){
     const char *prefix = "/data/wine-prefix";
@@ -552,7 +591,8 @@ __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, con
     else if(pw_wine_fs_drive_mounts(prefix)) rc = 90;
     else if(setenv("WINESERVERSOCKET", fd_text, 1) || setenv("WINE_PS4_EXTERNAL_PREFIX", "1", 1) ||
             setenv("WINEARCH", "wow64", 1) ||
-            setenv("WINE_PS5_DESKTOP", "1280x720", 1) ||   /* the title's desktop size: win32u resizes the shared desktop window to it */
+            setenv("WINE_PS5_DESKTOP", "1280x720", 1) ||
+            setenv("PW_SEPARATE_PROCESS", "1", 1) ||   /* D.4: programs can tell they run in the separate process */   /* the title's desktop size: win32u resizes the shared desktop window to it */
             setenv("WINE_PS4_NTDLL_DIR", "/data/wine/lib/wine/x86_64-unix", 1) ||
             setenv("WINE_PS4_NLS_DIR", "/data/wine/share/wine/nls", 1) ||
             setenv("WINE_PS4_DATA_DIR", "/data/wine/share/wine", 1) ||
@@ -561,13 +601,42 @@ __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, con
     else if(pw_wine_chdir(0, "/data") || pw_wine_chdir(1, prefix) || pw_wine_chdir(0, "/data/orbisdesk")) rc = 92;
     clog("{\"build\":\"P017\",\"event\":\"wine_child_prepared\",\"rc\":%d,\"errno\":%d,\"pagesize\":%ld}", rc, rc ? errno : 0, sysconf(_SC_PAGESIZE));
     if(rc) return rc;
+    /* PoP launcher: PrinceOfPersia.EXE's hardware detection (detectionapi.dll, directx8tests.dll,
+     * directx9tests.dll) creates Direct3D 8/9 objects. This process has no GPU (D.4a: loading GNM here stopped
+     * the console), and without gpu-probe it links no RADV, so DXVK's d3d9 would only fail. Wine's own d3d8/d3d9
+     * answer through wined3d's no3d adapter, which uses neither Vulkan nor OpenGL; the game itself runs in the
+     * title (D.4) with its usual Direct3D */
+    {
+        struct stat no3d;
+        if(stat("/data/orbisdesk/process-p014/gpu-probe", &no3d) != 0 &&
+           (setenv("WINE_D3D_CONFIG", "renderer=no3d", 1) ||
+            setenv("WINEDLLOVERRIDES", "d3d8,d3d9,ddraw,dxgi,d3d10core,d3d11=b", 1))) return 95;
+        clog("{\"build\":\"P022\",\"event\":\"direct3d\",\"no3d\":%d}", stat("/data/orbisdesk/process-p014/gpu-probe", &no3d) != 0);
+    }
     char *fixed_argv[] = {"/data/wine/bin/wine", (char *)exe, NULL};
     char **wine_argv = job_argc ? job_argv : fixed_argv;
     int wine_argc = job_argc ? job_argc : 2;
+    /* Phase D.4a (before the low range is freed: the probe loads system modules, and the module loader reads
+     * the process parameters in the borrowed eboot's data at 0x478000; hardware 2026-11-12 faulted there):
+     * can this process drive the GPU? The title's offscreen Vulkan probe (native/vk_probe/main.c,
+     * PW_VK_IN_WINE: RADV on GNM, device, 300 frames without VideoOut), its PWVK lines in this log; then Wine's
+     * Vulkan entry as in the title. Only when POP_SEP_DIR/gpu-probe exists. */
+    {
+        struct stat gp;
+        if(stat("/data/orbisdesk/process-p014/gpu-probe", &gp) == 0){
+            /* on its own thread: Mesa changes per-thread state (its locale), and in this PRX the thread pointer
+             * is not musl's; hardware 2026-11-12: Wine's main thread then faulted in nl_langinfo */
+            pthread_t probe_thread;
+            clog("{\"build\":\"P020\",\"event\":\"gpu_probe_start\"}");
+            int created = pthread_create(&probe_thread, NULL, gpu_probe_thread, NULL);
+            if(!created) pthread_join(probe_thread, NULL);
+            clog("{\"build\":\"P020\",\"event\":\"gpu_probe_end\",\"thread\":%d}", created);
+        }
     free_low_image_range();
     file_mmap_check();
     protection_check();
     if(job_argc) job_prepare(exe);
+    }
     clog("{\"build\":\"P017\",\"event\":\"wine_main\",\"argc\":%d}", wine_argc);
     __wine_main(wine_argc, wine_argv);
     clog("{\"build\":\"P017\",\"event\":\"wine_main_returned\"}");

@@ -86,6 +86,9 @@ void *pw_wine_layer_alloc(size_t bytes){ return calloc(1, bytes ? bytes : 1); }
 int pw_wine_layer_free(void *pixels){ free(pixels); return 1; }
 int pw_wine_next_input(struct PwWineInput *event){ (void)event; return 0; }
 int pw_wine_input_fd(void){ return -1; }
+/* the Vulkan runtime reports a program's frame rate to the title's HUD through the sink; this process draws no HUD */
+void pw_wine_vk_fps(unsigned tenths);
+void pw_wine_vk_fps(unsigned tenths){ (void)tenths; }
 
 int pw_wine_present_layers(const struct pw_wine_layer *stack, unsigned int count, unsigned int width, unsigned int height){
     (void)width; (void)height;

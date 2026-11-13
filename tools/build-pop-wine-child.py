@@ -43,9 +43,9 @@ def build_wine_prx():
     flags = json.loads((ROOT / 'build/wine-boot/link-report.json').read_text())['helper_compile_flags']
     drop = {HW + 'wine_hardware.o', HW + 'hw_pad.o', HW + 'hw_overlay.o', 'build/steam-hosted/steam_client_hosted.o',
             HW + 'wine_boot_entry.o', 'build/wine-boot/wine_boot_services.o', '.deps/sdk/OpenOrbis/PS4Toolchain/lib/crt1.o',
-            HW + 'vk_probe.o', HW + 'wine_vk_runtime.o', HW + 'hw_sink_gpu.o', HW + 'libc++-vk.a', HW + 'libc++abi-vk.a'}
+            HW + 'hw_sink_gpu.o'}   # D.4: RADV, its probe and runtime and libc++ stay; the VideoOut sink does not
     title_wraps = {'--wrap=' + n for n in ('exit', '_exit', 'sceKernelDebugOutText', 'write', 'vfprintf', 'fprintf', 'fputs', 'fwrite')}
-    out, skip_archive, i = [], False, 0
+    out, i = [], 0
     while i < len(command):
         arg = command[i]
         rel = arg.replace(str(ROOT) + '/', '')
@@ -63,11 +63,7 @@ def build_wine_prx():
                 text = text.replace(old, new)
             (WORK / 'link.x').write_text(text)
             out += ['--script', str(WORK / 'link.x')]; i += 2; continue
-        if arg == '--whole-archive':
-            skip_archive = True; i += 1; continue
-        if arg == '--no-whole-archive':
-            skip_archive = False; i += 1; continue
-        if skip_archive or rel in drop or arg in title_wraps or rel.endswith('/libz.a'):
+        if rel in drop or arg in title_wraps:
             i += 1; continue
         if rel == HW + 'sink.o':
             out.append(str(WORK / 'pop_child_sink.o')); i += 1; continue
@@ -75,13 +71,14 @@ def build_wine_prx():
     objects = []
     for source, obj in (('native/pop_child_sink.c', 'pop_child_sink.o'), ('native/pop_wine_child.c', 'pop_wine_child.o'),
                         ('native/pop_wine_child_stubs.c', 'pop_wine_child_stubs.o')):
-        run([*flags, '-I' + str(ROOT / 'native'), '-c', ROOT / source, '-o', WORK / obj])
+        run([*flags, '-DPOP_CHILD_GPU', '-I' + str(ROOT / 'native'), '-c', ROOT / source, '-o', WORK / obj])
         if obj != 'pop_child_sink.o':
             objects.append(str(WORK / obj))
     # musl's aligned allocators come in strongly through Mesa/libc++ in the title; here nothing else asks for them
     wraps = ['exit', 'sceKernelDebugOutText', '__assert_fail', 'mmap', 'pread', 'mprotect', 'munmap', 'fstat',
              'sceKernelMapFlexibleMemory', 'sceKernelMapDirectMemory', 'pw_wine_poll',
-             'virtual_map_user_shared_data', 'virtual_set_large_address_space']
+             'virtual_map_user_shared_data', 'virtual_set_large_address_space', 'nl_langinfo', 'sceKernelLoadStartModule',
+             'NtCreateUserProcess', 'NtQueryInformationProcess']   # D.5: CreateProcess returns (pop_wine_child_stubs.c)
     out[1:1] = ['-u', 'aligned_alloc', '-u', '__memalign', '-u', 'memalign', '-u', 'posix_memalign',
                 '--export-dynamic-symbol=pop_wine_child_run', '--export-dynamic-symbol=pop_wine_child_run_job',
                 *('--wrap=' + w for w in wraps), *objects]
@@ -118,7 +115,8 @@ def build_fixtures():
     jobs = (('x86_64-w64-mingw32-gcc', [*fixed], 'separate_d1.c', 'separate_d1.exe'),
             ('x86_64-w64-mingw32-gcc', ['-mwindows'], 'separate_d2.c', 'separate_d2.exe'),
             ('i686-w64-mingw32-gcc', [*fixed], 'separate_pair.c', 'separate_launcher.exe'),
-            ('i686-w64-mingw32-gcc', [*fixed, '-mwindows', '-DSEPARATE_GAME'], 'separate_pair.c', 'separate_game.exe'))
+            ('i686-w64-mingw32-gcc', [*fixed, '-mwindows', '-DSEPARATE_GAME'], 'separate_pair.c', 'separate_game.exe'),
+            ('i686-w64-mingw32-gcc', [*fixed, '-DSEPARATE_INVERSE'], 'separate_pair.c', 'separate_inverse.exe'))
     for compiler, extra, source, exe in jobs:
         run([compiler, *common, *extra, '-o', WORK / exe, ROOT / 'fixtures/win32' / source])
 
@@ -130,7 +128,7 @@ def main():
     build_child()
     build_fixtures()
     outputs = ['pop-wine-child.prx', 'pop-prx-probe.prx', 'pop-wine-join.elf', 'separate_d1.exe', 'separate_d2.exe',
-               'separate_launcher.exe', 'separate_game.exe']
+               'separate_launcher.exe', 'separate_game.exe', 'separate_inverse.exe']
     inputs = ['native/pop_wine_child.c', 'native/pop_child_sink.c', 'native/pop_wine_child_stubs.c', 'native/pop_prx_probe.c',
               'native/process_p014_child.c', 'native/pop_separate.h', 'native/pop_wine_join_core.h', 'native/pop_wine_proto.h',
               'native/pop_separate_window.h', 'fixtures/win32/separate_d1.c', 'fixtures/win32/separate_d2.c',

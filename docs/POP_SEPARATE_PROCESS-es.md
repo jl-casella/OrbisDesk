@@ -6,7 +6,7 @@ OrbisDesk corre todos los programas de Windows dentro de un único proceso del t
 
 El sustrato de investigación (fase A, el loader de GoldHEN y su arreglo del planificador) está en [Sondas de familias de procesos](PROCESS_FAMILY_PROBES-es.md). OrbisDesk apunta a consolas con GoldHEN, así que el loader residente es un requisito declarado y no un bloqueo. Igual hay que reenviarlo después de cada reinicio de la consola.
 
-## Qué funciona en hardware (PS4 Pro, 12.50, arranque ROOT, 2026-11-12)
+## Qué funciona en hardware (PS4 Pro, 12.50/12.52, arranque ROOT, 2026-11-12 y 13)
 
 | Fase | Resultado | Evidencia (`reports/pop-phase-b/physical/`) |
 | --- | --- | --- |
@@ -15,8 +15,14 @@ El sustrato de investigación (fase A, el loader de GoldHEN y su arreglo del pla
 | D.1 | Wine corre en ese proceso. Un programa de consola PE64 enlazado en `0x400000` carga ahí sin reubicarse y sale con 42. Tres arranques seguidos del título son estables | `20261112T130124Z` |
 | D.2 | La ventana de un programa GDI aparece en el escritorio. Recibe clicks, teclas y arrastre, y el escritorio sigue abierto cuando el programa termina | `20261112T132927Z` |
 | D.3 | `separate_launcher.exe` corre dentro del título en `0x400000`. Llama a `CreateProcess` sobre `separate_game.exe`, marcado separado y también enlazado en `0x400000`, y el juego corre en el segundo proceso. El launcher recibe handles reales y el código de salida 44 del juego. El juego recibe 8 clicks y 11 teclas | `20261112T141146Z`, `20261112T150746Z` |
+| D.4a | La sonda Vulkan del título, corrida en el proceso separado, carga `libSceGnmDriver.sprx` desde `/system/common/lib` y después la consola se detiene con *Fatal trap 9: general protection fault while in kernel mode*. El proceso separado no puede usar la GPU | `20261112T154040Z`, `20261112T154358Z`, `20261112T155318Z` |
+| D.4 | Ruta inversa: `separate_inverse.exe` corre en el proceso separado en `0x400000`. Su `CreateProcess` sobre `separate_game.exe`, también en `0x400000`, se le pasa al título, y el juego corre ahí como invitado de 32 bits, con entrada y salida limpia | `20261112T194224Z` |
+| D.4b | El launcher separado se queda dentro de `CreateProcess` hasta que el juego termina, como tiene que hacer el launcher de Prince of Persia por `PrinceSM`. El juego recibe el argumento del launcher (`argc` 2) por msvcrt. El título responde *started* y después *ended* | `20261112T232400Z` |
+| D.5 | El propio launcher de Prince of Persia corre separado y `POP.exe` corre en el título con la GPU. El `CreateProcess` del launcher vuelve enseguida, así que pasa su control de arranque de 25 segundos, y lee el código de salida real del juego cuando el juego termina | `20261113T132532Z`, `20261113T142613Z` |
+| D.6 | Sin modo de ejecución elegido, los launchers de Prince of Persia y Worms 3D arrancan como invitados, chocan con la base ocupada y pasan solos a un proceso separado. Los objetos con nombre de la copia invitada (`POP_Launcher`) se cierran, y el launcher reiniciado corre el juego | `20261113T152940Z`, `20261113T155813Z` |
+| Pantalla completa | `POP.exe` (DXVK, una ventana siempre arriba) pone 800x600 y se muestra a pantalla completa, escalado a la salida | `20261113T174954Z` |
 
-Estos resultados cubren solo las configuraciones nombradas acá. No prueban compatibilidad general de aplicaciones. El proceso separado no tiene GPU propia (ver *Límites*).
+Estos resultados cubren solo las configuraciones nombradas acá. No prueban compatibilidad general de aplicaciones. El proceso separado no tiene GPU propia, así que un juego que dibuja corre en el título y solo su launcher corre separado (ver *La ruta inversa* y *Límites*).
 
 ## Cómo fluye un lanzamiento
 
@@ -25,6 +31,38 @@ Estos resultados cubren solo las configuraciones nombradas acá. No prueban comp
 3. **Hijo del payload SDK.** `native/process_p014_child.c` adopta el uid del título y carga `pop-wine-child.prx` con `dlopen`, así el linker del sistema resuelve sus imports, el TLS y los inicializadores. Se conecta al socket puente del título y llama a `pop_wine_child_run_job`.
 4. **PRX de Wine.** `native/pop_wine_child.c` pone en `WINESERVERSOCKET` el descriptor del puente y llama a `__wine_main`. Así ntdll se une al servidor del título en vez de iniciar uno. Ya unido, el proceso escribe `pid tid` bajo el token, y kernelbase abre handles reales de proceso y de hilo para quien lo llamó.
 5. **Pantalla.** El driver de win32u del hijo le pasa su pila de ventanas a `native/pop_child_sink.c`, que nunca abre VideoOut. El sink manda la ventana de arriba y su handle por `surface.sock`. El título compone el cuadro en el rectángulo de la ventana. Un puntero sobre ese rectángulo se entrega a esa ventana por su handle (`pw_hw_separate_window`, `tools/build-win32u-ps4.py`).
+
+## La ruta inversa (D.4)
+
+La GPU es del título (D.4a). Para un launcher y un juego que necesitan los dos `0x400000`, el launcher se marca **Separate processes** y el juego queda como invitado normal.
+
+1. El usuario abre el launcher. kernelbase lo inicia en el proceso separado, como en los pasos de arriba.
+2. En el proceso separado, el `CreateProcess` del launcher llega a `pw_hw_switch_program` (`native/pop_wine_child_stubs.c`). Escribe `/data/orbisdesk/process-p014/title-launch` con la imagen, la línea de comandos, el directorio y un token.
+3. El vigía de explorer (`tools/patch-explorer-open.py`) lee el archivo cada 500 ms. Manda `PW_SHELL_LAUNCH_MESSAGE` a la ventana del escritorio, que llama a `CreateProcessW` en el título. Una imagen de 32 bits pasa a ser invitada del mundo de 32 bits de explorer en su propia base.
+4. Explorer crea el evento con nombre `Global\PWTitleLaunch_<token>` y escribe `title-launch-reply`: `<token> started <pid>`, o `<token> failed <error>`. Después de *started*, un hilo espera los handles de proceso y de hilo principal del invitado, escribe `<token> ended <código de salida>` y señala el evento. El handle de proceso de un invitado de 32 bits es el del título, que nunca se señala, así que el que termina es su hilo principal, y el código de salida es el de ese hilo.
+5. **D.5.** En el proceso separado, `CreateProcess` vuelve enseguida (`__wrap_NtCreateUserProcess`, `native/pop_wine_child_stubs.c`). Sus handles de proceso y de hilo son ese evento con nombre, como los handles de proceso de los invitados del título son sus eventos de fin (W267). `NtQueryInformationProcess` responde `STILL_ACTIVE` y después el código de salida de la respuesta. Una espera sobre el handle termina cuando termina el juego. El launcher de Prince of Persia señala un evento después de que vuelve `CreateProcess` y lo espera 25 s; con el `CreateProcess` bloqueante de D.4b decía que no se podía iniciar el juego. Los objetos con nombre que el launcher mantiene, como `PrinceSM`, viven mientras espera. Con *failed* el `CreateProcess` del launcher falla. No se reenvían: `TerminateProcess` sobre ese handle (falla) ni los ids de proceso y de hilo (0). Frente a un título sin el evento con nombre, el proceso separado vuelve a D.4b: el hilo que llamó espera *ended* y después el proceso sale.
+
+El protocolo está en `platform/ps4/pw_shell_open.h`.
+
+## Sin una elección en winecfg (D.6)
+
+Un invitado de 32 bits que inicia otro programa de 32 bits que necesita la base que él ocupa (error 487) recibía el aviso de reiniciar OrbisDesk con ese programa solo. Ahora, cuando ese iniciador no tiene modo de ejecución elegido, kernelbase primero escribe `AppDefaults\<exe>\OrbisExecutionMode=separate` para él, como hace **Separate processes** en winecfg. Después vuelve a iniciar al iniciador en un proceso separado y termina la copia invitada. La ventana del launcher se abre de nuevo, el usuario elige Jugar otra vez, y desde entonces el launcher abre separado. Si el inicio separado falla (por ejemplo, sin loader residente), el valor se borra y sigue el aviso. Un iniciador que sea un juego y no un launcher también se movería, y entonces no tiene GPU; en ese caso hay que ponerlo como invitado en winecfg.
+
+Un invitado que termina ahora también cierra los mutex y eventos con nombre que su propio código creó con `CreateMutexA/W` y `CreateEventA/W`, como ya cerraba sus archivos (W206). Sin eso, el launcher de Prince of Persia reiniciado encontraba el `POP_Launcher` de la copia invitada y decía que el juego estaba corriendo. No se siguen los semáforos, las variantes `...Ex` ni `OpenMutex`/`OpenEvent`.
+
+## Direct3D en el proceso separado
+
+Los launchers suelen probar la tarjeta gráfica. El de Prince of Persia corre la detección de Ubisoft (`detectionapi.dll`, `directx8tests.dll`, `directx9tests.dll`). En el proceso separado, Direct3D 8/9 usan el adaptador `no3d` de wined3d: `WINE_D3D_CONFIG=renderer=no3d` y d3d8, d3d9, ddraw, dxgi, d3d10core y d3d11 builtin (`native/pop_wine_child.c`). Ese adaptador responde sin la GPU. `/data/orbisdesk/process-p014/gpu-probe` lo desactiva.
+
+La detección ve entonces un adaptador sin formatos. El launcher de Prince of Persia lo escribe en `Hardware.ini`, y `POP.exe` se detiene con *Unable to find a display mode*. Un `Hardware.ini` con valores reales, de solo lectura, lo evita hasta que la detección pueda ver la GPU del título.
+
+## Terminar un juego desde el overlay
+
+Un juego terminado con Salir del overlay no suelta sus dispositivos de DirectInput. El hilo de dinput es de todo el proceso en explorer (W281). Su hook de bajo nivel y su lectura del mando cada 8 ms dejaban el control en modo juego, y el escritorio parecía congelado. El hilo ahora suelta, cada 500 ms, los dispositivos cuya ventana cooperativa ya no existe (`tools/build-dinput-hw.py`, `PWINPUT ... released`).
+
+## El modo de pantalla de un juego
+
+win32u guarda el último modo de pantalla que un juego puso por debajo del tamaño del escritorio (`pw_mode_set_width/height`, `tools/build-win32u-ps4.py`). La ventana visible más alta que cubre ese modo desde 0,0, con a lo sumo 64 píxeles más de marco, se muestra a pantalla completa y escalada, incluidas las ventanas siempre arriba. Para la ventana DXVK de Prince of Persia, el rectángulo del monitor que leía el driver quedaba en 1280x720 y la ventana de su launcher estaba encima del juego, así que la regla de W248 no se aplicaba (`PWSINK fullscreen on ... 800x600 of 1280x720`).
 
 ## Qué necesitó el PRX de Wine en esta consola
 
@@ -54,10 +92,14 @@ Acá importan dos comportamientos del FTP de GoldHEN. Sobrescribir un PRX en su 
 
 ## Límites
 
-- **Todavía sin Direct3D.** RADV/GNM y VideoOut son del título. Un programa Direct3D o Vulkan en el proceso separado no puede dibujar. Por eso Prince of Persia todavía necesita un camino de gráficos: acceso a la GPU en el segundo proceso, o cuadros enviados al título.
+- **Sin GPU en el proceso separado.** RADV/GNM y VideoOut son del título, y cargar el driver GNM en el segundo proceso hizo fallar al kernel (D.4a). Un programa Direct3D, OpenGL o Vulkan no puede dibujar ahí. Los programas que dibujan usan la ruta inversa: corren en el título. Direct3D 8/9 responden con el adaptador `no3d` de wined3d, así que la detección de hardware de un launcher no ve formatos.
+- **Sin loader.** Sin el loader residente, un inicio separado espera 30 s en quien lo llamó, y el hilo del escritorio espera con él.
+- **Proceso separado sobrante.** Después de una sesión cerrada con un launcher separado abierto, el arranque siguiente se colgó al conectarse a su wineserver hasta que se reinició la consola (2026-11-13). La causa no se confirmó.
+- **OpenGL de 32 bits es opcional.** En el mundo de 32 bits de explorer, el `opengl32` builtin de Wine no tiene driver. En D.4b, `ChoosePixelFormat` devolvió 0 con error 203. Mesa i386 se usa solo si existe `C:\orbis\opengl32native.txt` (W264). Los juegos Direct3D 8/9 usan DXVK o wined3d.
+- **Mundo de 32 bits tardío.** En una sesión que ya había corrido MangoJuice, un juego Unity y WFM, el primer invitado de 32 bits se detuvo con `c0000005` antes de que se revisara su imagen. La misma prueba en una sesión recién abierta funcionó (`20261112T232131Z`, después `20261112T232400Z`). Todavía no se reprodujo.
 - **Una ventana, siempre arriba.** Solo se muestra la ventana de arriba del proceso separado, y se dibuja sobre todas las del título. No se manejan el orden respecto del título, varias ventanas ni las formas del cursor.
 - **Cursor viejo en el hijo.** Dentro del proceso separado, `GetCursorPos` puede devolver un punto viejo. Eso afecta a menús y arrastres que maneja el propio programa.
 - **Señales y suspensión.** El servidor no puede enviar señales a los hilos de un proceso separado ni suspenderlos (`pw_wine_thread_kill` solo alcanza los hilos del propio título).
 - **Loader de GoldHEN.** Hay que reenviar el loader residente después de cada reinicio de la consola.
 
-La historia de desarrollo está en los comentarios junto a cada cambio y en `native/pop_separate.h` (`P014`–`P019`).
+La historia de desarrollo está en los comentarios junto a cada cambio y en `native/pop_separate.h` (`P014`–`P021`).
