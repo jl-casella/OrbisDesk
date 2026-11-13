@@ -85,6 +85,8 @@ static inline struct ps4_guest *ps4_guest_or_loading(void)
 /* W206: kernelbase process.c; CreateFileW and CloseHandle of a guest thread */
 void ps4_guest_file_opened( HANDLE handle, void *caller );
 void ps4_guest_file_closing( HANDLE handle );
+/* PoP D.6: kernelbase process.c; CreateMutexA/W and CreateEventA/W of a guest thread */
+void ps4_guest_object_made( HANDLE handle, void *caller );
 /* W208: kernelbase process.c; VirtualAlloc and VirtualFree of a guest thread */
 void ps4_guest_memory_reserved( void *base, void *caller );
 void ps4_guest_memory_released( void *base );
@@ -183,7 +185,7 @@ revise('ntdll','loader','''static void free_modref( WINE_MODREF *wm )
 # programs had no console. A guest's threads get argc/argv/wargv built from the guest's
 # command line (GetCommandLineW answers for the guest), once per guest.
 revise('ucrtbase','data','#include "msvcrt.h"\n','#include "msvcrt.h"\n#include <winternl.h>\n','TEB access.','dlls/msvcrt/data.c')
-revise('ucrtbase','data','''int* CDECL __p___argc(void) { return &MSVCRT___argc; }''','''/* PS4 hardware build (W057): the arguments of a guest program (kernelbase ps4_guest),
+GUEST_ARGS_C='''/* PS4 hardware build (W057): the arguments of a guest program (kernelbase ps4_guest),
  * whose threads carry it in TEB.UserReserved */
 static struct { void *guest; int argc; wchar_t **wargv; char **argv; } guest_args[32];
 static RTL_SRWLOCK guest_args_lock = RTL_SRWLOCK_INIT;
@@ -209,14 +211,34 @@ static int guest_slot(void)
     return slot;
 }
 
-int* CDECL __p___argc(void) { int slot = guest_slot(); return slot < 0 ? &MSVCRT___argc : &guest_args[slot].argc; }''',
-       "A guest's argc.",'dlls/msvcrt/data.c')
+int* CDECL __p___argc(void) { int slot = guest_slot(); return slot < 0 ? &MSVCRT___argc : &guest_args[slot].argc; }'''
+revise('ucrtbase','data','''int* CDECL __p___argc(void) { return &MSVCRT___argc; }''',GUEST_ARGS_C,"A guest's argc.",'dlls/msvcrt/data.c')
 revise('ucrtbase','data','''char*** CDECL __p___argv(void) { return &MSVCRT___argv; }''',
        '''char*** CDECL __p___argv(void) { int slot = guest_slot(); return slot < 0 ? &MSVCRT___argv : &guest_args[slot].argv; }''',
        "A guest's argv.",'dlls/msvcrt/data.c')
 revise('ucrtbase','data','''wchar_t*** CDECL __p___wargv(void) { return &MSVCRT___wargv; }''',
        '''wchar_t*** CDECL __p___wargv(void) { int slot = guest_slot(); return slot < 0 ? &MSVCRT___wargv : &guest_args[slot].wargv; }''',
        "A guest's wargv.",'dlls/msvcrt/data.c')
+# PoP D.4 (run-0061: separate_game.exe, a mingw program a separate process started in the title, had argc 1 although
+# Explorer passed its argument): msvcrt.dll's __getmainargs and __wgetmainargs answered with the process's own
+# arguments, the title's. msvcrt gets ucrtbase's per-guest arguments (W057) in both views; a guest's arguments
+# are not wildcard-expanded.
+revise('msvcrt','data','#include "msvcrt.h"\n','#include "msvcrt.h"\n#include <winternl.h>\n','TEB access.')
+revise('msvcrt','data','''int* CDECL __p___argc(void) { return &MSVCRT___argc; }''',GUEST_ARGS_C,"A guest's argc (msvcrt).")
+revise('msvcrt','data','''char*** CDECL __p___argv(void) { return &MSVCRT___argv; }''',
+       '''char*** CDECL __p___argv(void) { int slot = guest_slot(); return slot < 0 ? &MSVCRT___argv : &guest_args[slot].argv; }''',
+       "A guest's argv (msvcrt).")
+revise('msvcrt','data','''wchar_t*** CDECL __p___wargv(void) { return &MSVCRT___wargv; }''',
+       '''wchar_t*** CDECL __p___wargv(void) { int slot = guest_slot(); return slot < 0 ? &MSVCRT___wargv : &guest_args[slot].wargv; }''',
+       "A guest's wargv (msvcrt).")
+for _kind in ('wargv', 'argv'):
+    revise('msvcrt','data','''    *argc = MSVCRT___argc;
+    *%s = MSVCRT___%s;''' % (_kind, _kind),'''    *argc = MSVCRT___argc;
+    *%s = MSVCRT___%s;
+    {
+        int slot = guest_slot();  /* PoP D.4: a guest's own arguments */
+        if (slot >= 0) { *argc = guest_args[slot].argc; *%s = guest_args[slot].%s; }
+    }''' % (_kind, _kind, _kind, _kind),"__%sgetmainargs answers with a guest's arguments (PoP D.4)." % ('w' if _kind == 'wargv' else ''))
 
 # kernelbase: the guest's own answers.
 revise('kernelbase','loader','#include "kernelbase.h"','#include "kernelbase.h"\n#include "ps4_guest.h"','Guest state.')
@@ -600,6 +622,78 @@ static void ps4_guest_unload( struct ps4_guest *guest )
             {
                 ERR( "PS4 guest module %p: class %s still has windows\\n", guest->module, debugstr_w(name) );
                 in_use++;
+            }
+        }
+        /* d14 (run-0077: with GIO unloaded, MangoJuice's second start got past g_object_new, then GDK aborted
+         * with status 3): GDK registers its classes under libgtk's instance, which the pass above does not
+         * visit, and libgtk is unloaded with the EXE below; its classes stayed registered and the next start's
+         * RegisterClassExW failed. The modules of the guest's own folder loaded after its start are visited
+         * here, while still loaded: a class registered under one of them whose procedure is in the guest's own
+         * code (them or its image) ends with it */
+        {
+            LDR_DATA_TABLE_ENTRY *self;
+            WCHAR dir[MAX_PATH], *slash;
+            void *bases[256];
+            SIZE_T sizes[256];
+            UINT count = 0, j, k;
+            ULONG_PTR magic;
+
+            dir[0] = 0;
+            if (!LdrFindEntryForAddress( guest->module, &self ) && self->FullDllName.Buffer)
+            {
+                lstrcpynW( dir, self->FullDllName.Buffer, MAX_PATH );
+                if ((slash = wcsrchr( dir, '\\\\' ))) slash[1] = 0;
+                else dir[0] = 0;
+            }
+            if (dir[0] && !LdrLockLoaderLock( 0, NULL, &magic ))
+            {
+                LIST_ENTRY *list = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList, *entry;
+
+                for (entry = list->Flink; entry != list && count < ARRAY_SIZE(bases); entry = entry->Flink)
+                {
+                    LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
+
+                    if (mod->DllBase == (void *)guest->module || !mod->FullDllName.Buffer ||
+                        wcsnicmp( mod->FullDllName.Buffer, dir, wcslen( dir ) )) continue;
+                    for (j = 0; j < guest->modules_before_count; j++)
+                        if ((void *)guest->modules_before[j] == mod->DllBase) break;
+                    if (j < guest->modules_before_count) continue;
+                    bases[count] = mod->DllBase;
+                    sizes[count++] = mod->SizeOfImage;
+                }
+                LdrUnlockLoaderLock( 0, magic );
+            }
+            for (atom = 0xc000, unused = 0; count && atom <= 0xffff && unused < 256; atom++)
+            {
+                if (!atom_name( atom, name, ARRAY_SIZE(name) )) { unused++; continue; }
+                unused = 0;
+                for (k = 0; k < count; k++)
+                {
+                    BOOL ours;
+
+                    info.size = sizeof(info);
+                    if (!class_info( (HINSTANCE)bases[k], (const WCHAR *)(ULONG_PTR)atom, &info )) continue;
+                    if (((ULONG_PTR)info.proc >> 16) == 0xffff)
+                    {
+                        info.size = sizeof(info);
+                        if (!class_infoA( (HINSTANCE)bases[k], (const char *)(ULONG_PTR)atom, &info )) continue;
+                    }
+                    ours = (char *)info.proc >= image && (char *)info.proc < image_end;
+                    for (j = 0; !ours && j < count; j++)
+                        ours = (char *)info.proc >= (char *)bases[j] && (char *)info.proc < (char *)bases[j] + sizes[j];
+                    if (!ours) continue;
+                    if (unregister( (const WCHAR *)(ULONG_PTR)atom, (HINSTANCE)bases[k] ))
+                    {
+                        ERR( "PWGUEST class %s of module %p unregistered\\n", debugstr_w(name), bases[k] );
+                        unregistered++;
+                    }
+                    else
+                    {
+                        ERR( "PWGUEST class %s of module %p kept (error %lu)\\n", debugstr_w(name), bases[k], GetLastError() );
+                        in_use++;
+                    }
+                    break;
+                }
             }
         }
         ERR( "PS4 guest module %p unloads, %u window classes unregistered, %u still in use, %u of other modules kept\\n",
@@ -1041,6 +1135,56 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
         ERR( "PWWOW guest32 base_taken relaunch image=%s cmd=%s dir=%s\\n", debugstr_w(app_name),
              debugstr_w(tidy_cmdline), debugstr_w(cur_dir) );
         SetLastError( saved );
+        /* PoP D.6 (Worms 3D's and Prince of Persia's launchers, user feedback 2026-11-13): before the relaunch
+         * prompt, the starter that holds the base moves to a separate process (docs/POP_SEPARATE_PROCESS.md); started
+         * there, it hands its program to this title (D.4, D.5), where the base is then free. The choice is kept in
+         * AppDefaults, as winecfg's "Procesos separados" writes it, and the starter here ends: the separate one opens
+         * its window again. Only for a starter with no execution mode chosen; when the separate start fails, the
+         * value is removed and the prompt follows. */
+        {
+            struct ps4_guest *starter = ps4_guest_current();
+            LDR_DATA_TABLE_ENTRY *mod;
+            WCHAR starter_path[MAX_PATH], starter_dir[MAX_PATH], starter_cmd[MAX_PATH + 2], key[MAX_PATH + 64];
+            WCHAR *starter_base;
+            STARTUPINFOW si = {sizeof(si)};
+            PROCESS_INFORMATION pi;
+            HKEY hkey;
+
+            starter_path[0] = 0;
+            if (starter && starter->module && !LdrFindEntryForAddress( starter->module, &mod ) && mod->FullDllName.Buffer &&
+                mod->FullDllName.Length / sizeof(WCHAR) < MAX_PATH)
+            {
+                memcpy( starter_path, mod->FullDllName.Buffer, mod->FullDllName.Length );
+                starter_path[mod->FullDllName.Length / sizeof(WCHAR)] = 0;
+            }
+            starter_base = starter_path[0] ? wcsrchr( starter_path, '\\\\' ) : NULL;
+            if (starter_base && ps4_execution_mode( starter_path ) == PW_EXEC_AUTO &&
+                (size_t)(starter_base - starter_path) < MAX_PATH)
+            {
+                memcpy( starter_dir, starter_path, (starter_base - starter_path) * sizeof(WCHAR) );
+                starter_dir[starter_base - starter_path] = 0;
+                swprintf( key, ARRAY_SIZE(key), L"Software\\\\Wine\\\\AppDefaults\\\\%ls", starter_base + 1 );
+                swprintf( starter_cmd, ARRAY_SIZE(starter_cmd), L"\\"%ls\\"", starter_path );
+                if (!RegCreateKeyExW( HKEY_CURRENT_USER, key, 0, NULL, 0, KEY_SET_VALUE, NULL, &hkey, NULL ))
+                {
+                    BOOL moved;
+
+                    RegSetValueExW( hkey, L"OrbisExecutionMode", 0, REG_SZ, (const BYTE *)L"separate", sizeof(L"separate") );
+                    moved = CreateProcessW( starter_path, starter_cmd, NULL, NULL, FALSE, 0, NULL, starter_dir, &si, &pi );
+                    ERR( "PWSEP base_taken starter=%s to_separate=%d error=%lu image=%s\\n", debugstr_w(starter_path), moved,
+                         moved ? 0 : GetLastError(), debugstr_w(app_name) );
+                    if (!moved) RegDeleteValueW( hkey, L"OrbisExecutionMode" );
+                    RegCloseKey( hkey );
+                    if (moved)
+                    {
+                        CloseHandle( pi.hThread );
+                        CloseHandle( pi.hProcess );
+                        RtlExitUserProcess( 0 );   /* this guest alone ends (W196), as ExitProcess */
+                    }
+                    SetLastError( saved );
+                }
+            }
+        }
     }
     else
     {
@@ -1207,6 +1351,15 @@ revise('ucrtbase','exit','''  register_onexit_function(&MSVCRT_atexit_table, fun
 # W206 (W205: Pale Moon's profile lock stayed open after it ended, and the next start quit): the
 # files a guest opened from its own code are closed when it exits, as the end of its process would.
 revise('kernelbase','file','#include "kernelbase.h"','#include "kernelbase.h"\n#include "ps4_guest.h"','Guest state.')
+# PoP D.6: a guest's named mutexes and events, closed when it exits (ps4_guest_close_files)
+revise('kernelbase','sync','#include "kernelbase.h"','#include "kernelbase.h"\n#include "ps4_guest.h"','Guest state.')
+for name, inner, args in (('CreateEventA', 'CreateEventExA', 'sa, name, flags, EVENT_ALL_ACCESS'),
+                          ('CreateEventW', 'CreateEventExW', 'sa, name, flags, EVENT_ALL_ACCESS'),
+                          ('CreateMutexA', 'CreateMutexExA', 'sa, name, owner ? CREATE_MUTEX_INITIAL_OWNER : 0, MUTEX_ALL_ACCESS'),
+                          ('CreateMutexW', 'CreateMutexExW', 'sa, name, owner ? CREATE_MUTEX_INITIAL_OWNER : 0, MUTEX_ALL_ACCESS')):
+    revise('kernelbase','sync','    return %s( %s );\n}' % (inner, args),
+           '    HANDLE ret = %s( %s );\n\n    if (name && ps4_guest_current()) ps4_guest_object_made( ret, __builtin_return_address( 0 ) );  /* PoP D.6 */\n    return ret;\n}' % (inner, args),
+           'Record the named objects a guest makes (%s).' % name)
 revise('kernelbase','file','''    TRACE("returning %p\\n", ret);
     return ret;
 }''','''    /* W206: closed when the guest exits (ps4_guest_unload) */
@@ -1259,13 +1412,53 @@ static BOOL ps4_guest_file_index( HANDLE handle, LONGLONG *index )
     return TRUE;
 }
 
+/* PoP D.6 (Prince of Persia's launcher, ended here and started again in a separate process, found its
+ * POP_Launcher mutex still there and said the game was running): a guest's named mutexes and events are closed
+ * when it exits too. Known by the hash of their name; the bit 62 tells them from a file index. */
+#define PS4_GUEST_OBJECT_INDEX (1LL << 62)
+static BOOL ps4_guest_object_index( HANDLE handle, LONGLONG *index )
+{
+    char buffer[sizeof(OBJECT_NAME_INFORMATION) + MAX_PATH * sizeof(WCHAR)];
+    OBJECT_NAME_INFORMATION *info = (OBJECT_NAME_INFORMATION *)buffer;
+    ULONGLONG hash = 0xcbf29ce484222325ULL;
+    ULONG i, length;
+
+    if (NtQueryObject( handle, ObjectNameInformation, info, sizeof(buffer), NULL ) || !info->Name.Length) return FALSE;
+    for (i = 0, length = info->Name.Length / sizeof(WCHAR); i < length; i++)
+    {
+        hash ^= info->Name.Buffer[i];
+        hash *= 0x100000001b3ULL;
+    }
+    *index = (LONGLONG)(hash & (PS4_GUEST_OBJECT_INDEX - 1)) | PS4_GUEST_OBJECT_INDEX;
+    return TRUE;
+}
+
+static void ps4_guest_handle_add( struct ps4_guest *guest, HANDLE handle, LONGLONG index );
+
+void ps4_guest_object_made( HANDLE handle, void *caller )
+{
+    struct ps4_guest *guest = ps4_guest_current();
+    DWORD error = GetLastError();  /* ERROR_ALREADY_EXISTS stays for the caller */
+    LONGLONG index;
+
+    if (handle && guest && ps4_guest_own_code( caller ) && ps4_guest_object_index( handle, &index ))
+        ps4_guest_handle_add( guest, handle, index );
+    SetLastError( error );
+}
+
 void ps4_guest_file_opened( HANDLE handle, void *caller )
 {
     struct ps4_guest *guest = ps4_guest_current();
-    static BOOL full_reported;
     LONGLONG index;
 
     if (!guest || !ps4_guest_own_code( caller ) || !ps4_guest_file_index( handle, &index )) return;
+    ps4_guest_handle_add( guest, handle, index );
+}
+
+static void ps4_guest_handle_add( struct ps4_guest *guest, HANDLE handle, LONGLONG index )
+{
+    static BOOL full_reported;
+
     RtlEnterCriticalSection( &guest->lock );
     if (guest->file_count == guest->file_size)
     {
@@ -1316,7 +1509,10 @@ static void ps4_guest_close_files( struct ps4_guest *guest )
     RtlEnterCriticalSection( &guest->lock );
     for (i = 0; i < guest->file_count; i++)
     {
-        if (!ps4_guest_file_index( guest->files[i].handle, &index ) || index != guest->files[i].index ||
+        BOOL object = (guest->files[i].index & PS4_GUEST_OBJECT_INDEX) != 0;  /* PoP D.6 */
+
+        if (!(object ? ps4_guest_object_index( guest->files[i].handle, &index )
+                     : ps4_guest_file_index( guest->files[i].handle, &index )) || index != guest->files[i].index ||
             NtClose( guest->files[i].handle )) stale++;
         else closed++;
     }
@@ -1724,7 +1920,7 @@ static BOOL ps4_guest_thread_in( DWORD tid, const struct ps4_guest_own *own, UIN
 }
 
 /* the threads of the process, other than this one, in the guest's own code; ~0u when unknown */
-static UINT ps4_guest_threads_in( const struct ps4_guest_own *own, UINT own_count )
+static UINT ps4_guest_threads_in( const struct ps4_guest_own *own, UINT own_count, BOOL end )
 {
     SYSTEM_PROCESS_INFORMATION *spi;
     ULONG size = 0x40000;
@@ -1752,7 +1948,16 @@ static UINT ps4_guest_threads_in( const struct ps4_guest_own *own, UINT own_coun
             for (i = 0; i < spi->dwThreadCount; i++)
             {
                 DWORD tid = HandleToULong( spi->ti[i].ClientId.UniqueThread );
-                if (tid != self && ps4_guest_thread_in( tid, own, own_count )) found++;
+                if (tid == self || !ps4_guest_thread_in( tid, own, own_count )) continue;
+                found++;
+                if (end)
+                {
+                    HANDLE thread = OpenThread( THREAD_TERMINATE | SYNCHRONIZE, FALSE, tid );
+                    DWORD wait = WAIT_FAILED;
+                    if (thread && TerminateThread( thread, 0 )) wait = WaitForSingleObject( thread, 1000 );
+                    ERR( "PWGUEST ended: thread %04lx wait=%lu\\n", tid, wait );
+                    if (thread) CloseHandle( thread );
+                }
             }
             break;
         }
@@ -1881,7 +2086,8 @@ static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
     {
         LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
 
-        if (mod->LoadCount == -1 || !ps4_guest_outside_windows( &mod->FullDllName )) continue;
+        if (!ps4_guest_outside_windows( &mod->FullDllName )) continue;
+        if (mod->LoadCount == -1 && leftovers) continue;  /* d13: a pinned one only with its guest */
         for (j = 0; j < guest->modules_before_count; j++) if (guest->modules_before[j] == mod->DllBase) break;
         if (j < guest->modules_before_count) continue;
         for (k = 0; k < live_dir_count; k++)
@@ -1908,7 +2114,34 @@ static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
         ERR( "PWGUEST own %s base=%p size=%Ix refcount=%d\\n", debugstr_w(own[i].name), own[i].base, own[i].size, own[i].count );
     if (!own_count) goto done;
 
-    threads = ps4_guest_threads_in( own, own_count );
+    threads = ps4_guest_threads_in( own, own_count, FALSE );
+    /* run-0065 (MangoJuice did not start a second time): a thread of the ended guest's own DLLs that the guest
+     * did not create through CreateThread (GIO's work on a thread of ntdll's pool) kept GLib loaded, and the
+     * next start ran on that GLib's state and showed no window. The guest has ended, and its process would
+     * take every thread with it on Windows: those threads end too, while the loader lock is held here, so
+     * none of them owns it (W122), and the modules are counted again */
+    if (threads && threads != ~0u && !trace_only)
+    {
+        ULONG lock_state = 0;
+        ULONG_PTR end_magic = 0;
+        int tries;
+
+        for (tries = 0; tries < 100; tries++)
+        {
+            if (!LdrLockLoaderLock( 2 /* LDR_LOCK_LOADER_LOCK_FLAG_TRY_ONLY */, &lock_state, &end_magic ) &&
+                lock_state == 1) break;
+            Sleep( 10 );
+        }
+        if (lock_state == 1)
+        {
+            UINT ended = ps4_guest_threads_in( own, own_count, TRUE );
+            LdrUnlockLoaderLock( 0, end_magic );
+            threads = ps4_guest_threads_in( own, own_count, FALSE );
+            ERR( "PWGUEST own_modules module=%p ended %u threads in their code, %u left\\n",
+                 guest->module, ended == ~0u ? 0 : ended, threads == ~0u ? 0 : threads );
+        }
+        else ERR( "PWGUEST own_modules module=%p threads not ended: the loader lock is busy\\n", guest->module );
+    }
     if (threads == ~0u) ERR( "PWGUEST own_modules module=%p kept: the thread list is not available\\n", guest->module );
 
     /* window classes whose procedure is in them (W068 for the EXE, the same test for these). A
@@ -1965,7 +2198,20 @@ static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
                 LDR_DATA_TABLE_ENTRY *mod;
 
                 if (!LdrFindEntryForAddress( own[i].base, &mod ) && mod->DllBase == own[i].base)
+                {
                     mod->Flags &= ~LDR_PROCESS_ATTACHED;
+                    /* d13 (run-0076: MangoJuice's second start ended at once with c000001d): GIO pins
+                     * itself, so it outlived the program, and with it the first start's GApplication type
+                     * and class, whose property specs pointed into the freed libgobject; the next start
+                     * jumped there. A module of the program's own that it pinned ends with it, as its
+                     * process would */
+                    if (mod->LoadCount == -1)
+                    {
+                        ERR( "PWGUEST own %s was pinned by the program: unpinned\\n",
+                             debugstr_w( mod->BaseDllName.Buffer ) );
+                        mod->LoadCount = 1;
+                    }
+                }
             }
             LdrUnlockLoaderLock( 0, magic );
         }
@@ -2066,6 +2312,37 @@ revise('kernelbase','debug','''        if (top_filter && !nested)
         {
             ERR( "PWGUEST unhandled exception %08lx at %p on thread %04lx: the guest ends\\n",
                  rec->ExceptionCode, rec->ExceptionAddress, GetCurrentThreadId() );
+#ifdef __x86_64__
+            /* d11 (run-0074: MangoJuice's second start ended with c000001d in the middle of an instruction of the
+             * first start's libgobject, and nothing said who jumped there): where the address, the argument
+             * registers and the return addresses on the stack are */
+            {
+                CONTEXT *ctx = epointers->ContextRecord;
+                ULONG_PTR *sp = (ULONG_PTR *)ctx->Rsp;
+                void *regs[8] = { rec->ExceptionAddress, (void *)ctx->Rax, (void *)ctx->Rcx, (void *)ctx->Rdx,
+                                  (void *)ctx->R8, (void *)ctx->R9, (void *)ctx->R10, (void *)ctx->R11 };
+                static const char * const names[8] = { "pc", "rax", "rcx", "rdx", "r8", "r9", "r10", "r11" };
+                LDR_DATA_TABLE_ENTRY *mod;
+                MEMORY_BASIC_INFORMATION info;
+                unsigned int i, shown = 0;
+
+                for (i = 0; i < 8; i++)
+                    if (!LdrFindEntryForAddress( regs[i], &mod ) && mod->BaseDllName.Buffer)
+                        ERR( "PWGUEST fault %s=%p %s+%lx\\n", names[i], regs[i], debugstr_w(mod->BaseDllName.Buffer),
+                             (ULONG)((char *)regs[i] - (char *)mod->DllBase) );
+                if (VirtualQuery( rec->ExceptionAddress, &info, sizeof(info) ))
+                    ERR( "PWGUEST fault pc region=%p allocation=%p size=%lx state=%lx type=%lx protect=%lx\\n",
+                         info.BaseAddress, info.AllocationBase, (ULONG)info.RegionSize, info.State, info.Type,
+                         info.Protect );
+                for (i = 0; i < 96 && shown < 16; i++)
+                {
+                    if (LdrFindEntryForAddress( (void *)sp[i], &mod ) || !mod->BaseDllName.Buffer) continue;
+                    ERR( "PWGUEST fault stack[%u]=%p %s+%lx\\n", i, (void *)sp[i], debugstr_w(mod->BaseDllName.Buffer),
+                         (ULONG)((char *)sp[i] - (char *)mod->DllBase) );
+                    shown++;
+                }
+            }
+#endif
             TerminateProcess( GetCurrentProcess(), rec->ExceptionCode );
         }
 ''','An unhandled exception on a guest thread ends the guest (W208).')
