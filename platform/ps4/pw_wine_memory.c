@@ -38,27 +38,53 @@ struct pw_dmem_query { off_t start, end; int32_t type; };
 enum { PW_DMQ_FIND_NEXT = 1, PW_DMQ_WALK_MAX = 65536 };
 #define PW_KERNEL_EACCES ((int32_t)0x8002000d)  /* no allocated range at or after the offset */
 
-/* bytes of direct memory this title has allocated, or -1 when the walk did not finish cleanly */
-static long long pw_direct_allocated( size_t direct, int32_t *last_rc, unsigned *ranges )
+/* What the walk saw last, for the boot line: run-0055 (12.50) stopped after 17 ranges with
+ * rc 0 on a record the first version rejected, and its values were not logged. */
+struct pw_dmem_walk { int32_t last_rc; unsigned ranges; int inclusive; const char *stop;
+                      long long offset, start, end; int32_t type; };
+
+/* bytes of direct memory this title has allocated below `direct`, or -1 when the walk did not
+ * finish cleanly. Two readings of a record are accepted: `end` one past the range (shadPS4) or
+ * the range's last byte, which shows as the same record coming back for a query at its end;
+ * the walk then counts `end` inclusively. A range reaching past `direct` is counted up to it. */
+static long long pw_direct_allocated( size_t direct, struct pw_dmem_walk *w )
 {
     struct pw_dmem_query query;
-    off_t offset = 0;
+    off_t offset = 0, last_start = -1, last_end = -1;
     long long allocated = 0;
     unsigned n;
 
-    *ranges = 0;
+    w->ranges = 0; w->inclusive = 0; w->stop = "limit";
     for (n = 0; n < PW_DMQ_WALK_MAX && (size_t)offset < direct; n++)
     {
         int32_t rc = sceKernelDirectMemoryQuery( offset, PW_DMQ_FIND_NEXT, &query, sizeof(query) );
-        *last_rc = rc;
-        if (rc == PW_KERNEL_EACCES) return allocated;
-        if (rc) return -1;
-        if (query.end <= query.start || query.end <= offset || (size_t)query.end > direct) return -1;
-        allocated += query.end - (query.start > offset ? query.start : offset);
-        offset = query.end;
-        (*ranges)++;
+        off_t from, to;
+
+        w->last_rc = rc; w->offset = offset;
+        if (rc == PW_KERNEL_EACCES) { w->stop = "end"; return allocated; }
+        if (rc) { w->stop = "rc"; return -1; }
+        w->start = query.start; w->end = query.end; w->type = query.type;
+        if (query.start == last_start && query.end == last_end && !w->inclusive && query.end == offset)
+        {
+            /* the query at a record's end returned that record: ends are its last byte */
+            w->inclusive = 1;
+            allocated += w->ranges;  /* one byte more for each range counted so far */
+            offset = query.end + 1;
+            continue;
+        }
+        to = w->inclusive ? query.end + 1 : query.end;
+        if (to <= query.start) { w->stop = "empty"; return -1; }
+        if (to <= offset) { w->stop = "backwards"; return -1; }
+        from = query.start > offset ? query.start : offset;
+        if ((size_t)from >= direct) { w->stop = "past_size"; return allocated; }
+        if ((size_t)to > direct) to = (off_t)direct;
+        allocated += to - from;
+        last_start = query.start; last_end = query.end;
+        offset = to;
+        w->ranges++;
     }
-    return (size_t)offset >= direct ? allocated : -1;
+    if ((size_t)offset >= direct) { w->stop = "size"; return allocated; }
+    return -1;
 }
 
 int pw_wine_memory_info( unsigned long long *total, unsigned long long *available )
@@ -69,25 +95,28 @@ int pw_wine_memory_info( unsigned long long *total, unsigned long long *availabl
     off_t found = 0;
     int32_t flexible_result = sceKernelAvailableFlexibleMemorySize( &flexible );
     int32_t direct_result = sceKernelAvailableDirectMemorySize( 0, (off_t)direct, 0, &found, &largest );
-    int32_t query_rc = 0;
-    unsigned ranges = 0;
+    struct pw_dmem_walk walk = { 0, 0, 0, "none", -1, -1, -1, -1 };
     long long allocated = -1;
     int method;
 
     if (direct_result) largest = 0;
-    if (direct) allocated = pw_direct_allocated( direct, &query_rc, &ranges );
+    if (direct) allocated = pw_direct_allocated( direct, &walk );
     /* summed when the walk finished and agrees with the largest free range */
     method = allocated >= 0 && (size_t)allocated <= direct && direct - (size_t)allocated >= largest;
     direct_free = method ? direct - (size_t)allocated : largest;
 
     if (!logged++)
         fprintf( stderr, "PWBOOT memory_info direct=%zu direct_free=%zu (rc=%#x) flexible_free=%zu (rc=%#x)"
-                 " direct_largest_free=%zu direct_allocated=%lld ranges=%u query_rc=%#x free_source=%s\n",
+                 " direct_largest_free=%zu direct_allocated=%lld ranges=%u query_rc=%#x free_source=%s"
+                 " walk_stop=%s inclusive=%d last_offset=%#llx last_start=%#llx last_end=%#llx last_type=%d\n",
                  direct, direct_free, (unsigned)direct_result, flexible, (unsigned)flexible_result,
-                 largest, allocated, ranges, (unsigned)query_rc, method ? "summed" : "largest_range" );
+                 largest, allocated, walk.ranges, (unsigned)walk.last_rc, method ? "summed" : "largest_range",
+                 walk.stop, walk.inclusive, walk.offset, walk.start, walk.end, walk.type );
     else if (method != last_method && switches++ < 16)
-        fprintf( stderr, "PWMEM direct_free source=%s free=%zu largest=%zu allocated=%lld ranges=%u query_rc=%#x\n",
-                 method ? "summed" : "largest_range", direct_free, largest, allocated, ranges, (unsigned)query_rc );
+        fprintf( stderr, "PWMEM direct_free source=%s free=%zu largest=%zu allocated=%lld ranges=%u query_rc=%#x"
+                 " walk_stop=%s inclusive=%d last_offset=%#llx last_start=%#llx last_end=%#llx\n",
+                 method ? "summed" : "largest_range", direct_free, largest, allocated, walk.ranges,
+                 (unsigned)walk.last_rc, walk.stop, walk.inclusive, walk.offset, walk.start, walk.end );
     last_method = method;
     if (flexible_result || !direct) return -1;
     *total = (unsigned long long)direct + flexible;
