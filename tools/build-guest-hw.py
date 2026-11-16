@@ -1386,7 +1386,7 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
         {
             const WCHAR *ext = wcsrchr( name, '.' );
 
-            /* PoP D.6 (user feedback 2026-11-13: NFS Most Wanted's .bat files from the desktop): a batch file runs
+            /* Batch files (hardware 2026-11-13, NFS Most Wanted's .bat files from the desktop): a batch file runs
              * through cmd.exe, as CreateProcess does on Windows (Wine's create_cmd_process, which this guest path
              * never reaches); explorer's ShellExecute hands .bat and .cmd to CreateProcess as executables. cmd.exe
              * runs as a console guest (W056/W062). */
