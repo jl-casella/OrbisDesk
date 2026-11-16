@@ -38,6 +38,8 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <orbis/libkernel.h>
 #include <orbis/Pad.h>
 #include "hw_text.h"
@@ -581,21 +583,46 @@ static int hud_mode(void) {return mangohud_loaded && vk_presenting;}
 #endif
 static const char *const hud_positions[POSITIONS]={"top-left","top-right","top-center","middle-left","middle-right",
                                                     "bottom-left","bottom-right","bottom-center"};
+/* %APPDATA% is under the prefix's user, whatever its name; with several users (a profile another prefix's
+ * registry import added, 2026-11-13: C:\users\jose next to orbis), the MangoHud.conf saved last, which is the one
+ * MangoJuice wrote. Its modification time, 0 when there is none. */
+/* Hardware 2026-11-16 (run-0150 and run-0151, every time Estadisticas came on): "no MangoHud.conf,
+ * MangoHud's defaults", with the file in place and MangoJuice writing it. The SDK's OrbisKernelStat
+ * does not match the record the kernel returns (platform/ps4/pw_wine_platform.c PwOrbisStat, W230),
+ * so st_mtime read the wrong bytes and came back 0 for every candidate; nothing beat newest=0 and no
+ * path was chosen. pw_wine_stat converts that record into a struct stat, and the title links it. */
+int pw_wine_stat(const char *,struct stat *);
+/* what says the file changed: its time, or its size where the console reports no time */
+static time_t hud_conf_stamp(const struct stat *st){return st->st_mtime?st->st_mtime:(time_t)st->st_size+1;}
+static time_t hud_newest_conf(char *path,size_t size)
+{
+    char candidate[256];struct stat st;time_t newest=0;
+    DIR *users=opendir(HUD_USERS);
+    if(!users) return 0;
+    struct dirent *e;
+    while((e=readdir(users))) {
+        if(e->d_name[0]=='.' || !strcasecmp(e->d_name,"Public")) continue;
+        snprintf(candidate,sizeof(candidate),HUD_USERS "/%s/AppData/Roaming/MangoHud/MangoHud.conf",e->d_name);
+        if(pw_wine_stat(candidate,&st)) continue;
+        time_t stamp=hud_conf_stamp(&st);
+        if(stamp>newest) {newest=stamp;snprintf(path,size,"%s",candidate);}
+    }
+    closedir(users);
+    return newest;
+}
+static time_t hud_conf_mtime;  /* of the file hud_conf came from; the HUD reads it again when it changes */
 static void hud_read_conf(struct hud_conf *c)
 {
-    char path[256],line[160];FILE *file=NULL;
+    char path[256]="",line[160];FILE *file=NULL;
     *c=(struct hud_conf){.loaded=1,.gpu=1,.cpu=1,.fps=1,.frametime=1,.frame_timing=1,.font_size=24,.alpha_pct=50};
-    DIR *users=opendir(HUD_USERS);  /* %APPDATA% is under the prefix's user, whatever its name */
-    if(users) {
-        struct dirent *e;
-        while(!file && (e=readdir(users))) {
-            if(e->d_name[0]=='.' || !strcasecmp(e->d_name,"Public")) continue;
-            snprintf(path,sizeof(path),HUD_USERS "/%s/AppData/Roaming/MangoHud/MangoHud.conf",e->d_name);
-            file=fopen(path,"r");
-        }
-        closedir(users);
-    }
+    hud_conf_mtime=hud_newest_conf(path,sizeof(path));
+    if(hud_conf_mtime) file=fopen(path,"r");
     if(!file) {fprintf(stderr,"PWOVERLAY hud: no MangoHud.conf, MangoHud's defaults\n");return;}
+    /* legacy_layout=0 (MangoJuice writes "legacy_layout=false"): MangoHud shows only the rows the file names
+     * (overlay_params.cpp, sort_elements), not its defaults; each row's last value in the file, -1 unnamed */
+    int legacy=1,named[7]={-1,-1,-1,-1,-1,-1,-1};
+    int *const rows[7]={&c->gpu,&c->cpu,&c->vram,&c->ram,&c->fps,&c->frametime,&c->frame_timing};
+    static const char *const row_keys[7]={"gpu_stats","cpu_stats","vram","ram","fps","frametime","frame_timing"};
     while(fgets(line,sizeof(line),file)) {
         char *key=line,*value,*end;
         if((end=strpbrk(key,"#\r\n"))) *end=0;
@@ -604,7 +631,9 @@ static void hud_read_conf(struct hud_conf *c)
         for(end=key+strlen(key);end>key && (end[-1]==' ' || end[-1]=='\t');) *--end=0;
         if(!*key) continue;
         int on=!value || atoi(value)!=0;
-        if(!strcmp(key,"gpu_stats")) c->gpu=on;
+        for(int i=0;i<7;i++) if(!strcmp(key,row_keys[i])) named[i]=on;
+        if(!strcmp(key,"legacy_layout")) legacy=on;
+        else if(!strcmp(key,"gpu_stats")) c->gpu=on;
         else if(!strcmp(key,"cpu_stats")) c->cpu=on;
         else if(!strcmp(key,"vram")) c->vram=on;
         else if(!strcmp(key,"ram")) c->ram=on;
@@ -623,8 +652,9 @@ static void hud_read_conf(struct hud_conf *c)
         }
     }
     fclose(file);
-    fprintf(stderr,"PWOVERLAY hud: %s gpu=%d cpu=%d vram=%d ram=%d fps=%d frametime=%d frame_timing=%d position=%s"
-            " font_size=%d alpha=%d%%\n",path,c->gpu,c->cpu,c->vram,c->ram,c->fps,c->frametime,c->frame_timing,
+    if(!legacy) for(int i=0;i<7;i++) *rows[i]=named[i]==1;
+    fprintf(stderr,"PWOVERLAY hud: %s legacy_layout=%d gpu=%d cpu=%d vram=%d ram=%d fps=%d frametime=%d frame_timing=%d position=%s"
+            " font_size=%d alpha=%d%%\n",path,legacy,c->gpu,c->cpu,c->vram,c->ram,c->fps,c->frametime,c->frame_timing,
             hud_positions[c->position],c->font_size,c->alpha_pct);
 }
 static void sample_stats(void)
@@ -635,6 +665,12 @@ static void sample_stats(void)
     struct hud_values v={.sampled=1,.gpu_m=-1,.cpu_m=-1,.ram_mib=-1};
     struct hud_conf conf;
     pthread_mutex_lock(&lock);load_conf=!hud_conf.loaded;pthread_mutex_unlock(&lock);
+    if(!load_conf) {
+        /* a save in MangoJuice shows without turning Estadisticas off and on (MangoHud's own watcher needs folder
+         * notifications, which this wineserver lacks) */
+        char path[256];
+        if(hud_newest_conf(path,sizeof(path))!=hud_conf_mtime) load_conf=1;
+    }
     if(load_conf) hud_read_conf(&conf);
     pw_hw_sink_stats(&vk_tenths,&vk_fresh,&frames_tenths,&avg_us,&max_us,&frames_fresh);
     memset(&telemetry,0,sizeof(telemetry));

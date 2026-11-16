@@ -220,6 +220,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 ## Otras notas públicas
 
 - [CI-es.md](CI-es.md) — Ejecutar CI y medir la matriz de plataforma
+- [MANGOJUICE-es.md](MANGOJUICE-es.md) — MangoJuice: el programa de ajustes de MangoHud
 - [POP_SEPARATE_PROCESS-es.md](POP_SEPARATE_PROCESS-es.md) — Procesos de Windows separados (fases B–D de PoP)
 - [PROCESS_FAMILY_PROBES-es.md](PROCESS_FAMILY_PROBES-es.md) — Sondas de familias de procesos para launchers de base fija
 - [RELEASES-es.md](RELEASES-es.md) — Construcción del producto, releases y rama de desarrollo

@@ -63,7 +63,7 @@ def put(local,remote,expected):
 # W172/W175/W292: the user.reg keys the console keeps (tools/console_state.py, shared with the
 # first-run installer's install.json)
 USER_REG='wine-prefix/user.reg';REG_HEADER=b'WINE REGISTRY Version 2'
-from console_state import CONSOLE_OWNED
+from console_state import CONSOLE_OWNED,CONSOLE_OWNED_FILES
 reset=[key.lower() for key in manifest.get('user_reg_reset',[])]
 if not set(reset)<=set(CONSOLE_OWNED):raise SystemExit('user_reg_reset names keys the console does not own: %r'%reset)
 def reg_blocks(text):
@@ -170,6 +170,11 @@ if not args.skip_runtime:
             print(index,state,name,source,'console_blocks_kept=%d'%sum(kept.values()),'reset=%s'%','.join(reset),
                   'added=%d'%len(added),'left_deleted=%d'%len(deleted),'ledger=%s'%('found' if ledger else 'absent'),flush=True)
             if not retrying(chmod,remote,0o666):chmod_failed.append(name)
+            continue
+        if name in CONSOLE_OWNED_FILES and retrying(remote_hash,remote) is not None:
+            # the user's copy (MangoJuice's MangoHud.conf) stays; the build's is only the clean-install default
+            counts['kept']=counts.get('kept',0)+1
+            print(index,'kept',name,'console-owned',flush=True)
             continue
         state=retrying(put,runtime/name,remote,entry['sha256']);counts[state]+=1
         print(index,state,name,flush=True)

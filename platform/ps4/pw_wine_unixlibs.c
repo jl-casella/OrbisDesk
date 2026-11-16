@@ -25,6 +25,9 @@ extern const void *pw_nsi_unix_call_funcs[],*pw_nsi_unix_call_wow64_funcs[];
 /* W180 (phase 9): crypt32's Unix side, without GnuTLS or a CA bundle (platform/ps4/pw_crypt32_unix.c,
  * tools/build-unixlibs-ps4.py); without it crypt32.dll, and every xul.dll through wintrust, failed */
 extern const void *pw_crypt32_unix_call_funcs[],*pw_crypt32_unix_call_wow64_funcs[];
+/* MangoJuice: dwrite's Unix side on the boot ELF's FreeType (platform/ps4/pw_dwrite_unix.c,
+ * tools/build-unixlibs-ps4.py); MSYS2's harfbuzz, and through it GTK, imports DWrite.dll */
+extern const void *pw_dwrite_unix_call_funcs[],*pw_dwrite_unix_call_wow64_funcs[];
 /* W178 (phase 7): xinput's Unix side, the console's pad as controller 0 (tools/build-xinput-hw.py) */
 extern const void *pw_xinput_unix_call_funcs[],*pw_xinput_unix_call_wow64_funcs[];
 /* The pad comes from the hardware launcher (native/hw_pad.c). An ELF without it has no pad:
@@ -88,6 +91,7 @@ int pw_wine_static_unixlib(const char *path,int wow,const void **funcs,PwUnixLib
         {"nsi.so",pw_nsi_unix_call_funcs,pw_nsi_unix_call_wow64_funcs,NULL},
         {"xinput1_3.so",pw_xinput_unix_call_funcs,pw_xinput_unix_call_wow64_funcs,NULL},
         {"crypt32.so",pw_crypt32_unix_call_funcs,pw_crypt32_unix_call_wow64_funcs,NULL},
+        {"dwrite.so",pw_dwrite_unix_call_funcs,pw_dwrite_unix_call_wow64_funcs,NULL},
         {"winebus.so",pw_winebus_unix_call_funcs,NULL,NULL}};
     const char *base=path?strrchr(path,'/'):NULL;
     base=base?base+1:path;

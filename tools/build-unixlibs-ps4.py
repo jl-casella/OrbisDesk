@@ -31,14 +31,23 @@ LIBS={# Phase 8: ws2_32 with getaddrinfo and the other resolver calls answered b
       # STATUS_DLL_NOT_FOUND) and without a CA bundle on the console. W179: crypt32.dll could not
       # initialise, so neither Wine Gecko's nor Pale Moon's xul.dll loaded (both import it through
       # wintrust). platform/ps4/pw_crypt32_unix.c holds the tables, with PWCRYPT traces.
-      'crypt32':['dlls/crypt32/unixlib',('dlls/crypt32/unixlib','platform/ps4/pw_crypt32_unix.c')]}
+      'crypt32':['dlls/crypt32/unixlib',('dlls/crypt32/unixlib','platform/ps4/pw_crypt32_unix.c')],
+      # MangoJuice (docs/MANGOJUICE.md): dwrite's Unix side, its FreeType calls answered by the
+      # FreeType win32u links into the boot ELF (platform/ps4/pw_dwrite_unix.c). MSYS2's harfbuzz
+      # imports DWrite.dll; without it GTK could not load (run-0060).
+      'dwrite':['dlls/dwrite/freetype',('dlls/dwrite/freetype','platform/ps4/pw_dwrite_unix.c')]}
+# FreeType headers for dwrite, as tools/build-win32u-ps4.py compiles win32u's freetype.c
+FREETYPE_INCLUDE=['-I'+str(ROOT/'build/freetype-ps4/include'),'-I'+str(ROOT/'.deps/shadPS4-fork/externals/freetype/include')]
 DEFINES={'ws2_32':['-DHAVE_GETADDRINFO=1','-Dgetaddrinfo=pw_ws2_getaddrinfo','-Dfreeaddrinfo=pw_ws2_freeaddrinfo',
                    '-Dgetnameinfo=pw_ws2_getnameinfo','-Dgethostbyname=pw_ws2_gethostbyname',
                    '-Dgethostbyaddr=pw_ws2_gethostbyaddr','-Dgethostname=pw_ws2_gethostname',
                    '-D__h_errno_location=pw_ws2_h_errno_location'],
          # Wine's tables keep a name of their own; pw_crypt32_unix.c defines the registered ones
          'crypt32':['-D__wine_unix_call_funcs=pw_crypt32_wine_unix_call_funcs',
-                    '-D__wine_unix_call_wow64_funcs=pw_crypt32_wine_unix_call_wow64_funcs']}
+                    '-D__wine_unix_call_wow64_funcs=pw_crypt32_wine_unix_call_wow64_funcs'],
+         # the ps4-unix configure found no FreeType; Wine's dlopen path, unchanged, reaches the static one
+         'dwrite':['-DHAVE_FT2BUILD_H=1','-DSONAME_LIBFREETYPE="static-orbis-freetype"','-Ddlopen=pw_dwrite_dlopen',
+                   '-Ddlsym=pw_dwrite_dlsym','-Ddlclose=pw_dwrite_dlclose',*FREETYPE_INCLUDE]}
 work.mkdir(parents=True,exist_ok=True)
 def sha(path):return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 commit=subprocess.check_output(['git','-C',str(SOURCE),'rev-parse','HEAD'],text=True).strip()

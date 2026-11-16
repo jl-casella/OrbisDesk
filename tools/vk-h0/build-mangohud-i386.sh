@@ -20,7 +20,8 @@ rm -rf $W && cp -a $X $W
 # the Orbis patches the x64 build applies (build-mangohud.sh), checked, not applied again
 for check in 'src/win/main.cpp:OrbisDesk: no hook thread' 'src/vulkan.cpp:OrbisDesk W096: shared-process overlay lock.' \
              'src/vulkan.cpp:OrbisDesk W099: join outside the UI lock.' 'src/overlay.cpp:OrbisDesk W102: sample on the frame thread' \
-             'src/fps_metrics.h:OrbisDesk W102: calculate on the frame thread' 'src/fps_metrics.h:#include <sstream>'; do
+             'src/fps_metrics.h:OrbisDesk W102: calculate on the frame thread' 'src/fps_metrics.h:#include <sstream>' \
+             'src/overlay_params.cpp:OrbisDesk: Windows hotkeys keep their defaults'; do
   file=${check%%:*}; marker=${check#*:}
   # or its historical spelling, in a working copy patched before the rename (tools/project_brand.py normalize_marker)
   grep -qF "$marker" "$W/$file" || grep -qF "${marker/OrbisDesk/Orbis-win}" "$W/$file" || { echo "missing in $file: $marker (run build-mangohud.sh)"; exit 1; }

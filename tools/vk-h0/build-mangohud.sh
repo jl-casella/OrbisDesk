@@ -29,6 +29,8 @@ python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-shared-process.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-teardown.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-frame-sampling.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-orbis-metrics.py "$W"
+# 2026-11-16: hotkeys named in MangoHud.conf no longer empty their key lists (the overlay's show/hide)
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-win-hotkeys.py "$W"
 cross=$build-cross.ini
 old_cross=$(cat $cross 2>/dev/null || true)
 cat > $build-cross.ini <<INI
@@ -71,7 +73,8 @@ record={'dll_sha256':sha(build/'src/libMangoHud.dll'),
         'sources':{name:sha(source/name) for name in
                    ('src/vulkan.cpp','src/notify.h','src/notify_win32.cpp','src/win/main.cpp',
                     'src/overlay.cpp','src/fps_metrics.h','src/cpu_win32.cpp',
-                    'src/hud_elements.cpp','src/orbis_metrics.h','src/orbis_telemetry.h')}}
+                    'src/hud_elements.cpp','src/orbis_metrics.h','src/orbis_telemetry.h',
+                    'src/overlay_params.cpp')}}
 (build/'orbis-build.json').write_text(json.dumps(record,indent=2)+'\n')
 print(json.dumps(record))
 PY

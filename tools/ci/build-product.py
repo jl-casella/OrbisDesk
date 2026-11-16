@@ -46,6 +46,8 @@ def build(version, cache_mode='reuse'):
                  'build-taskmgr-hw', 'build-winecfg-hw', 'build-explorer-hw', 'build-guest-hw',
                  'build-wfm', 'build-dos-runtime', 'build-games', 'make-icons', 'make-start-menu', 'make-app-icon'):
         python(name)
+    # MangoJuice: its pinned MSYS2 GTK4 runtime and Ubuntu host tools are downloaded here (mangojuice.lock.json)
+    python('build-mangojuice-hw', '--fetch')
     step('product-assets', [sys.executable, ROOT / 'tools/ci/product-fixtures.py'])
     # The Steam client inside the title: its TLS/HTTP libraries, then the hosted object, checked against
     # the bootstrap ELF link-wine-boot made (pinned downloads: product-assets.lock.json, steam-*)

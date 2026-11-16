@@ -8,6 +8,8 @@
  *   - user.reg is merged, never copied: the console keeps its blocks under the console-owned keys
  *     (tools/console_state.py), and a build-only block the user deleted stays deleted (the ledger
  *     /data/orbisdesk/user-reg-delivered.json, shared with the uploader);
+ *   - a console-owned file (P lines, tools/console_state.py CONSOLE_OWNED_FILES: MangoHud.conf, which
+ *     MangoJuice edits) is copied only when it is missing; the user's copy is never replaced;
  *   - files earlier builds shipped and this one does not (obsolete) are deleted;
  *   - the files of the build PC's profile folder (C:\users\<host>, shipped by builds before alpha-1, whose
  *     registry pointed Documents and the rest there) move to C:\users\orbis without replacing anything;
@@ -84,13 +86,14 @@ enum {HW_INSTALL_MAX_ROOTS=16};
 struct hw_install_file {const char *sha,*path;uint64_t bytes;int action;};
 struct hw_install_list {
     char *text;size_t size;const char *build,*host;uint64_t total;
-    const char *writable[HW_INSTALL_MAX_ROOTS],*owned[HW_INSTALL_MAX_ROOTS],*reset[HW_INSTALL_MAX_ROOTS];
-    unsigned writables,owneds,resets,dirs,files,obsoletes;
+    const char *writable[HW_INSTALL_MAX_ROOTS],*owned[HW_INSTALL_MAX_ROOTS],*reset[HW_INSTALL_MAX_ROOTS],*kept[HW_INSTALL_MAX_ROOTS];
+    unsigned writables,owneds,resets,keeps,dirs,files,obsoletes;
     const char **dir,**obsolete;struct hw_install_file *file;
 };
 static void hw_install_free(struct hw_install_list *l){free(l->text);free(l->dir);free(l->obsolete);free(l->file);memset(l,0,sizeof(*l));}
 /* "ORBISDESK-INSTALL 1" then one record per line: B build, H host profile, T total bytes, W writable root,
- * K console-owned key, R reset key, D directory, F sha256 bytes path, O obsolete path (paths last: spaces) */
+ * K console-owned key, R reset key, P console-owned file, D directory, F sha256 bytes path, O obsolete path
+ * (paths last: spaces) */
 static int hw_install_parse(struct hw_install_list *l,char *text,size_t size)
 {
     memset(l,0,sizeof(*l));l->text=text;l->size=size;
@@ -111,6 +114,7 @@ static int hw_install_parse(struct hw_install_list *l,char *text,size_t size)
         case 'W':if(l->writables<HW_INSTALL_MAX_ROOTS)l->writable[l->writables++]=value;break;
         case 'K':if(l->owneds<HW_INSTALL_MAX_ROOTS)l->owned[l->owneds++]=value;break;
         case 'R':if(l->resets<HW_INSTALL_MAX_ROOTS)l->reset[l->resets++]=value;break;
+        case 'P':if(l->keeps<HW_INSTALL_MAX_ROOTS)l->kept[l->keeps++]=value;break;
         case 'D':l->dir[l->dirs++]=value;break;
         case 'O':l->obsolete[l->obsoletes++]=value;break;
         case 'F':{
@@ -129,6 +133,11 @@ static int hw_install_parse(struct hw_install_list *l,char *text,size_t size)
 }
 
 /* ---- file helpers ---- */
+static int hw_install_kept(const struct hw_install_list *l,const char *path)
+{
+    for(unsigned i=0;i<l->keeps;i++)if(!strcmp(l->kept[i],path))return 1;
+    return 0;
+}
 static int hw_install_writable(const struct hw_install_list *l,const char *path)
 {
     for(unsigned i=0;i<l->writables;i++){
@@ -393,11 +402,12 @@ static int hw_install_runtime(char *detail,size_t detail_size)
     /* pass 1: what must be copied (missing, other size), what is trusted (same size and the same sha the
      * last successful install wrote), what must be hashed */
     enum {HW_SKIP,HW_HASH,HW_COPY,HW_USER_REG};
-    uint64_t copy_bytes=0,hash_bytes=0;unsigned to_copy=0,to_hash=0,trusted=0;
+    uint64_t copy_bytes=0,hash_bytes=0;unsigned to_copy=0,to_hash=0,trusted=0,kept=0;
     for(unsigned i=0;i<list.files;i++){
         struct hw_install_file *f=&list.file[i];char target[PATH_MAX];struct stat st;
         snprintf(target,sizeof(target),"/data/%s",f->path);
         if(!strcmp(f->path,HW_INSTALL_USER_REG)){f->action=HW_USER_REG;continue;}
+        if(hw_install_kept(&list,f->path)&&!stat(target,&st)){f->action=HW_SKIP;kept++;continue;}  /* the user's copy */
         if(stat(target,&st)||(uint64_t)st.st_size!=f->bytes){f->action=HW_COPY;copy_bytes+=f->bytes;to_copy++;continue;}
         int same=0;
         for(unsigned j=0;j<previous.files&&!same;j++)
@@ -413,8 +423,8 @@ static int hw_install_runtime(char *detail,size_t detail_size)
             hw_install_free(&list);hw_install_free(&previous);free(text);return -1;
         }
     } else note(HW_BUILD " PWINSTALL space unknown errno=%d\n",errno);
-    note(HW_BUILD " PWINSTALL plan copy=%u copy_mb=%llu hash=%u hash_mb=%llu trusted=%u\n",to_copy,
-         (unsigned long long)(copy_bytes>>20),to_hash,(unsigned long long)(hash_bytes>>20),trusted);
+    note(HW_BUILD " PWINSTALL plan copy=%u copy_mb=%llu hash=%u hash_mb=%llu trusted=%u kept=%u\n",to_copy,
+         (unsigned long long)(copy_bytes>>20),to_hash,(unsigned long long)(hash_bytes>>20),trusted,kept);
     int failed=0;
     for(unsigned i=0;i<list.dirs&&!failed;i++){
         char target[PATH_MAX];snprintf(target,sizeof(target),"/data/%s",list.dir[i]);
