@@ -353,6 +353,43 @@ int pw_wine_openat(int side,int directory,const char *path,int flags,...)
     full[prefix++]='/';memcpy(full+prefix,path,tail+1);
     return pw_wine_open(side,full,flags,mode);
 }
+/* PoP D.7 (hardware 2026-11-13: Tony Hawk's American Wasteland's launcher, run in a separate process, said
+ * "Please install DirectX 9.0c": its FindFirstFileA on C:\windows\system32\d3d9.dll failed with
+ * ERROR_NOT_SUPPORTED, as every folder listing there did except the current folder's). In a separate process
+ * (native/pop_wine_child.c) every directory descriptor comes from the title's wineserver over the bridge, so no
+ * record of this process has its device and inode. Wine's client looks a path up before the server opens it
+ * (lookup_unix_name's fstatat), so the folders looked up are remembered here by device and inode, and a
+ * descriptor without a record takes the path of the folder with its identity, checked again before use. */
+enum {SEEN_DIRECTORIES=256};
+static struct {dev_t dev;ino_t ino;char path[PATH_BYTES];} seen[SEEN_DIRECTORIES];
+static unsigned seen_count,seen_next;
+static pthread_mutex_t seen_lock=PTHREAD_MUTEX_INITIALIZER;
+static void seen_directory(const struct stat *st,const char *path)
+{
+    if(!st->st_ino || strnlen(path,PATH_BYTES)>=PATH_BYTES) return;  /* no identity, no record (W110) */
+    pthread_mutex_lock(&seen_lock);
+    unsigned i=0;
+    while(i<seen_count && (seen[i].dev!=st->st_dev || seen[i].ino!=st->st_ino)) ++i;
+    if(i==seen_count) {
+        if(seen_count<SEEN_DIRECTORIES) i=seen_count++;
+        else {i=seen_next;seen_next=(seen_next+1)%SEEN_DIRECTORIES;}
+    }
+    seen[i].dev=st->st_dev;seen[i].ino=st->st_ino;strcpy(seen[i].path,path);
+    pthread_mutex_unlock(&seen_lock);
+}
+static int seen_path(const struct stat *st,char *out)
+{
+    int found=0;
+    if(!st->st_ino) return -1;
+    pthread_mutex_lock(&seen_lock);
+    for(unsigned i=0;i<seen_count && !found;++i)
+        if(seen[i].dev==st->st_dev && seen[i].ino==st->st_ino) {strcpy(out,seen[i].path);found=1;}
+    pthread_mutex_unlock(&seen_lock);
+    struct stat again;
+    if(found && (pw_wine_stat(out,&again) || again.st_dev!=st->st_dev || again.st_ino!=st->st_ino)) found=0;
+    return found?0:-1;
+}
+
 /* The canonical path of an open directory. W048: a descriptor that arrived by SCM_RIGHTS
  * (every handle the in-process server passes to a thread, and pw_wine_dup since W033)
  * has no record of its own, so NtQueryDirectoryFile's fchdir failed with ENOTSUP and
@@ -370,6 +407,7 @@ static int directory_path(int fd,const struct stat *st,char *out)
             strcpy(out,records[i].path);found=1;
         }
     pthread_mutex_unlock(&lock);
+    if(!found && !seen_path(st,out)) found=1;   /* PoP D.7: a descriptor from the title's server */
     return found?0:-1;
 }
 /* W050: Wine's lookup_unix_name tries one fstatat(root_fd, "<prefix>/dosdevices/c:/")
@@ -402,7 +440,12 @@ int pw_wine_fchdir(int side,int fd)
     return pw_wine_chdir(side,path);
 }
 int pw_wine_path_stat(int side,const char *path,struct stat *out,int follow)
-{char full[PATH_BYTES];if(resolve(side,path,full)) return -1;return follow?pw_wine_stat(full,out):pw_wine_lstat(full,out);}
+{
+    char full[PATH_BYTES];if(resolve(side,path,full)) return -1;
+    int rc=follow?pw_wine_stat(full,out):pw_wine_lstat(full,out);
+    if(!rc && S_ISDIR(out->st_mode)) {int saved=errno;seen_directory(out,full);errno=saved;}   /* PoP D.7 */
+    return rc;
+}
 int pw_wine_mkdir(int side,const char *path,mode_t mode)
 {char full[PATH_BYTES];return resolve(side,path,full)?-1:mkdir(full,mode);}
 int pw_wine_unlink(int side,const char *path)

@@ -15,6 +15,7 @@
 #include "pw_wine_fs.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -560,6 +561,73 @@ int __wrap_sceKernelLoadStartModule(const char *path, size_t args, const void *a
     return handle;
 }
 
+/* PoP D.7 (hardware 2026-11-13: after a session closed with a separate launcher open, the next start hung
+ * connecting to its wineserver until the console rebooted): this process ends with the title. The bridge socket to
+ * the title's wineserver hangs up when the title goes; a thread looks every 500 ms and ends the process then, as a
+ * Windows process ends when its session's server does. */
+static int title_server_fd = -1;
+static void *title_watch(void *arg)
+{
+    (void)arg;
+    for(;;){
+        struct pollfd pfd = { title_server_fd, 0, 0 };
+        int rc = poll(&pfd, 1, 500);
+        if(rc > 0 && (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))){
+            clog("{\"build\":\"P024\",\"event\":\"title_gone\",\"revents\":%d}", pfd.revents);
+            _exit(0);
+        }
+        if(rc < 0 && errno != EINTR) usleep(500000);
+    }
+    return NULL;
+}
+
+/* PoP D.7 (hardware 2026-11-14, d32 and d33: the console stopped answering, PS button and FTP included, while
+ * the mouse cursor still moved; the forced restart lost this log, file and all): a thread puts the log, Wine's
+ * stderr lines included, on disk every 2 seconds, so the last state before a hang survives the restart */
+#include <signal.h>
+#include <sys/resource.h>
+/* PoP D.7 (hardware 2026-11-14, d34: the launcher, reopened, froze while its dialog was being dragged; the title's
+ * wineserver then saw POLLIN with FIONREAD 0 on that thread's request pipe, and the whole child, this file's
+ * heartbeat thread included, stopped). Monitor the writes of both the original header-only path and the
+ * shared request writer used by the title and child for requests with data. */
+extern ssize_t __real_write(int, const void *, size_t);
+extern unsigned long pw_wine_request_chunks_written(void);
+extern void pw_pop_surface_start(void);
+static int last_write_fd;
+static size_t last_write_size;
+static unsigned writes_active, writes_done;
+
+ssize_t __wrap_write(int fd, const void *buffer, size_t size);
+ssize_t __wrap_write(int fd, const void *buffer, size_t size){
+    if(fd <= STDERR_FILENO || fd == child_log) return __real_write(fd, buffer, size);
+    __atomic_store_n(&last_write_fd, fd, __ATOMIC_RELAXED);
+    __atomic_store_n(&last_write_size, size, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&writes_active, 1, __ATOMIC_RELAXED);
+    ssize_t result = __real_write(fd, buffer, size);
+    __atomic_add_fetch(&writes_done, 1, __ATOMIC_RELAXED);
+    __atomic_sub_fetch(&writes_active, 1, __ATOMIC_RELAXED);
+    return result;
+}
+
+static void *child_heartbeat(void *arg){
+    (void)arg;
+    for(unsigned beat = 1;; beat++){
+        usleep(2000000);
+        unsigned active = __atomic_load_n(&writes_active, __ATOMIC_RELAXED);
+        /* each beat while a write has not returned; otherwise the first ones and every 30 s */
+        if(beat <= 3 || beat % 15 == 0 || active)
+            clog("{\"build\":\"P031\",\"event\":\"heartbeat\",\"beat\":%u,\"log_bytes\":%ld,\"request_chunks\":%lu,"
+                 "\"writes_active\":%u,\"writes_done\":%u,"
+                 "\"last_write_fd\":%d,\"last_write_size\":%zu}",
+                 beat, (long)lseek(child_log, 0, SEEK_CUR), pw_wine_request_chunks_written(), active,
+                 __atomic_load_n(&writes_done, __ATOMIC_RELAXED),
+                 __atomic_load_n(&last_write_fd, __ATOMIC_RELAXED),
+                 __atomic_load_n(&last_write_size, __ATOMIC_RELAXED));
+        fsync(child_log);
+    }
+    return NULL;
+}
+
 __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, const char *exe, const char *log_path);
 __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, const char *exe, const char *log_path){
     const char *prefix = "/data/wine-prefix";
@@ -573,6 +641,22 @@ __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, con
          (int)getpid(), (int)getuid(), server_fd, exe);
     /* Wine's own stderr (ERR/FIXME/WARN lines) goes to the same log */
     if(child_log >= 0) dup2(child_log, 2);
+    clog("{\"build\":\"P031\",\"event\":\"request_transport\",\"max_chunk\":%d}", _POSIX_PIPE_BUF);
+    /* PoP D.7 (same hangs): this process yields to the system's own; the heartbeat thread starts with every
+     * signal blocked, so none of Wine's signals lands on a thread Wine does not know */
+    {
+        errno = 0;
+        int nice_rc = setpriority(PRIO_PROCESS, 0, 10);
+        clog("{\"build\":\"P026\",\"event\":\"child_priority\",\"rc\":%d,\"errno\":%d}", nice_rc, nice_rc ? errno : 0);
+        sigset_t all, old;
+        sigfillset(&all);
+        pthread_sigmask(SIG_BLOCK, &all, &old);
+        pthread_t beat;
+        int beat_rc = pthread_create(&beat, NULL, child_heartbeat, NULL);
+        pthread_sigmask(SIG_SETMASK, &old, NULL);
+        clog("{\"build\":\"P026\",\"event\":\"heartbeat_thread\",\"rc\":%d}", beat_rc);
+        fsync(child_log);
+    }
     /* Hardware 2026-11-12: none of this file's counted traces ever printed and Wine reported ntdll.dll mapped
      * without one memory call on it. Check that the system linker zeroed this PRX's .bss: these statics
      * must start at 0, and a sample of the .bss tail must be zero. */
@@ -637,6 +721,12 @@ __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, con
     protection_check();
     if(job_argc) job_prepare(exe);
     }
+    {
+        pthread_t watch;
+        title_server_fd = server_fd;
+        clog("{\"build\":\"P024\",\"event\":\"title_watch\",\"rc\":%d}", pthread_create(&watch, NULL, title_watch, NULL));
+    }
+    pw_pop_surface_start();
     clog("{\"build\":\"P017\",\"event\":\"wine_main\",\"argc\":%d}", wine_argc);
     __wine_main(wine_argc, wine_argv);
     clog("{\"build\":\"P017\",\"event\":\"wine_main_returned\"}");

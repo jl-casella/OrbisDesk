@@ -998,7 +998,8 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
 ''','''    info->hThread = info->hProcess = 0;
     info->dwProcessId = info->dwThreadId = 0;
 
-    if (ps4_execution_mode( app_name ) == PW_EXEC_SEPARATE)
+    if (ps4_execution_mode( app_name ) == PW_EXEC_SEPARATE ||
+        (ps4_separate_thread && ps4_separate_thread == GetCurrentThreadId()))
     {
         /* PoP Phase D.3: the program runs in a separate native process. The title's watcher
          * (native/pop_loader_spawn.h) starts it through the GoldHEN loader and it runs the image under Wine
@@ -1050,6 +1051,18 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
         }
         for (tries = 0; tries < 300; tries++)   /* 30 s: the loader spawn and Wine's start take a few */
         {
+            /* PoP D.7: the title reports a start that failed (no resident loader even after sending it) */
+            {
+                WCHAR failed[96];
+                lstrcpyW( failed, L"Z:\\\\orbisdesk\\\\process-p014\\\\failed-" );
+                lstrcatW( failed, started + 34 );   /* the token digits after "started-" */
+                if (GetFileAttributesW( failed ) != INVALID_FILE_ATTRIBUTES)
+                {
+                    ERR( "PWSEP separate_failed_reported image=%s token=%lu\\n", debugstr_w(app_name), token );
+                    DeleteFileW( failed );
+                    break;
+                }
+            }
             file = CreateFileW( started, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
             if (file != INVALID_HANDLE_VALUE)
@@ -1135,6 +1148,97 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
         ERR( "PWWOW guest32 base_taken relaunch image=%s cmd=%s dir=%s\\n", debugstr_w(app_name),
              debugstr_w(tidy_cmdline), debugstr_w(cur_dir) );
         SetLastError( saved );
+        /* PoP D.7 (hardware 2026-11-13: Vampire - Bloodlines' vampire.exe, the game itself, starts a "CleanUp
+         * Application" from %TEMP% at its own base 0x400000; D.6 moved the game to a separate process, where Direct3D
+         * has no GPU). The games that launchers start import a graphics library (POP.EXE d3d9, Worms3D.exe d3d8,
+         * d3d9 and opengl32); a started program that imports none runs in a separate process itself, and the
+         * starter keeps the base and the GPU here. A file that cannot be read keeps D.6. */
+        {
+            static const char *const graphics[] = {"d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d11.dll",
+                                                   "d3d12.dll", "dxgi.dll", "ddraw.dll", "opengl32.dll", "d3dim.dll",
+                                                   "d3drm.dll", "glu32.dll"};
+            HANDLE file = CreateFileW( app_name, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                       NULL, OPEN_EXISTING, 0, NULL );
+            BOOL parsed = FALSE, draws = FALSE;
+            DWORD read;
+
+            if (file != INVALID_HANDLE_VALUE)
+            {
+                IMAGE_DOS_HEADER dos;
+                IMAGE_NT_HEADERS32 nt;
+                IMAGE_SECTION_HEADER sections[96];
+                IMAGE_IMPORT_DESCRIPTOR desc;
+                DWORD rva, offset = 0, count = 0, i, j, k;
+
+                if (ReadFile( file, &dos, sizeof(dos), &read, NULL ) && read == sizeof(dos) &&
+                    dos.e_magic == IMAGE_DOS_SIGNATURE &&
+                    SetFilePointer( file, dos.e_lfanew, NULL, FILE_BEGIN ) != INVALID_SET_FILE_POINTER &&
+                    ReadFile( file, &nt, sizeof(nt), &read, NULL ) && read == sizeof(nt) &&
+                    nt.Signature == IMAGE_NT_SIGNATURE && nt.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC &&
+                    nt.FileHeader.NumberOfSections <= ARRAY_SIZE(sections) &&
+                    SetFilePointer( file, dos.e_lfanew + FIELD_OFFSET( IMAGE_NT_HEADERS32, OptionalHeader ) +
+                                    nt.FileHeader.SizeOfOptionalHeader, NULL, FILE_BEGIN ) != INVALID_SET_FILE_POINTER &&
+                    ReadFile( file, sections, nt.FileHeader.NumberOfSections * sizeof(sections[0]), &read, NULL ) &&
+                    read == nt.FileHeader.NumberOfSections * sizeof(sections[0]))
+                {
+                    count = nt.FileHeader.NumberOfSections;
+                    rva = nt.OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_IMPORT ?
+                          nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress : 0;
+                    parsed = TRUE;   /* no import table: imports nothing */
+                    for (i = 0; rva && i < count; i++)
+                        if (rva >= sections[i].VirtualAddress &&
+                            rva < sections[i].VirtualAddress + max( sections[i].Misc.VirtualSize, sections[i].SizeOfRawData ))
+                            offset = rva - sections[i].VirtualAddress + sections[i].PointerToRawData;
+                    if (rva && !offset) parsed = FALSE;
+                    for (j = 0; offset && j < 256 && !draws; j++)
+                    {
+                        char name[32];
+                        DWORD name_offset = 0;
+
+                        if (SetFilePointer( file, offset + j * sizeof(desc), NULL, FILE_BEGIN ) == INVALID_SET_FILE_POINTER ||
+                            !ReadFile( file, &desc, sizeof(desc), &read, NULL ) || read != sizeof(desc))
+                        {
+                            parsed = FALSE;
+                            break;
+                        }
+                        if (!desc.Name) break;
+                        for (i = 0; i < count; i++)
+                            if (desc.Name >= sections[i].VirtualAddress &&
+                                desc.Name < sections[i].VirtualAddress + max( sections[i].Misc.VirtualSize, sections[i].SizeOfRawData ))
+                                name_offset = desc.Name - sections[i].VirtualAddress + sections[i].PointerToRawData;
+                        if (!name_offset || SetFilePointer( file, name_offset, NULL, FILE_BEGIN ) == INVALID_SET_FILE_POINTER ||
+                            !ReadFile( file, name, sizeof(name) - 1, &read, NULL ))
+                        {
+                            parsed = FALSE;
+                            break;
+                        }
+                        name[min( read, sizeof(name) - 1 )] = 0;
+                        for (k = 0; k < ARRAY_SIZE(graphics); k++)
+                            if (!lstrcmpiA( name, graphics[k] )) draws = TRUE;
+                    }
+                }
+                CloseHandle( file );
+            }
+            ERR( "PWSEP base_taken started=%s parsed=%d draws=%d\\n", debugstr_w(app_name), parsed, draws );
+            if (parsed && !draws && ps4_execution_mode( app_name ) == PW_EXEC_AUTO)
+            {
+                BOOL started;
+
+                ps4_separate_thread = GetCurrentThreadId();
+                started = CreateProcessW( app_name, tidy_cmdline, NULL, NULL, inherit, flags, env, cur_dir,
+                                          (STARTUPINFOW *)startup_info, info );
+                ps4_separate_thread = 0;
+                ERR( "PWSEP base_taken helper_to_separate=%d error=%lu image=%s\\n", started, started ? 0 : GetLastError(),
+                     debugstr_w(app_name) );
+                if (started)
+                {
+                    ps4_base_taken = FALSE;
+                    status = STATUS_SUCCESS;
+                    goto done;
+                }
+                SetLastError( saved );
+            }
+        }
         /* PoP D.6 (Worms 3D's and Prince of Persia's launchers, user feedback 2026-11-13): before the relaunch
          * prompt, the starter that holds the base moves to a separate process (docs/POP_SEPARATE_PROCESS.md); started
          * there, it hands its program to this title (D.4, D.5), where the base is then free. The choice is kept in
@@ -1280,6 +1384,41 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
         else if (GetEnvironmentVariableW( L"WINE_PS4_GUESTS", mode, ARRAY_SIZE(mode) ) &&
             wcsicmp( name, L"wineboot.exe" ))
         {
+            const WCHAR *ext = wcsrchr( name, '.' );
+
+            /* PoP D.6 (user feedback 2026-11-13: NFS Most Wanted's .bat files from the desktop): a batch file runs
+             * through cmd.exe, as CreateProcess does on Windows (Wine's create_cmd_process, which this guest path
+             * never reaches); explorer's ShellExecute hands .bat and .cmd to CreateProcess as executables. cmd.exe
+             * runs as a console guest (W056/W062). */
+            if (ext && (!wcsicmp( ext, L".bat" ) || !wcsicmp( ext, L".cmd" )))
+            {
+                const WCHAR *what = tidy_cmdline ? tidy_cmdline : app_name;
+                SIZE_T length = lstrlenW( what ) + 64;
+                WCHAR *batch = HeapAlloc( GetProcessHeap(), 0, length * sizeof(WCHAR) ), dir[MAX_PATH];
+                const WCHAR *slash = wcsrchr( app_name, '\\\\' );
+                BOOL ok = FALSE;
+
+                if (!cur_dir && slash && slash - app_name < MAX_PATH)
+                {
+                    memcpy( dir, app_name, (slash - app_name) * sizeof(WCHAR) );
+                    dir[slash - app_name] = 0;
+                }
+                else dir[0] = 0;
+                if (batch)
+                {
+                    swprintf( batch, length, L"C:\\\\windows\\\\system32\\\\cmd.exe /s /c \\"%ls\\"", what );
+                    ok = CreateProcessInternalW( token, NULL, batch, process_attr, thread_attr, inherit, flags, env,
+                                                 cur_dir ? cur_dir : dir[0] ? dir : NULL, startup_info, info, NULL );
+                    ERR( "PWOPEN batch image=%s command=%s ok=%d error=%lu\\n", debugstr_w(app_name), debugstr_w(batch), ok,
+                         ok ? 0 : GetLastError() );
+                    HeapFree( GetProcessHeap(), 0, batch );
+                }
+                if (ok)
+                {
+                    status = STATUS_SUCCESS;
+                    goto done;
+                }
+            }
             ERR( "PWOPEN reject_title_replacement image=%s\\n", debugstr_w(app_name) );
             status = STATUS_NOT_SUPPORTED;
             goto done;
@@ -1297,6 +1436,7 @@ revise('kernelbase','process','''    USHORT machine = 0;
     WCHAR ps4_image[MAX_PATH], ps4_dir[MAX_PATH];  /* W262: a program whose base another guest holds */
     BOOL ps4_base_taken = FALSE;
 #endif
+    static DWORD ps4_separate_thread;  /* PoP D.7: this thread's next start runs in a separate process */
 
     /* Process the AppName and/or CmdLine to get module name and path */''','The i386 relaunch of a program whose base is taken (W262).')
 

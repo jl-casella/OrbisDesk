@@ -45,6 +45,12 @@ def build_wine_prx():
             HW + 'wine_boot_entry.o', 'build/wine-boot/wine_boot_services.o', '.deps/sdk/OpenOrbis/PS4Toolchain/lib/crt1.o',
             HW + 'hw_sink_gpu.o'}   # D.4: RADV, its probe and runtime and libc++ stay; the VideoOut sink does not
     title_wraps = {'--wrap=' + n for n in ('exit', '_exit', 'sceKernelDebugOutText', 'write', 'vfprintf', 'fprintf', 'fputs', 'fwrite')}
+    # Use exactly the same bounded request writer and redirected Wine object as the title.
+    request_writer = manifest['request_writer']
+    for key in ('client_object', 'writer_object'):
+        path = ROOT / request_writer[key]
+        if command.count(str(path)) != 1 or sha(path) != request_writer[key + '_sha256']:
+            raise SystemExit(f'{path} differs from the title request writer manifest')
     out, i = [], 0
     while i < len(command):
         arg = command[i]
@@ -78,7 +84,8 @@ def build_wine_prx():
     wraps = ['exit', 'sceKernelDebugOutText', '__assert_fail', 'mmap', 'pread', 'mprotect', 'munmap', 'fstat',
              'sceKernelMapFlexibleMemory', 'sceKernelMapDirectMemory', 'pw_wine_poll',
              'virtual_map_user_shared_data', 'virtual_set_large_address_space', 'nl_langinfo', 'sceKernelLoadStartModule',
-             'NtCreateUserProcess', 'NtQueryInformationProcess']   # D.5: CreateProcess returns (pop_wine_child_stubs.c)
+             'NtCreateUserProcess', 'NtQueryInformationProcess',   # D.5: CreateProcess returns (pop_wine_child_stubs.c)
+             'write']   # D.7: capture simple writes, alongside the Wine request writer above
     out[1:1] = ['-u', 'aligned_alloc', '-u', '__memalign', '-u', 'memalign', '-u', 'posix_memalign',
                 '--export-dynamic-symbol=pop_wine_child_run', '--export-dynamic-symbol=pop_wine_child_run_job',
                 *('--wrap=' + w for w in wraps), *objects]
@@ -90,7 +97,8 @@ def build_wine_prx():
     if result.returncode or missing:
         raise SystemExit('PRX link failed; undefined: %s (build/pop-wine-child/link.log)' % ', '.join(missing))
     fself_lib(WORK / 'pop_wine_child.elf', WORK / 'pop-wine-child.prx')
-    return {'base_link_eboot_sha256': manifest.get('eboot_sha256'), 'wraps': wraps}
+    return {'base_link_eboot_sha256': manifest.get('eboot_sha256'), 'wraps': wraps,
+            'request_writer': request_writer}
 
 
 def build_probe_prx():
@@ -130,6 +138,7 @@ def main():
     outputs = ['pop-wine-child.prx', 'pop-prx-probe.prx', 'pop-wine-join.elf', 'separate_d1.exe', 'separate_d2.exe',
                'separate_launcher.exe', 'separate_game.exe', 'separate_inverse.exe']
     inputs = ['native/pop_wine_child.c', 'native/pop_child_sink.c', 'native/pop_wine_child_stubs.c', 'native/pop_prx_probe.c',
+              'platform/ps4/pw_wine_request_write.c',
               'native/process_p014_child.c', 'native/pop_separate.h', 'native/pop_wine_join_core.h', 'native/pop_wine_proto.h',
               'native/pop_separate_window.h', 'fixtures/win32/separate_d1.c', 'fixtures/win32/separate_d2.c',
               'fixtures/win32/separate_pair.c', 'tools/build-pop-wine-child.py']

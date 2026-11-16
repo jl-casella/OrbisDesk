@@ -181,6 +181,26 @@ for replaced,entry in world_build['replaces'].items():
     if sha(ROOT/entry['object'])!=entry['sha256']:raise SystemExit('wow64 world object changed after its build: '+entry['object'])
     if command.count(str(ROOT/replaced))!=1:raise SystemExit('Expected one '+replaced+' in the link')
     command=[str(ROOT/entry['object']) if arg==str(ROOT/replaced) else arg for arg in command]
+# Wine's client server.c uses writev for requests with data. Redirect just that object
+# so every Wine client uses bounded writes, including the title's HID thread (run-0147).
+request_client=ROOT/'build/wow64-world-ps4/server.o'
+request_client_chunked=work/'server-request-chunks.o'
+request_writer_source=ROOT/'platform/ps4/pw_wine_request_write.c'
+request_writer=work/'pw_wine_request_write.o'
+if command.count(str(request_client))!=1:
+    raise SystemExit('Expected exactly one Wine client request object in the link')
+def undefined_symbols(obj):
+    listing=subprocess.check_output(['llvm-nm-19','--undefined-only',str(obj)],text=True)
+    return {line.split()[-1] for line in listing.splitlines() if line.strip()}
+original_imports=undefined_symbols(request_client)
+if 'writev' not in original_imports:
+    raise SystemExit('Wine client object no longer calls writev')
+run(['llvm-objcopy-19','--redefine-sym=writev=pw_wine_request_writev',request_client,request_client_chunked])
+if undefined_symbols(request_client_chunked)!=(original_imports-{'writev'})|{'pw_wine_request_writev'}:
+    raise SystemExit('Unexpected Wine client imports after request writer substitution')
+run([*flags,'-c',request_writer_source,'-o',request_writer])
+command[command.index(str(request_client))]=str(request_client_chunked)
+command[1:1]=[str(request_writer)]
 # Keep the proven library search order: build/wine-boot/lib/libc.a must win over the SDK
 # libc.a, whose readlink/lstat are raw FreeBSD syscalls (ENOSYS for W001 on hardware).
 # The Steam client inside the title (tools/build-steam-hosted.py): one object whose only globals are
@@ -211,6 +231,17 @@ sep_child_elf=app/'pop-wine-join.elf'
 subprocess.run([str(PAYLOAD_SDK/'bin/orbis-clang'),'-Wall','-O2','-ffile-prefix-map=%s=.'%ROOT,
                 '-I',str(ROOT/'native'),'-o',str(sep_child_elf),str(ROOT/'native/process_p014_child.c')],
                cwd=ROOT,env=dict(os.environ,PS4_PAYLOAD_SDK=str(PAYLOAD_SDK)),check=True)
+# PoP D.7 (hardware 2026-11-13: after a console reboot separate programs failed until the loader was sent from a PC):
+# the resident loader the title sends to GoldHEN BinLoader (127.0.0.1:9090) when it does not answer
+# (native/pop_loader_spawn.h). The same verified build tools/start-process-loader.py sends (tools/build-process-loader.py,
+# pinned by tools/process-loader.lock.json), with its GPL-3.0-or-later corresponding source next to it.
+loader_dir=ROOT/'out/process-loader'
+loader_manifest=json.loads((loader_dir/'manifest.json').read_text())
+loader_raw=(loader_dir/'elfldr.elf').read_bytes()
+if hashlib.sha256(loader_raw).hexdigest()!=loader_manifest['artifacts']['elfldr.elf']['sha256']:
+    raise SystemExit('out/process-loader/elfldr.elf differs from its manifest')
+(app/'elfldr.elf').write_bytes(loader_raw)
+shutil.copyfile(loader_dir/'upstream-source.tar.gz',app/'elfldr-source.tar.gz')
 # Stage the same sealed prefix without DOS links: PS4 applications cannot use symbolic
 # links, so pw_wine_fs serves c: and z: from a fixed mount table.
 data=work/'runtime';data.mkdir(exist_ok=True)
@@ -1339,6 +1370,12 @@ for source in ('native/dos_audio.c','native/doshost_win32.c','platform/ps4/pw_do
     manifest['source_hashes'][source]=sha(ROOT/source)
 manifest['product']={'name':'OrbisDesk','slug':'orbisdesk','state_root':'/data/orbisdesk',
     'upgrade_identity_preserved':True,'legacy_evidence_unchanged':True}
+manifest['request_writer']={
+    'client_object':str(request_client_chunked.relative_to(ROOT)),
+    'client_object_sha256':sha(request_client_chunked),
+    'writer_object':str(request_writer.relative_to(ROOT)),
+    'writer_object_sha256':sha(request_writer)}
+manifest['source_hashes'][str(request_writer_source.relative_to(ROOT))]=sha(request_writer_source)
 for source in ('platform/ps4/pw_brand.h','tools/project_brand.py','tools/orbis_package.py'):
     manifest['source_hashes'][source]=sha(ROOT/source)
 (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')

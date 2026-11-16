@@ -1017,6 +1017,45 @@ static void merge_system_reg(void)
 }
 
 #include "hw_install.h"  /* alpha-1: the first-run installer (uses note, read_whole and the loading screen) */
+/* PoP D.7 (hardware 2026-11-13 and 14: forced restarts left the prefix's registry files at 0 bytes, and Wine's
+ * boot stopped with "wine boot stopped"): a registry file that is empty or lost its header comes back from the
+ * copy the last good start kept; a good one refreshes that copy */
+static void guard_registry(void)
+{
+    static const char *const names[]={"system.reg","user.reg","userdef.reg"};
+    for(unsigned i=0;i<3;i++){
+        char live[96],good[96],temp[104];
+        snprintf(live,sizeof(live),"/data/wine-prefix/%s",names[i]);
+        snprintf(good,sizeof(good),"/data/wine-prefix/%s.good",names[i]);
+        size_t size=0;char *data=read_whole(live,&size);
+        int valid=data && size>23 && !strncmp(data,"WINE REGISTRY Version 2",23);
+        if(!valid){
+            free(data);data=read_whole(good,&size);
+            if(!data || size<=23 || strncmp(data,"WINE REGISTRY Version 2",23)){
+                note(HW_BUILD " registry_guard %s damaged no_good_copy\n",names[i]);free(data);continue;
+            }
+        }
+        const char *to=valid?good:live;
+        snprintf(temp,sizeof(temp),"%s.tmp",to);
+        int fd=open(temp,O_CREAT|O_TRUNC|O_WRONLY,0666);
+        size_t done=0;
+        while(fd>=0 && done<size){ssize_t n=write(fd,data+done,size-done);if(n<=0)break;done+=(size_t)n;}
+        int ok=fd>=0 && done==size && !fsync(fd);
+        if(fd>=0) {fchmod(fd,0666);close(fd);}
+        if(ok) ok=!rename(temp,to);
+        if(!ok) unlink(temp);
+        note(HW_BUILD " registry_guard %s %s bytes=%lu ok=%d\n",names[i],valid?"good_copy_saved":"restored",(unsigned long)size,ok);
+        free(data);
+    }
+}
+/* PoP D.7 (hardware 2026-11-14: a console that stopped answering had to be restarted, and the run log lost
+ * its last lines): the run log reaches the disk every 2 seconds */
+static void *log_sync(void *arg)
+{
+    (void)arg;
+    for(;;){sceKernelUsleep(2000000);if(log_fd>=0)fsync(log_fd);}
+    return NULL;
+}
 int main(void)
 {
     pw_brand_prepare_state();
@@ -1032,6 +1071,7 @@ int main(void)
     {extern int pw_native_log_fd;pw_native_log_fd=log_fd;}  /* W253: platform/ps4/pw_wine_signals.c's lost-signal line */
     note(HW_BUILD " entered_launcher log=%s\n",path);
     redirect_stderr();
+    {pthread_t sync_thread;int sync_rc=pthread_create(&sync_thread,NULL,log_sync,NULL);note(HW_BUILD " log_sync rc=%d\n",sync_rc);}
     install_crash_handler();
     trace_setup();
     loading(5,"PREPARING WINE");
@@ -1073,6 +1113,7 @@ int main(void)
         if(hw_install_runtime(detail,sizeof(detail))) {panel("INSTALL FAILED",detail);for(;;)sceKernelUsleep(1000000);}
     }
     if(boot_root) pw_hw_jailbreak();  /* phase 10: Root on the loading screen */
+    guard_registry();
     merge_system_reg();
     /* W015: first GUI program on hardware, the PE64 window fixture of increment 24. */
     /* W038: the program comes from /data/orbisdesk/launch.txt when present: the first line

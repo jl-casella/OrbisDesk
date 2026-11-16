@@ -19,6 +19,10 @@
  * in order (pop_loader_spawn.h): /data first, so a child iteration is an FTP upload instead of a reinstall;
  * then the sandbox copy the install placed. */
 #define POP_SEP_CHILD_ELF  "/app0/pop-wine-join.elf"      /* pre-jailbreak path (bundled in the package) */
+/* PoP D.7: the resident loader the title sends to GoldHEN BinLoader when it is missing (native/pop_loader_spawn.h) */
+#define POP_SEP_LOADER_ELF "/app0/elfldr.elf"
+#define POP_SEP_LOADER_ELF_SANDBOX "/mnt/sandbox/ORBW00002_000/app0/elfldr.elf"
+#define POP_SEP_LOADER_ELF_DATA "/data/orbisdesk/elfldr.elf"
 #define POP_SEP_CHILD_ELF_SANDBOX "/mnt/sandbox/ORBW00002_000/app0/pop-wine-join.elf"  /* real-root path post-escape */
 #define POP_SEP_CHILD_ELF_DATA    "/data/orbisdesk/pop-wine-join.elf"                  /* FTP-uploadable fallback */
 #define POP_SEP_PREFIX     "/data/wine-prefix"            /* the title's WINEPREFIX */

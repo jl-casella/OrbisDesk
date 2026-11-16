@@ -103,6 +103,37 @@ done:
     return result;
 }
 
+/* PoP D.7 (hardware 2026-11-13: after each console reboot separate programs did not start until the loader was
+ * sent again from a PC): the resident loader is GoldHEN BinLoader's to start. When it does not answer, the title
+ * sends the bundled elfldr (POP_SEP_LOADER_ELF, built and pinned by tools/process-loader, GPL-3.0-or-later, its
+ * source next to it) to BinLoader on 127.0.0.1:9090, as tools/start-process-loader.py --start does from a PC.
+ * Returns the bytes sent, or <0. */
+static long pop_loader_bootstrap(FILE *log){
+    static const char *const candidates[]={POP_SEP_LOADER_ELF_DATA,POP_SEP_LOADER_ELF_SANDBOX,POP_SEP_LOADER_ELF};
+    FILE *elf=NULL;long result=-1;
+    for(unsigned i=0;i<sizeof(candidates)/sizeof(candidates[0])&&!elf;i++)
+        if((elf=fopen(candidates[i],"rb")))pop_sep_log(log,"loader_bootstrap_path",(long)i);
+    if(!elf){pop_sep_log(log,"loader_bootstrap_missing",-1);return -1;}
+    long sock=sceNetSocket("p014-binloader",2,1,0);if(sock<0){pop_sep_log(log,"loader_bootstrap_socket",sock);fclose(elf);return sock;}
+    struct {uint8_t len,family;uint16_t port;uint8_t ip[4],zero[8];} address={16,2,0,{127,0,0,1},{0}};
+    address.port=(uint16_t)((9090>>8)|((9090&255)<<8));
+    long rc=sceNetConnect((int)sock,&address,sizeof(address));if(rc<0)rc=pop_net_error();
+    if(rc<0){pop_sep_log(log,"loader_bootstrap_connect",rc);goto done;}
+    unsigned char buf[4096];size_t n;unsigned total=0;
+    while((n=fread(buf,1,sizeof(buf),elf))){
+        for(size_t off=0;off<n;){
+            long sent=sceNetSend((int)sock,buf+off,n-off,0);
+            if(sent<=0){pop_sep_log(log,"loader_bootstrap_send",sent<0?pop_net_error():0);goto done;}
+            off+=(size_t)sent;
+        }
+        total+=(unsigned)n;
+    }
+    pop_sep_log(log,"loader_bootstrap_sent",total);result=(long)total;
+done:
+    fclose(elf);sceNetSocketClose((int)sock);
+    return result;
+}
+
 /* OpenOrbis' musl sockaddr_un has no sun_len (sun_family is byte 0), but the PS4 kernel is BSD: it reads
  * byte 0 as the length and byte 1 as the family, so a musl-layout bind fails with EINVAL (hardware,
  * 2026-11-12). Build the BSD layout by hand: len, AF_UNIX, path, NUL. */
@@ -298,7 +329,18 @@ static void *pop_separate_watch(void *arg){
             pop_sep_log(log,"job_written",job_ok?(long)got:-(long)errno);
             const char *elf=pop_pick_child_elf(log);
             long sent=elf?pop_loader_spawn_elf(elf,log):-1;
+            /* PoP D.7: no resident loader (a console reboot): send it, then try again while it starts */
+            if(sent<0&&elf&&pop_loader_bootstrap(log)>0)
+                for(int attempt=0;attempt<10&&sent<0;attempt++){sleep(1);sent=pop_loader_spawn_elf(elf,log);}
             pop_sep_log(log,"spawn_done",sent);
+            if(sent<0){
+                /* PoP D.7: kernelbase stops waiting for started-<token> (30 s with the desktop thread held) */
+                char failed[256];unsigned long token=strtoul(app,NULL,10);
+                snprintf(failed,sizeof(failed),POP_SEP_DIR "/failed-%lu",token);
+                FILE *ff=fopen(failed,"w");if(ff){fprintf(ff,"%ld\n",sent);fclose(ff);chmod(failed,0666);}
+                unlink(POP_SEP_JOB);   /* no stale job for the next start */
+                pop_sep_log(log,"spawn_failed_reported",(long)token);
+            }
         }
         usleep(200000);
     }
