@@ -99,6 +99,27 @@ MangoJuice escribe `%APPDATA%\MangoHud\MangoHud.conf`, que en la consola es `/da
 
 El archivo del usuario sobrevive a las actualizaciones. `tools/console_state.py` lo lista en `CONSOLE_OWNED_FILES`. El uploader por FTP y el instalador del primer arranque (líneas `P` de `install.txt`, `native/hw_install.h`) lo copian solo cuando falta. Antes, cada actualización lo reemplazaba por el de la build.
 
+### MangoHud no lo leía (2026-11-16)
+
+MangoJuice guardaba las opciones y MangoHud dibujaba las suyas por defecto, así que desmarcar GPU, por ejemplo, no cambiaba nada en un programa Vulkan. MangoHud busca `$XDG_CONFIG_HOME`, o `$HOME/.config`, más `/MangoHud/MangoHud.conf` (`src/config.cpp` `enumerate_config_files`, `src/file_utils.cpp` `get_config_dir`). Aquí `HOME` vale `/data/wine-home` (`platform/ps4/pw_wine_platform.c`), una ruta Unix, y la capa es un PE dentro del invitado, así que ese nombre se resuelve contra la unidad actual y no existe ningún candidato. MangoHud se quedaba con sus valores por defecto: `fps`, `frametime`, `frame_timing`, `cpu_stats` y `gpu_stats`. Estadisticas, el HUD propio del overlay del título, tampoco lo encontraba, por otro motivo: miraba la ruta correcta,
+pero pedía el registro del archivo con el `OrbisKernelStat` del SDK, que no coincide con el registro que devuelve el
+kernel (`platform/ps4/pw_wine_platform.c` `PwOrbisStat`, W230). La hora de modificación leía los bytes equivocados y
+daba 0 en todos los candidatos, así que no se elegía ninguna ruta y el HUD también caía en los valores por defecto de
+MangoHud (`PWOVERLAY hud: no MangoHud.conf`, run-0150 y run-0151). Ahora lo pide con `pw_wine_stat`, que convierte ese
+registro, y usa el tamaño del archivo como marca de cambio donde la consola no informa hora.
+
+El título ahora pasa `MANGOHUD_CONFIGFILE=C:\users\orbis\AppData\Roaming\MangoHud\MangoHud.conf` junto al `MANGOHUD=1` que ya pasaba (`native/wine_hardware.c`), de modo que los dos HUD leen el archivo que escribe MangoJuice. Donde exista `C:\mangohud\MangoHud.conf`, MangoHud sigue leyendo ese primero: es su propio candidato de Windows, probado antes que la variable, y aquí nada lo escribe.
+
+La comprobación en hardware que lo encontró: un archivo de prueba en esa ruta, con solo `fps` y `position=bottom-right`, movió el HUD de MangoHud y dejó Estadisticas donde estaba. Se borró después.
+
+### Mostrar y ocultar desde el overlay dejó de funcionar (2026-11-16)
+
+En cuanto MangoHud leyó el archivo de MangoJuice, mostrar y ocultar desde el overlay dejó de funcionar, tanto en programas de 32 bits como de 64. El overlay envía Shift+F12, que MangoHud lee como su F12 por defecto (`native/hw_overlay.c`, `HUD_HOLD_US`), y el log seguía mostrando que la tecla se enviaba. MangoJuice siempre escribe `toggle_hud` (`Shift_R+F12`, y una vez en la consola `Shift_L+0xffffff`). MangoHud interpreta los nombres de teclas con xkbcommon, que solo compila con X11 o Wayland. Sin ellos, como en toda build de Windows, `src/overlay_params.cpp` define `parse_toggle_hud` y los demás intérpretes de teclas rápidas como `{}`, así que una línea que nombraba una tecla rápida dejaba una lista de teclas vacía que nunca coincidía. La redefinición `_WIN32` del fork en `parse_overlay_config` viene después de las funciones que usan esos intérpretes, así que nunca se aplicaba.
+
+[patch-mangohud-win-hotkeys.py](../tools/vk-h0/patch-mangohud-win-hotkeys.py) hace ahora que esos intérpretes conserven el valor actual: los valores por defecto de Windows, F12 para `toggle_hud`. Por lo tanto, una tecla rápida escrita en `MangoHud.conf` se ignora y se mantiene la de por defecto. [build-mangohud.sh](../tools/vk-h0/build-mangohud.sh) lo aplica, y [build-mangohud-i386.sh](../tools/vk-h0/build-mangohud-i386.sh) comprueba su marca en el árbol copiado.
+
+Hardware, versión de la app 04.08 (run-0158): d3d9test32 se ejecutó como invitado de 32 bits con MangoHud cargado (`loaded32=1`). El overlay envió dos veces `Shift+F12 held 250 ms`, y el usuario vio cómo el HUD se ocultaba y volvía. La desaparición de la fila de GPU al desmarcarla se vio en vkcube con la 04.06. Las demás combinaciones no se comprobaron en la 04.08: la alternancia en un programa de 64 bits, la fila de GPU en un programa de 32 bits y que Estadisticas lea el archivo.
+
 ## Qué se comprobó y qué no
 
 - El builder se ejecutó de principio a fin.

@@ -1173,6 +1173,18 @@ int main(void)
      * Vulkan and OpenGL (Zink) program */
     static char mangohud[]="--env=MANGOHUD=1";
     args[argc++]=mangohud;
+    /* Hardware 2026-11-16: MangoJuice saved the HUD options and MangoHud ignored every one of them, drawing
+     * its own defaults (fps, frametime, frame_timing, cpu_stats, gpu_stats). MangoHud looks for
+     * $XDG_CONFIG_HOME, or $HOME/.config, plus /MangoHud/MangoHud.conf (src/config.cpp
+     * enumerate_config_files, src/file_utils.cpp get_config_dir). HOME is /data/wine-home here
+     * (platform/ps4/pw_wine_platform.c), a Unix path, and the layer is a PE inside the guest, so that name
+     * resolves against the current drive and no candidate exists; MangoHud then kept its defaults. Name the
+     * file MangoJuice writes and the overlay's Estadisticas reads, %APPDATA%\\MangoHud\\MangoHud.conf
+     * (tools/build-wine-hardware.py, tools/console_state.py CONSOLE_OWNED_FILES). Where
+     * C:\\mangohud\\MangoHud.conf exists MangoHud still reads that one first (its own Windows candidate, tried
+     * before this variable): an escape hatch, and not a path anything here writes. */
+    static char mangohud_conf[]="--env=MANGOHUD_CONFIGFILE=C:\\users\\orbis\\AppData\\Roaming\\MangoHud\\MangoHud.conf";
+    args[argc++]=mangohud_conf;
     /* W087: wined3d without 3D, so dxgi only enumerates (the Khronos loader verifies registry
      * drivers with a DXGI factory, and MangoHud asks it for the GPU); its OpenGL init failed
      * and left no adapter (W086: VK_ERROR_INCOMPATIBLE_DRIVER).

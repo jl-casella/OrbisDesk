@@ -16,6 +16,6 @@ CONSOLE_OWNED=('software\\wine\\appdefaults','control panel\\colors','control pa
                'software\\orbisdesk')
 # Runtime files the console keeps once it has them: an update (upload-hardware.py, or the launcher's first-run
 # installer through install.txt's P lines, native/hw_install.h) copies one only when it is missing.
-# MangoHud.conf: the user's HUD choices, made with MangoHud Settings (docs/MANGOHUD_SETTINGS.md) or Notepad;
+# MangoHud.conf: the user's HUD choices, made with MangoJuice (docs/MANGOJUICE.md) or Notepad;
 # the build's copy is the clean-install default.
 CONSOLE_OWNED_FILES=('wine-prefix/drive_c/users/orbis/AppData/Roaming/MangoHud/MangoHud.conf',)

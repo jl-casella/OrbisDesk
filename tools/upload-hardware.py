@@ -172,7 +172,7 @@ if not args.skip_runtime:
             if not retrying(chmod,remote,0o666):chmod_failed.append(name)
             continue
         if name in CONSOLE_OWNED_FILES and retrying(remote_hash,remote) is not None:
-            # the user's copy (MangoHud Settings' MangoHud.conf) stays; the build's is only the clean-install default
+            # the user's copy (MangoJuice's MangoHud.conf) stays; the build's is only the clean-install default
             counts['kept']=counts.get('kept',0)+1
             print(index,'kept',name,'console-owned',flush=True)
             continue

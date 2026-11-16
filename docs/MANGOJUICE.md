@@ -99,6 +99,27 @@ MangoJuice writes `%APPDATA%\MangoHud\MangoHud.conf`, which is `/data/wine-prefi
 
 The user's file survives updates. `tools/console_state.py` lists it in `CONSOLE_OWNED_FILES`. The FTP uploader and the first-run installer (`install.txt` `P` lines, `native/hw_install.h`) copy it only when it is missing. Before this, every update replaced it with the build's default.
 
+### MangoHud did not read it (2026-11-16)
+
+MangoJuice saved the options and MangoHud drew its own defaults, so unticking GPU, for one, changed nothing on a Vulkan program. MangoHud looks for `$XDG_CONFIG_HOME`, or `$HOME/.config`, plus `/MangoHud/MangoHud.conf` (`src/config.cpp` `enumerate_config_files`, `src/file_utils.cpp` `get_config_dir`). `HOME` is `/data/wine-home` here (`platform/ps4/pw_wine_platform.c`), a Unix path, and the layer is a PE inside the guest, so that name resolves against the current drive and no candidate exists. MangoHud kept its defaults: `fps`, `frametime`, `frame_timing`, `cpu_stats` and `gpu_stats`. Estadisticas, the title overlay's own HUD, did not find it either, for a different reason: it looked at the right
+path but asked for the file's record through the SDK's `OrbisKernelStat`, which does not match the record the kernel
+returns (`platform/ps4/pw_wine_platform.c` `PwOrbisStat`, W230). The modification time read the wrong bytes and came
+back 0 for every candidate, so no path was chosen and the HUD fell back to MangoHud's defaults as well
+(`PWOVERLAY hud: no MangoHud.conf`, run-0150 and run-0151). It now asks through `pw_wine_stat`, which converts that
+record, and takes the file's size as the change stamp where the console reports no time.
+
+The title now passes `MANGOHUD_CONFIGFILE=C:\users\orbis\AppData\Roaming\MangoHud\MangoHud.conf` next to the `MANGOHUD=1` it already passed (`native/wine_hardware.c`), so both HUDs read the file MangoJuice writes. Where `C:\mangohud\MangoHud.conf` exists MangoHud still reads that one first: it is its own Windows candidate, tried before the variable, and nothing here writes it.
+
+The hardware check that found this: a probe config at that path, with `fps` alone and `position=bottom-right`, moved MangoHud's HUD and left Estadisticas where it was. It was removed afterwards.
+
+### The overlay's show/hide stopped (2026-11-16)
+
+Once MangoHud read MangoJuice's file, the overlay's show/hide stopped working in 32-bit and 64-bit programs alike. The overlay sends Shift+F12, which MangoHud reads as its default F12 (`native/hw_overlay.c`, `HUD_HOLD_US`), and the log still showed the key being sent. MangoJuice always writes `toggle_hud` (`Shift_R+F12`, and on the console once `Shift_L+0xffffff`). MangoHud parses key names with xkbcommon, which it only builds with X11 or Wayland. Without them, which is every Windows build, `src/overlay_params.cpp` defines `parse_toggle_hud` and the other hotkey parsers as `{}`, so a line naming a hotkey left an empty key list that never matched. The fork's `_WIN32` redefinition in `parse_overlay_config` comes after the functions that use those parsers, so it never applied.
+
+[patch-mangohud-win-hotkeys.py](../tools/vk-h0/patch-mangohud-win-hotkeys.py) now makes those parsers keep the current value: the Windows defaults, F12 for `toggle_hud`. A hotkey written in `MangoHud.conf` is therefore ignored and the default stays. [build-mangohud.sh](../tools/vk-h0/build-mangohud.sh) applies it, and [build-mangohud-i386.sh](../tools/vk-h0/build-mangohud-i386.sh) checks its marker in the copied tree.
+
+Hardware, app version 04.08 (run-0158): d3d9test32 ran as a 32-bit guest with MangoHud loaded (`loaded32=1`). The overlay sent `Shift+F12 held 250 ms` twice, and the user saw the HUD hide and come back. The GPU row disappearing after unticking it was seen on vkcube with 04.06. The other combinations were not checked on 04.08: the toggle on a 64-bit program, the GPU row on a 32-bit program, and Estadisticas reading the file.
+
 ## What was checked, and what was not
 
 - The builder ran start to finish.

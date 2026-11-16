@@ -9,7 +9,7 @@
  *     (tools/console_state.py), and a build-only block the user deleted stays deleted (the ledger
  *     /data/orbisdesk/user-reg-delivered.json, shared with the uploader);
  *   - a console-owned file (P lines, tools/console_state.py CONSOLE_OWNED_FILES: MangoHud.conf, which
- *     MangoHud Settings edits) is copied only when it is missing; the user's copy is never replaced;
+ *     MangoJuice edits) is copied only when it is missing; the user's copy is never replaced;
  *   - files earlier builds shipped and this one does not (obsolete) are deleted;
  *   - the files of the build PC's profile folder (C:\users\<host>, shipped by builds before alpha-1, whose
  *     registry pointed Documents and the rest there) move to C:\users\orbis without replacing anything;
