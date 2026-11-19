@@ -26,6 +26,21 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(quartz);
 
+/* OrbisDesk alpha 2: the stream and open lines follow the trace switch (PW_TRACE=0|1, platform/ps4/pw_trace.h);
+ * unset counts as on. A stream not offered, an unreadable chunk and a rejected file always log. */
+static BOOL pwavi_traced(void)
+{
+    static LONG traced = -1;
+
+    if (traced < 0)
+    {
+        WCHAR value[4];
+
+        traced = !(GetEnvironmentVariableW(L"PW_TRACE", value, ARRAY_SIZE(value)) == 1 && value[0] == '0');
+    }
+    return traced;
+}
+
 /* {d1abd1fc-1295-47e2-a8fc-65868f9c0c90} */
 const GUID CLSID_PWAviSplitter = {0xd1abd1fc, 0x1295, 0x47e2, {0xa8, 0xfc, 0x65, 0x86, 0x8f, 0x9c, 0x0c, 0x90}};
 
@@ -399,7 +414,7 @@ static HRESULT parse_avi(struct avi_filter *filter)
     {
         struct avi_stream *stream = &filter->streams[i];
 
-        ERR("PWAVI stream %u %s subtype=%s scale=%lu rate=%lu start=%lu length=%lu sample_size=%lu chunks=%u max=%lu\n",
+        if (pwavi_traced()) ERR("PWAVI stream %u %s subtype=%s scale=%lu rate=%lu start=%lu length=%lu sample_size=%lu chunks=%u max=%lu\n",
             stream->number, stream->video ? "video" : "audio", debugstr_guid(&stream->mt.subtype), stream->scale,
             stream->rate, stream->start, stream->length, stream->sample_size, stream->count, stream->max_size);
     }
@@ -551,16 +566,16 @@ static DWORD WINAPI stream_thread(void *arg)
         IMediaSample_SetDiscontinuity(sample, !delivered);
         hr = IMemInputPin_Receive(stream->pin.pMemInputPin, sample);
         IMediaSample_Release(sample);
-        if (!delivered++) ERR("PWAVI stream %u first_sample hr=%#lx\n", stream->number, hr);
+        if (!delivered++ && (hr != S_OK || pwavi_traced())) ERR("PWAVI stream %u first_sample hr=%#lx\n", stream->number, hr);
         if (hr != S_OK) break;
     }
 
     if (!filter->stopping && hr == S_OK)
     {
         IPin_EndOfStream(stream->pin.pin.peer);
-        ERR("PWAVI stream %u eos samples=%u\n", stream->number, delivered);
+        if (pwavi_traced()) ERR("PWAVI stream %u eos samples=%u\n", stream->number, delivered);
     }
-    else
+    else if (hr != S_OK || pwavi_traced())
         ERR("PWAVI stream %u stopped samples=%u hr=%#lx\n", stream->number, delivered, hr);
     return 0;
 }
@@ -593,7 +608,7 @@ static HRESULT sink_connect(struct strmbase_sink *iface, IPin *peer, const AM_ME
         filter->reader = NULL;
         return VFW_E_TYPE_NOT_ACCEPTED;
     }
-    ERR("PWAVI open size=%s streams=%u indexed=%d\n", wine_dbgstr_longlong(filter->size), filter->stream_count,
+    if (pwavi_traced()) ERR("PWAVI open size=%s streams=%u indexed=%d\n", wine_dbgstr_longlong(filter->size), filter->stream_count,
         filter->indexed);
     BaseFilterImpl_IncrementPinVersion(&filter->filter);
     return S_OK;

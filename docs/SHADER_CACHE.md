@@ -11,6 +11,8 @@ Games can lose frame rate during cutscenes and scripted fast camera moves and re
 
 ## The measurement: `PWPERF`
 
+From 04.37 `PWPERF` is measured and logged only with traces on (`/data/orbisdesk/trace.txt`, see [release traces](RELEASE_TRACES.md#alpha-2-lines)).
+
 RADV notes every `vkCreateGraphicsPipelines` (full and library), `vkCreateComputePipelines` and `vkCreateShadersEXT` create to the sink ([pipeline trace patcher](../tools/vk-h0/patch-mesa-pipeline-trace.py), [sink](../platform/ps4/pw_wine_sink_ps4.c)). DXVK's, Zink's and native Vulkan programs' pipelines all reach RADV in the title process, on whichever thread compiles them. Each note carries the create's time and whether RADV found the pipeline in a cache, and whether it read it from the disk cache.
 
 Every 5 seconds while a program presents, the run log gets one line, independent of FPS LIMIT and frame generation:

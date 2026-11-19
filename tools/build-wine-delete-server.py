@@ -570,8 +570,9 @@ static ssize_t pw_request_read( struct thread *thread, void *buffer, size_t size
             if (waiting <= 0 || (header && (size_t)waiting < size))
             {
                 static unsigned int reported;
+                extern int pw_trace_enabled( void );  /* alpha 2: platform/ps4/pw_trace.h */
 
-                if (++reported <= 16 || !(reported % 256))
+                if (pw_trace_enabled() && (++reported <= 16 || !(reported % 256)))
                     fprintf( stderr, "PWSERVER request_deferred fd=%d revents=%x waiting=%d header=%d "
                              "client=%04x req=%d remaining=%u total=%u n=%u\\n",
                              fd, pfd.revents, waiting, header, thread->id,

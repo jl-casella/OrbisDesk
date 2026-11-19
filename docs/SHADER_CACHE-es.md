@@ -11,6 +11,8 @@ Los juegos pueden perder cuadros por segundo durante cinemáticas y movimientos 
 
 ## La medición: `PWPERF`
 
+Desde la 04.37, `PWPERF` se mide y se loguea solo con trazas encendidas (`/data/orbisdesk/trace.txt`, ver [trazas en release](RELEASE_TRACES-es.md#líneas-del-alpha-2)).
+
 RADV avisa al sink cada creación de `vkCreateGraphicsPipelines` (completa y de biblioteca), `vkCreateComputePipelines` y `vkCreateShadersEXT` ([parcheador de la traza de pipelines](../tools/vk-h0/patch-mesa-pipeline-trace.py), [sink](../platform/ps4/pw_wine_sink_ps4.c)). Los pipelines de DXVK, de Zink y de programas Vulkan nativos llegan todos a RADV en el proceso del título, en el hilo que los compile. Cada aviso lleva el tiempo de la creación, si RADV encontró el pipeline en una caché y si lo leyó de la caché en disco.
 
 Cada 5 segundos, mientras un programa presenta, el log de la ejecución recibe una línea, independiente de LÍMITE FPS y de la generación de cuadros:

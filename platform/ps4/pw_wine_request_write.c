@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include "pw_trace.h"  /* alpha 2 */
 
 static unsigned long chunks_written;
 static unsigned int requests_logged;
@@ -29,7 +30,7 @@ ssize_t pw_wine_request_writev(int fd, const struct iovec *iov, int count)
     if(!part) return 0;
 
     size_t chunk = part->iov_len > _POSIX_PIPE_BUF ? _POSIX_PIPE_BUF : part->iov_len;
-    if(part == iov && total > _POSIX_PIPE_BUF && part->iov_len >= sizeof(int) &&
+    if(part == iov && total > _POSIX_PIPE_BUF && part->iov_len >= sizeof(int) && pw_trace_on() &&
        __atomic_fetch_add(&requests_logged, 1, __ATOMIC_RELAXED) < 32){
         int code;
         memcpy(&code, part->iov_base, sizeof(code));

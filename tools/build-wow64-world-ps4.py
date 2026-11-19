@@ -859,9 +859,14 @@ static NTSTATUS pw_map_shared_section( struct file_view *view, const UNICODE_STR
 
     mprotect( map_addr, map_size, PROT_READ | PROT_WRITE );
     copied = pread( fd, map_addr, map_size, offset );
-    fprintf( stderr, "PWLOAD shared_section_private image=%s section=%.8s address=%p size=%zx offset=%llx "
-             "host_page=%zx copied=%zd errno=%d\\n", debugstr_us(nt_name), name, map_addr, map_size,
-             (unsigned long long)offset, (size_t)host_page_size, copied, copied < 0 ? errno : 0 );
+    {
+        extern int pw_trace_enabled( void );  /* alpha 2: platform/ps4/pw_trace.h */
+
+        if (copied != (ssize_t)map_size || pw_trace_enabled())  /* alpha 2: a full copy only with traces */
+            fprintf( stderr, "PWLOAD shared_section_private image=%s section=%.8s address=%p size=%zx offset=%llx "
+                     "host_page=%zx copied=%zd errno=%d\\n", debugstr_us(nt_name), name, map_addr, map_size,
+                     (unsigned long long)offset, (size_t)host_page_size, copied, copied < 0 ? errno : 0 );
+    }
     if (copied < 0) return STATUS_INVALID_PARAMETER;
     /* the server's file holds every shared section at full size; zero a shorter tail all the same */
     if ((size_t)copied < map_size) memset( map_addr + copied, 0, map_size - copied );

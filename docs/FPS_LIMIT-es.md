@@ -54,7 +54,7 @@ Un juego sostenido en 30 parejos por LÍMITE FPS es la entrada que necesita la [
 
 ## Registros
 
-En el registro del título aparecen:
+En el registro del título aparecen las líneas de abajo. Desde la 04.37, `PWFPS vblank count`, `PWFPS auto cap` y el reporte de 5 s aparecen solo con trazas encendidas (`/data/orbisdesk/trace.txt`, ver [trazas en release](RELEASE_TRACES-es.md#líneas-del-alpha-2)); las líneas de ajuste aparecen siempre.
 
 - `PWOVERLAY fpslimit=<off|30|60|auto> program=<exe> saved=<0|1> errno=<n> why=menu`: la elección se hizo en el overlay. Con `why=start` o `why=exit`, cambió el programa al frente y entró en vigor su elección guardada.
 - `PWFPS limit=<ajuste> cap=<vblanks>`: el sink tomó el ajuste nuevo (cap 2 = 30, 1 = 60, 0 = apagado).

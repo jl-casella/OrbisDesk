@@ -57,6 +57,7 @@
 #include <strings.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include "pw_trace.h"  /* alpha 2: navigation and timing lines, traces only */
 #include <time.h>
 #include <unistd.h>
 #include <orbis/libkernel.h>
@@ -406,7 +407,7 @@ void pw_wine_pad_program_bits(const char *exe,int bits)
     }
     program_bits[i].bits=bits;
     pthread_mutex_unlock(&lock);
-    fprintf(stderr,"PWOVERLAY program %s bits=%d\n",base,bits);
+    if(pw_trace_on()) fprintf(stderr,"PWOVERLAY program %s bits=%d\n",base,bits);
 }
 /* lock held: 1 when RENDERER's program is a 64-bit one */
 static int render_unavailable(void)
@@ -584,7 +585,7 @@ void pw_hw_overlay_mangohud(int loaded)
     pthread_mutex_lock(&lock);
     mangohud_loaded=loaded!=0;
     pthread_mutex_unlock(&lock);
-    fprintf(stderr,"PWOVERLAY mangohud in_front=%d\n",loaded!=0);
+    if(pw_trace_on()) fprintf(stderr,"PWOVERLAY mangohud in_front=%d\n",loaded!=0);
 }
 /* W261: kernelbase's closer, when it changes (through native/hw_pad.c) */
 void pw_hw_overlay_desktop(int in_front);
@@ -593,7 +594,7 @@ void pw_hw_overlay_desktop(int in_front)
     pthread_mutex_lock(&lock);
     desktop_front=in_front!=0;
     pthread_mutex_unlock(&lock);
-    fprintf(stderr,"PWOVERLAY desktop in_front=%d\n",in_front!=0);
+    if(pw_trace_on()) fprintf(stderr,"PWOVERLAY desktop in_front=%d\n",in_front!=0);
 }
 /* W239: kernelbase's closer, every 150 ms (through native/hw_pad.c): 1 when Salir was chosen */
 int pw_hw_overlay_exit_poll(void);
@@ -604,7 +605,7 @@ int pw_hw_overlay_exit_poll(void)
     take=exit_pending==1;
     if(take) {exit_pending=2;exit_deadline_us=sceKernelGetProcessTime()+EXIT_RESULT_US;}
     pthread_mutex_unlock(&lock);
-    if(take) fprintf(stderr,"PWOVERLAY exit taken by the closer\n");
+    if(take && pw_trace_on()) fprintf(stderr,"PWOVERLAY exit taken by the closer\n");
     return take;
 }
 /* W239: what the closer did; the toast says it */
@@ -725,7 +726,7 @@ static void pad_wait(const char *program,int want)
     }
     if(want<0 || want>=TYPES) {fprintf(stderr,"PWOVERLAY control wait program=%s: no type written\n",program);return;}
     if(pw_winebus_pad_ready_kind(want,&state)) {
-        fprintf(stderr,"PWOVERLAY control wait program=%s type=%s ready=1 at_once=1 bus=%d started=%d bus_kind=%d\n",
+        if(pw_trace_on()) fprintf(stderr,"PWOVERLAY control wait program=%s type=%s ready=1 at_once=1 bus=%d started=%d bus_kind=%d\n",
                 program,type_words[want],state&1,state>>1&1,state>>4);
         return;
     }
@@ -738,7 +739,7 @@ static void pad_wait(const char *program,int want)
         waited=sceKernelGetProcessTime()-start;
     } while(!ready && waited<PAD_WAIT_US);
     if(ready) {struct timespec settle={0,PAD_SETTLE_US*1000L};nanosleep(&settle,NULL);}
-    fprintf(stderr,"PWOVERLAY control wait program=%s type=%s ready=%d ms=%llu settle_ms=%d bus=%d started=%d bus_kind=%d\n",
+    if(!ready || pw_trace_on()) fprintf(stderr,"PWOVERLAY control wait program=%s type=%s ready=%d ms=%llu settle_ms=%d bus=%d started=%d bus_kind=%d\n",
             program,type_words[want],ready,(unsigned long long)(waited/1000),ready?PAD_SETTLE_US/1000:0,state&1,
             state>>1&1,state>>4);
 }
@@ -911,7 +912,7 @@ static void render_choose(void)
     if(render_choice==render_saved) return;
     render_request=RENDER_SET;render_request_choice=render_choice;render_taken=0;
     render_deadline_us=sceKernelGetProcessTime()+RENDER_ANSWER_US;
-    fprintf(stderr,"PWOVERLAY render set %s for %s requested\n",render_words[render_choice],render_program);
+    if(pw_trace_on()) fprintf(stderr,"PWOVERLAY render set %s for %s requested\n",render_words[render_choice],render_program);
 }
 /* lock held: Estadisticas acts on MangoHud's HUD */
 /* 04.26 (run-0234): the closer's report alone. It names a window in front that Vulkan presented to and keeps it while
@@ -963,7 +964,7 @@ static void hud_read_conf(struct hud_conf *c)
     *c=(struct hud_conf){.loaded=1,.gpu=1,.cpu=1,.fps=1,.frametime=1,.frame_timing=1,.font_size=24,.alpha_pct=50};
     hud_conf_mtime=hud_newest_conf(path,sizeof(path));
     if(hud_conf_mtime) file=fopen(path,"r");
-    if(!file) {fprintf(stderr,"PWOVERLAY hud: no MangoHud.conf, MangoHud's defaults\n");return;}
+    if(!file) {if(pw_trace_on()) fprintf(stderr,"PWOVERLAY hud: no MangoHud.conf, MangoHud's defaults\n");return;}
     /* legacy_layout=0 (MangoJuice writes "legacy_layout=false"): MangoHud shows only the rows the file names
      * (overlay_params.cpp, sort_elements), not its defaults; each row's last value in the file, -1 unnamed */
     int legacy=1,named[7]={-1,-1,-1,-1,-1,-1,-1};
@@ -999,7 +1000,7 @@ static void hud_read_conf(struct hud_conf *c)
     }
     fclose(file);
     if(!legacy) for(int i=0;i<7;i++) *rows[i]=named[i]==1;
-    fprintf(stderr,"PWOVERLAY hud: %s legacy_layout=%d gpu=%d cpu=%d vram=%d ram=%d fps=%d frametime=%d frame_timing=%d position=%s"
+    if(pw_trace_on()) fprintf(stderr,"PWOVERLAY hud: %s legacy_layout=%d gpu=%d cpu=%d vram=%d ram=%d fps=%d frametime=%d frame_timing=%d position=%s"
             " font_size=%d alpha=%d%%\n",path,legacy,c->gpu,c->cpu,c->vram,c->ram,c->fps,c->frametime,c->frame_timing,
             hud_positions[c->position],c->font_size,c->alpha_pct);
 }
@@ -1262,7 +1263,7 @@ static void map_load(void)
     memcpy(map_key,map_saved,sizeof(map_key));memcpy(map_base,map_base_saved,sizeof(map_base));
     int keys=0;
     for(int i=0;i<MAPS;i++) keys+=map_key[i][0]!=0;
-    fprintf(stderr,"PWOVERLAY keymap program=%s file=%s keys=%d%s\n",map_program,found?"yes":"none",keys,
+    if(pw_trace_on()) fprintf(stderr,"PWOVERLAY keymap program=%s file=%s keys=%d%s\n",map_program,found?"yes":"none",keys,
             map_base_full?" (other lines past 4 KiB not kept: saving refused)":"");
 }
 /* lock held: X on KEY MAPPING */
@@ -1347,7 +1348,7 @@ static uint32_t directions(const OrbisPadData *data)
 /* lock held */
 static void close_overlay(void)
 {
-    if(view!=VIEW_CLOSED) fprintf(stderr,"PWOVERLAY close\n");
+    if(view!=VIEW_CLOSED && pw_trace_on()) fprintf(stderr,"PWOVERLAY close\n");
     view=VIEW_CLOSED;swallow=1;kb_shift=0;map_picking=0;  /* 04.36: KEY MAPPING's pending keys are dropped */
 }
 /* 04.31, lock held: every choice back to the value in effect (a choice is only saved with X) */
@@ -1410,7 +1411,7 @@ static int panel_input(uint32_t pressed,uint32_t nav)
             hud_pressed_us=sceKernelGetProcessTime();hud_presents=pw_wine_vk_presents();
             hud_release_us=hud_pressed_us+HUD_WAIT_US;  /* 04.26: or at the first present past HUD_HOLD_US */
             set_toast(str(S_T_HUD_SENT));
-            fprintf(stderr,"PWOVERLAY mangohud key sent: Shift+F12 down until a present (%u to %u ms)\n",
+            if(pw_trace_on()) fprintf(stderr,"PWOVERLAY mangohud key sent: Shift+F12 down until a present (%u to %u ms)\n",
                     HUD_HOLD_US/1000,HUD_WAIT_US/1000);
             break;
         }
@@ -1418,9 +1419,9 @@ static int panel_input(uint32_t pressed,uint32_t nav)
         if(!stats_on && desktop_front) {fprintf(stderr,"PWOVERLAY stats refused: desktop\n");break;}
         stats_on=!stats_on;stats_next_us=0;
         hud_conf.loaded=0;hud_now.sampled=0;ft_count=ft_head=0;ft_last_us=0;  /* MangoHud.conf read again */
-        fprintf(stderr,"PWOVERLAY stats=%d\n",stats_on);
+        if(pw_trace_on()) fprintf(stderr,"PWOVERLAY stats=%d\n",stats_on);
         break;
-    case IT_KEYBOARD: view=VIEW_KEYBOARD;kb_row=1;kb_col=0;kb_page=0;kb_shift=0;fprintf(stderr,"PWOVERLAY keyboard\n");break;
+    case IT_KEYBOARD: view=VIEW_KEYBOARD;kb_row=1;kb_col=0;kb_page=0;kb_shift=0;if(pw_trace_on()) fprintf(stderr,"PWOVERLAY keyboard\n");break;
     case IT_KEYMAP: map_open();break;  /* 04.36 */
     case IT_MOUSE: mouse_on=!mouse_on;pw_hw_pad_set_mouse(mouse_on);break;
     case IT_CURSOR: cursor_choose();break;
@@ -1537,7 +1538,7 @@ int pw_hw_overlay_pad(const OrbisPadData *data)
         unsigned presents=pw_wine_vk_presents()-hud_presents;
         if(now>=hud_release_us || (presents && now-hud_pressed_us>=HUD_HOLD_US)) {
             pw_hw_pad_key(VK_F12,0);pw_hw_pad_key(VK_SHIFT,0);hud_release_us=0;
-            fprintf(stderr,"PWOVERLAY mangohud key up: %u ms, %u presents%s\n",(unsigned)((now-hud_pressed_us)/1000),
+            if(pw_trace_on()) fprintf(stderr,"PWOVERLAY mangohud key up: %u ms, %u presents%s\n",(unsigned)((now-hud_pressed_us)/1000),
                     presents,presents?"":" (none: MangoHud did not read it)");
         }
     }
@@ -1564,7 +1565,7 @@ int pw_hw_overlay_pad(const OrbisPadData *data)
         if(view==VIEW_CLOSED) {
             /* 04.36: on the rail, always at PERFORMANCE (04.31 kept the last section, mostly EXIT after closing a game) */
             view=VIEW_PANEL;focus=FOCUS_RAIL;section=SEC_PERF;item=0;reset_choices();
-            fprintf(stderr,"PWOVERLAY open\n");
+            if(pw_trace_on()) fprintf(stderr,"PWOVERLAY open\n");
         } else close_overlay();
         changed=1;
     } else if(view==VIEW_PANEL && (pressed || nav)) {exit_chosen=panel_input(pressed,nav);changed=1;}

@@ -340,7 +340,7 @@ static int fg_buffers(unsigned width,unsigned height)
         vkUpdateDescriptorSets(device,FG_BINDINGS,writes,0,NULL);
     }
     fg.width=width;fg.height=height;
-    fprintf(stderr,"PWFG buffers %ux%u luma=%ux%u coarse=%ux%u fine=%ux%u bytes=%llu\n",width,height,luma_w,luma_h,
+    if(fg_trace()) fprintf(stderr,"PWFG buffers %ux%u luma=%ux%u coarse=%ux%u fine=%ux%u bytes=%llu\n",width,height,luma_w,luma_h,
             p->coarse[0],p->coarse[1],p->fine[0],p->fine[1],(unsigned long long)(4*color+2*luma+
             (VkDeviceSize)(p->coarse[0]*p->coarse[1]+p->fine[0]*p->fine[1])*16));
     return 0;
@@ -396,7 +396,7 @@ static int fg_probe(void)
     VkResult submitted,fence;uint64_t waited;
     /* 1: an empty submission on this file's command buffer and fence */
     if(fg_probe_begin() || fg_probe_run("empty",&submitted,&fence,&waited)) return -1;
-    fprintf(stderr,"PWFG probe empty: fence=signalled waited_us=%llu\n",(unsigned long long)waited);
+    if(fg_trace()) fprintf(stderr,"PWFG probe empty: fence=signalled waited_us=%llu\n",(unsigned long long)waited);
     /* 2: the timestamps (a query pool reset and two writes), read back */
     if(fg.queries) {
         if(fg_probe_begin()) return -1;
@@ -405,7 +405,7 @@ static int fg_probe(void)
         if(fg_probe_run("timestamps",&submitted,&fence,&waited)) return -1;
         uint64_t t[2]={0,0};
         VkResult r=fg_vkGetQueryPoolResults(device,fg.queries,0,2,sizeof(t),t,sizeof(uint64_t),VK_QUERY_RESULT_64_BIT);
-        fprintf(stderr,"PWFG probe timestamps: fence=signalled waited_us=%llu results=%d ticks=%llu\n",(unsigned long long)waited,
+        if(fg_trace()) fprintf(stderr,"PWFG probe timestamps: fence=signalled waited_us=%llu results=%d ticks=%llu\n",(unsigned long long)waited,
                 (int)r,r==VK_SUCCESS?(unsigned long long)((t[1]-t[0])&fg.tick_mask):0ull);
         if(r!=VK_SUCCESS) {
             fg_vkDestroyQueryPool(device,fg.queries,NULL);fg.queries=VK_NULL_HANDLE;
@@ -425,7 +425,7 @@ static int fg_probe(void)
         VkResult status;
         while((status=fg_vkGetEventStatus(device,event))==VK_EVENT_RESET && (after=sceKernelGetProcessTime()-start)<FG_EVENT_POLL_US)
             sched_yield();
-        fprintf(stderr,"PWFG probe event: fence=signalled waited_us=%llu event=%s (%d) after_fence_us=%llu\n",
+        if(fg_trace()) fprintf(stderr,"PWFG probe event: fence=signalled waited_us=%llu event=%s (%d) after_fence_us=%llu\n",
                 (unsigned long long)waited,status==VK_EVENT_SET?"set":status==VK_EVENT_RESET?"reset":"error",(int)status,
                 (unsigned long long)after);
         fg_vkDestroyEvent(device,event,NULL);
@@ -504,7 +504,7 @@ int pw_sink_gpu_fg_frame(const void *swapchain,const void *pixels,unsigned pitch
     }
     if(swapchain!=fg.target) {
         if(fg.target && start-fg.target_us<FG_SWITCH_US) goto done;   /* the followed swapchain still presents */
-        fprintf(stderr,"PWFG target sc=%p %ux%u (was %p): history restarts\n",swapchain,width,height,fg.target);
+        if(fg_trace()) fprintf(stderr,"PWFG target sc=%p %ux%u (was %p): history restarts\n",swapchain,width,height,fg.target);
         fg.target=swapchain;fg.frames=0;
     }
     fg.target_us=start;
@@ -546,7 +546,7 @@ int pw_sink_gpu_fg_frame(const void *swapchain,const void *pixels,unsigned pitch
     fg.copy_pending=1;
     uint64_t waited;
     r=fg_wait_fence(fg.copied,FG_WAIT_US,&waited);
-    if(r!=VK_SUCCESS || fg.copies<FG_COPY_LOGS)
+    if(r!=VK_SUCCESS || (fg.copies<FG_COPY_LOGS && fg_trace()))
         fprintf(stderr,"PWFG copy %llu: fence=%s (%d) waited_us=%llu limit_us=%u image=%p %ux%u pitch=%u\n",
                 (unsigned long long)fg.copies,fg_result_word(r),(int)r,(unsigned long long)waited,(unsigned)FG_WAIT_US,
                 pixels,width,height,pitch);
@@ -579,7 +579,7 @@ int pw_sink_gpu_fg_frame(const void *swapchain,const void *pixels,unsigned pitch
         uint64_t spent=sceKernelGetProcessTime()-start;
         fg.block_sum_us+=spent;if(spent>fg.block_max_us) fg.block_max_us=spent;++fg.blocks;
     }
-    if(fg.blocks>=FG_REPORT) fg_report();
+    if(fg.blocks>=FG_REPORT) {if(fg_trace()) fg_report(); else fg.blocks=0;}
     goto done;
 fail:
     fg_shutdown(why?why:"unknown");

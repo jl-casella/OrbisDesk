@@ -261,7 +261,13 @@ static void restack( UINT from, UINT to )
 # explorer paints there, the wallpaper included, never reaches the screen. The driver
 # loads the wallpaper named by WINE_PS5_WALLPAPER (a host path to an uncompressed 24- or
 # 32-bit BMP) itself and composes it under every window instead of black.
-revise('dlls/win32u/ps5drv.c','#include <unistd.h>\n','#include <unistd.h>\n#include <fcntl.h>\n','open() for the wallpaper.')
+revise('dlls/win32u/ps5drv.c','#include <unistd.h>\n','#include <unistd.h>\n#include <fcntl.h>\n'
+       'extern int pw_trace_enabled( void );  /* alpha 2: platform/ps4/pw_trace.h */\n','open() for the wallpaper; the trace switch.')
+# alpha 2: the trace switch where vulkan.c and window.c gate their 04.29-04.32 lines
+revise('dlls/win32u/vulkan.c','WINE_DEFAULT_DEBUG_CHANNEL(vulkan);\n','WINE_DEFAULT_DEBUG_CHANNEL(vulkan);\n'
+       'extern int pw_trace_enabled( void );  /* alpha 2: platform/ps4/pw_trace.h */\n','The trace switch (alpha 2).')
+revise('dlls/win32u/window.c','WINE_DEFAULT_DEBUG_CHANNEL(win);\n','WINE_DEFAULT_DEBUG_CHANNEL(win);\n'
+       'extern int pw_trace_enabled( void );  /* alpha 2: platform/ps4/pw_trace.h */\n','The trace switch (alpha 2).')
 revise('dlls/win32u/ps5drv.c','''static struct ps5_window windows[PS5_MAX_WINDOWS];''','''static struct ps5_window windows[PS5_MAX_WINDOWS];
 static UINT32 *background;  /* screen-sized wallpaper, or NULL for black */''','Wallpaper layer.')
 revise('dlls/win32u/ps5drv.c','''/***********************************************************************
@@ -1746,7 +1752,7 @@ revise('dlls/win32u/ps5drv.c','''    RECT old_visible;
     RECT monitor = get_primary_monitor_rect( (struct ratio){0} );
 
     screen_lock_enter();
-    if (memcmp( &monitor, &monitor_rect, sizeof(monitor) ))  /* PoP D.6: traces, the mode a game set */
+    if (memcmp( &monitor, &monitor_rect, sizeof(monitor) ) && pw_trace_enabled())  /* PoP D.6: the mode a game set */
         fprintf( stderr, "PWSINK monitor %d,%d-%d,%d (was %d,%d-%d,%d) tid=%04x dpi_ctx=%#x\\n", (int)monitor.left,
                  (int)monitor.top, (int)monitor.right, (int)monitor.bottom, (int)monitor_rect.left, (int)monitor_rect.top,
                  (int)monitor_rect.right, (int)monitor_rect.bottom, (int)GetCurrentThreadId(),
@@ -1833,14 +1839,14 @@ revise('dlls/win32u/ps5drv.c','''        if (background)
                                   view_height, screen_width, screen_height, bounded );
                 else
                 {
-                    fprintf( stderr, "PWSINK fullscreen off hwnd=%p pointer=%d\\n", shown_full, bounded );
+                    if (pw_trace_enabled()) fprintf( stderr, "PWSINK fullscreen off hwnd=%p pointer=%d\\n", shown_full, bounded );
                     UINT traced = 0;
 
                     for (i = window_count; i-- > 0 && traced < 4;)  /* PoP D.6: traces, why the window does not cover the monitor */
                     {
                         if (!windows[i].shown || windows[i].topmost) continue;
                         traced++;
-                        fprintf( stderr, "PWSINK fullscreen not: hwnd=%p visible %d,%d-%d,%d monitor %d,%d-%d,%d\\n",
+                        if (pw_trace_enabled()) fprintf( stderr, "PWSINK fullscreen not: hwnd=%p visible %d,%d-%d,%d monitor %d,%d-%d,%d\\n",
                                  windows[i].hwnd, (int)windows[i].visible.left, (int)windows[i].visible.top,
                                  (int)windows[i].visible.right, (int)windows[i].visible.bottom, (int)monitor_rect.left,
                                  (int)monitor_rect.top, (int)monitor_rect.right, (int)monitor_rect.bottom );
@@ -2869,8 +2875,10 @@ static void pw_vk_memory_line( UINT64 owner, BOOL wow, const char *why, UINT32 h
     }
     flexible = total - direct;
     wine = pw_vm_direct_bytes( &runs );
+    { extern int pw_trace_enabled( void );  /* alpha 2: traces only; a failed query above always logs */
+    if (pw_trace_enabled())
     ERR( "PWVK guest_memory owner=%#llx wow=%d why=%s direct_free=%llu flexible=%llu wine_direct=%llu wine_runs=%u "
-         "heaps=%u\\n", (unsigned long long)owner, wow, why, available - flexible, flexible, wine, runs, heaps );
+         "heaps=%u\\n", (unsigned long long)owner, wow, why, available - flexible, flexible, wine, runs, heaps ); }
 }
 
 /* kernelbase's call at a guest's start, and (run-0190) before an ended guest's heaps are destroyed
@@ -2936,7 +2944,7 @@ static NTSTATUS pw_release_guest_vulkan( struct pw_release_guest_vulkan_params *
         pw_vk_free_memory( memory->device, memory->memory );
         free( memory );
     }
-    if (params->devices || params->shared || params->gl_devices)
+    if ((params->devices || params->shared || params->gl_devices) && pw_trace_enabled())
         ERR( "PWVK guest_release owner=%#llx wow=%d devices=%u memories=%u bytes=%llu shared=%u others=%u "
              "gl_devices=%u gl_memories=%u gl_bytes=%llu\\n",
                  (unsigned long long)params->owner, wow, params->devices, params->memories,
@@ -3102,7 +3110,7 @@ static void *pw_vk_teardown_thread( void *arg )
         teardown->device_count++;
     }
     clock_gettime( CLOCK_MONOTONIC, &end );
-    fprintf( stderr, "PWVK guest_teardown owner=%#llx wow=%d swapchains=%u devices=%u ms=%lld\\n",
+    if (pw_trace_enabled()) fprintf( stderr, "PWVK guest_teardown owner=%#llx wow=%d swapchains=%u devices=%u ms=%lld\\n",
              (unsigned long long)teardown->owner, teardown->wow, teardown->swapchain_count, teardown->device_count,
              (long long)((end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000) );
     __atomic_store_n( &teardown->done, 1, __ATOMIC_RELEASE );
@@ -3238,7 +3246,8 @@ revise('dlls/win32u/ps5drv.c','''        if (!fit)
             }
             if (!EqualRect( &image, &logged ))
             {
-                if (!IsRectEmpty( &image ))
+                if (!pw_trace_enabled()) ;
+                else if (!IsRectEmpty( &image ))
                     fprintf( stderr, "PWSINK fullscreen image hwnd=%p origin=%d,%d %ux%u client=%d,%d-%d,%d\\n",
                              windows[full].hwnd, (int)image.left, (int)image.top, view_width, view_height,
                              (int)windows[full].client.left, (int)windows[full].client.top,
@@ -3280,7 +3289,7 @@ revise('dlls/win32u/ps5drv.c','''        window->vk_rect = fit_image( child || I
         window->vk_child = child;
         if (window->vk_swapchain != swapchain)  /* 04.19: a new swapchain's first frame in this window */
         {
-            fprintf( stderr, "PWVK layer hwnd=%p window=%p child=%d image=%ux%u visible=(%d,%d)-(%d,%d) "
+            if (pw_trace_enabled()) fprintf( stderr, "PWVK layer hwnd=%p window=%p child=%d image=%ux%u visible=(%d,%d)-(%d,%d) "
                      "client=(%d,%d)-(%d,%d) passed=(%d,%d)-(%d,%d) at=(%d,%d)-(%d,%d)\\n", hwnd, window->hwnd, child,
                      width, height, window->visible.left, window->visible.top, window->visible.right,
                      window->visible.bottom, window->client.left, window->client.top, window->client.right,
@@ -3316,7 +3325,7 @@ revise('dlls/win32u/vulkan.c','''    pw_wine_vk_window_presented( (unsigned long
             now[3] = pw_client.bottom - pw_client.top;
             now[4] = pw_window.right - pw_window.left;
             now[5] = pw_window.bottom - pw_window.top;
-            if ((hwnd != last_hwnd || memcmp( now, last, sizeof(now) )) && InterlockedIncrement( &changes ) <= 64)
+            if ((hwnd != last_hwnd || memcmp( now, last, sizeof(now) )) && pw_trace_enabled() && InterlockedIncrement( &changes ) <= 64)
                 ERR( "PWVK size hwnd=%p swapchain=%s image=%ux%u client=%ux%u window=%ux%u%s\\n", hwnd,
                      wine_dbgstr_longlong( (ULONGLONG)host_swapchain ), now[0], now[1], now[2], now[3], now[4], now[5],
                      now[0] != now[2] || now[1] != now[3] ? " differs" : "" );
@@ -3365,7 +3374,7 @@ static void pw_rect_trace( const char *what, HWND hwnd, UINT dpi, BOOL ret, cons
         seen[i].cx = cx;
         seen[i].cy = cy;
     }
-    if (InterlockedIncrement( &count ) > 48) return;
+    if (!pw_trace_enabled() || InterlockedIncrement( &count ) > 48) return;
     ERR( "PWRECT %s hwnd=%p thread=%04x owner=%04x dpi=%u ret=%d rect=%s\\n", what, hwnd, (int)thread, (int)owner,
          dpi, ret, ret ? wine_dbgstr_rect( rect ) : "-" );
 }
@@ -3514,7 +3523,7 @@ revise('dlls/win32u/ps5drv.c','''static BOOL ps5_SetCursorPos( INT x, INT y )
     /* 04.26: mouse look puts the cursor back in the middle (GetCursorPos and SetCursorPos, dinput's exclusive mouse):
      * the title's pointer starts from here, or its next move would carry the old position (W303 run-0238) */
     pw_hw_pad_pointer_at( x - view_origin.x, y - view_origin.y );
-    if (++warps <= 8 || !(warps % 1000))
+    if ((++warps <= 8 || !(warps % 1000)) && pw_trace_enabled())
         fprintf( stderr, "PWINPUT warp n=%u to %d,%d (SetCursorPos) tid=%04x\\n", warps, (int)x, (int)y,
                  (UINT)GetCurrentThreadId() );
     return TRUE;

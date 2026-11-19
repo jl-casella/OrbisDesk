@@ -388,13 +388,14 @@ static void fl_check_vblank(uint64_t now,int vb_ok,const struct pw_vblank_status
         if(period>5000 && period<50000) fl_period_us=period;
     }
     if(trusted!=fl_vblank_trusted)
-        fprintf(stderr,"PWFPS vblank count %s: %llu in %llu us (period_us=%u)\n",trusted?"trusted":"not trusted",
+        if(pw_trace_on()) fprintf(stderr,"PWFPS vblank count %s: %llu in %llu us (period_us=%u)\n",trusted?"trusted":"not trusted",
                 (unsigned long long)counted,(unsigned long long)(now-fl_vb_us0),fl_period_us);
     fl_vblank_trusted=trusted;fl_vb_count0=vb->count;fl_vb_us0=now;
 }
 /* fl_lock held */
 static void fl_report(uint64_t now)
 {
+    if(!pw_trace_on()) return;  /* alpha 2: a line every 5 s, traces only */
     if(!fl_report_us) {fl_report_us=now;return;}
     if(now-fl_report_us<FL_REPORT_US) return;
     fprintf(stderr,"PWFPS limit=%s cap=%d presents=%u held=%u held_us_avg=%u held_us_max=%u late=%u pacing=%s "
@@ -431,7 +432,7 @@ static int fl_present(const void *swapchain)
     }
     if(c->release_us && pw_fpsl_auto_frame(&fl_auto,now,now-c->release_us,&was)) {
         ++fl_switches;
-        fprintf(stderr,"PWFPS auto cap %d->%d potential_x10=%u high_needed=%d\n",was,fl_auto.cap,
+        if(pw_trace_on()) fprintf(stderr,"PWFPS auto cap %d->%d potential_x10=%u high_needed=%d\n",was,fl_auto.cap,
                 fl_auto.last_potential_x10,fl_auto.high_needed);
     }
     cap=fl_auto.cap;
@@ -504,6 +505,7 @@ void pw_vk_pipeline_note(unsigned kind,uint64_t ns,unsigned flags)
 {
     unsigned us=ns/1000>UINT32_MAX?UINT32_MAX:(unsigned)(ns/1000);
     int slow=0;
+    if(!pw_trace_on()) return;  /* alpha 2: PWPERF, traces only */
     if(kind>=PF_KINDS) kind=PF_GFX;
     pthread_mutex_lock(&pf_lock);
     ++pf_kind_count[kind];pf_kind_ns[kind]+=ns;pf_since_ns+=ns;
@@ -571,6 +573,7 @@ static void pf_report(uint64_t now,char *line,size_t size)
 /* each present, before FPS LIMIT holds it: the interval since the previous one, as the game sees it */
 static void pf_present(void)
 {
+    if(!pw_trace_on()) return;  /* alpha 2: PWPERF, traces only */
     uint64_t now=sceKernelGetProcessTime();
     char line[640];line[0]=0;
     pthread_mutex_lock(&pf_lock);
@@ -820,6 +823,7 @@ static const struct pw_wine_layer *fgd_stack(void)
 /* sink lock */
 static void fgd_report(uint64_t now)
 {
+    if(!pw_trace_on()) return;  /* alpha 2: a line every 10 s, traces only */
     if(!fgd_report_us) {fgd_report_us=now;return;}
     if(now-fgd_report_us<FGD_REPORT_US) return;
     char reasons[256];int at=0;
@@ -870,7 +874,7 @@ static void fgr_tick(uint64_t now,unsigned width,unsigned height)
     pthread_mutex_unlock(&fgr_lock);
     int shown=generated>0;
     if(shown!=fgr_was_shown)
-        fprintf(stderr,"PWFG shown_rate %s %ux%u shown_x10=%u real_x10=%u generated_x10=%u window_us=%llu\n",
+        if(pw_trace_on()) fprintf(stderr,"PWFG shown_rate %s %ux%u shown_x10=%u real_x10=%u generated_x10=%u window_us=%llu\n",
                 shown?"on":"off",width,height,real+generated,real,generated,(unsigned long long)span);
     fgr_was_shown=shown;
     fgr_start_us=now;fgr_real=1;fgr_generated=0;
@@ -919,7 +923,7 @@ static int fgd_begin(void)
     int r=pw_fgd_decide(&fgd,&in);
     if(r==FGD_PAIR) ++fgd_pairs;else ++fgd_alone;
     if(fgd.showing!=was_showing || fgd.gave_up!=was_given_up)
-        fprintf(stderr,"PWFG display %s reason=%s cap=%d vblank_trusted=%d span=%d gpu_us=%u timed=%u%s\n",
+        if(pw_trace_on()) fprintf(stderr,"PWFG display %s reason=%s cap=%d vblank_trusted=%d span=%d gpu_us=%u timed=%u%s\n",
                 fgd.showing?"on":"off",pw_fgd_reason_words[r],in.cap,in.vblank_trusted,span,in.gpu_us,in.timed,
                 fgd.gave_up && !was_given_up?": gave up for this program, generation stops":"");
     uint64_t now=sceKernelGetProcessTime();

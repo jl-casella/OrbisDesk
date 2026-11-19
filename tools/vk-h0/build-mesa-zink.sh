@@ -56,5 +56,7 @@ python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-wgl-guest.py $SRC
 # 04.30 (04.29: SeaMonkey's GL image 34 pixels too high): a viewport not the size of the window's drawable is logged;
 # 04.32: Mesa's error lines reach the console log (__wine_dbg_output), and the drawable size WGL reads is logged
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-gl-viewport-trace.py $SRC
+# alpha 2: its PWGL/PWSTW lines follow the trace switch (PW_TRACE)
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-gl-traces.py $SRC
 ninja -C $build src/gallium/targets/libgl-gdi/opengl32.dll src/gallium/targets/wgl/libgallium_wgl.dll 2>&1 | tee "$build.log"
 ls -la $build/src/gallium/targets/libgl-gdi/opengl32.dll $build/src/gallium/targets/wgl/libgallium_wgl.dll 2>&1

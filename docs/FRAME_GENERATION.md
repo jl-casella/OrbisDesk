@@ -19,6 +19,8 @@ This work is staged. Stages 1 to 5 have run on a PS4 Pro (04.15 and 04.19, below
 
 ## Switch
 
+From 04.37 the periodic `PWFG` reports (`display pairs`, `gpu_us`), `display on|off`, `shown_rate`, the start-up probes and `target sc=` appear only with traces on (`/data/orbisdesk/trace.txt`, see [release traces](RELEASE_TRACES.md#alpha-2-lines)). Failures, `PWFG config`, `PWFG ready` and `PWFG mode=` always log.
+
 Off by default, per program. The overlay's **FRAME GEN** entry (`GENERAR CUADROS` in Spanish, L3+R3, after FPS LIMIT) turns it on or off with X for the last program opened that is still open, as STRETCH does. The choice is saved in `C:\orbis\overlay.ini` as `framegen.<exe>=on` (off writes no line), applies at once, and comes back when that program starts again (`PWOVERLAY framegen=on program=<exe> why=start`). It shows generated frames only while [FPS LIMIT](FPS_LIMIT.md) holds the program at 30, which is the default for every program since 04.18. At 60, Off, or Auto at 60, it neither generates nor shows anything.
 
 The file `/data/orbisdesk/framegen.txt` is no longer needed. It stays as a debug override, read once when the sink shows its first frame (with the kernel's own open first, then libc's). When the file is present, it decides for every program and the overlay's choice is ignored:

@@ -256,7 +256,7 @@ static void descriptor_growth(int fd)
 {
     struct descriptor_kinds k;
     descriptor_count(&k);
-    fprintf(stderr,"PWFS descriptor_growth fd=%d open=%d files=%d folders=%d pipes=%d sockets=%d other=%d unknown=%d"
+    if(pw_trace_on()) fprintf(stderr,"PWFS descriptor_growth fd=%d open=%d files=%d folders=%d pipes=%d sockets=%d other=%d unknown=%d"
             " threads~%d\n",fd,k.open,k.files,k.folders,k.pipes,k.sockets,k.others,k.unknown,k.pipes/3);
 }
 static void descriptor_report(void)

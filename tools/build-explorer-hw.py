@@ -1466,6 +1466,20 @@ revise('desktop.c','''/* point in the launcher window's client coordinates; outs
 static WCHAR orbis_wallpapers[ORBIS_MAX_WALLPAPERS][MAX_PATH];
 static unsigned int orbis_wallpaper_count;
 
+/* alpha 2: OrbisDesk's trace switch (PW_TRACE=0|1, platform/ps4/pw_trace.h); unset counts as on. Read once. */
+static BOOL orbis_desk_traced( void )
+{
+    static LONG traced = -1;
+
+    if (traced < 0)
+    {
+        WCHAR value[4];
+
+        traced = !(GetEnvironmentVariableW( L"PW_TRACE", value, ARRAY_SIZE(value) ) == 1 && value[0] == '0');
+    }
+    return traced;
+}
+
 static int __cdecl orbis_wallpaper_compare( const void *a, const void *b )
 {
     return wcsicmp( a, b );
@@ -1517,7 +1531,7 @@ static HMENU orbis_wallpaper_menu(void)
                      ORBIS_MENU_WALLPAPER + i, name );
     }
     if (!orbis_wallpaper_count) AppendMenuW( menu, MF_STRING | MF_GRAYED, 0, L"(no wallpapers)" );
-    ERR( "PWDESK wallpaper menu count=%u current=%s\\n", orbis_wallpaper_count, debugstr_w(current) );
+    if (orbis_desk_traced()) ERR( "PWDESK wallpaper menu count=%u current=%s\\n", orbis_wallpaper_count, debugstr_w(current) );
     return menu;
 }
 
@@ -1768,7 +1782,7 @@ revise('desktop.c','''static HMENU orbis_wallpaper_menu(void)
                      ORBIS_MENU_WALLPAPER + i, name );
     }
     if (!orbis_wallpaper_count) AppendMenuW( menu, MF_STRING | MF_GRAYED, 0, L"(no wallpapers)" );
-    ERR( "PWDESK wallpaper menu count=%u current=%s\\n", orbis_wallpaper_count, debugstr_w(current) );
+    if (orbis_desk_traced()) ERR( "PWDESK wallpaper menu count=%u current=%s\\n", orbis_wallpaper_count, debugstr_w(current) );
     return menu;
 }''','''/* W304: the built-in pictures, the BMPs in the Windows folder, sorted (the Desktop background dialog) */
 static void orbis_scan_wallpapers(void)
@@ -2023,7 +2037,7 @@ static BOOL orbis_background_render( HWND dialog, struct orbis_background *bg, c
     cursor = SetCursor( LoadCursorW( NULL, (LPCWSTR)IDC_WAIT ));
     hr = orbis_render_picture( bg, path, mode );
     SetCursor( cursor );
-    ERR( "PWDESK background render path=%s mode=%d source=%ux%u hr=%#lx ms=%lu\\n", debugstr_w(path), mode,
+    if (FAILED( hr ) || orbis_desk_traced()) ERR( "PWDESK background render path=%s mode=%d source=%ux%u hr=%#lx ms=%lu\\n", debugstr_w(path), mode,
          bg->source_width, bg->source_height, hr, GetTickCount() - start );
     if (hr == ORBIS_ERR_TOO_LARGE)
         swprintf( text, ARRAY_SIZE(text), L"The picture is too large (%u x %u); up to 16 megapixels.",
@@ -2137,7 +2151,7 @@ static void orbis_background_browse( HWND dialog, struct orbis_background *bg )
         swprintf( text, ARRAY_SIZE(text), L"The file dialog failed (error 0x%lx).", failure );
         orbis_background_status( dialog, text );
     }
-    ERR( "PWDESK background browse file=%s error=%#lx\\n", debugstr_w(file), failure );
+    if (failure || orbis_desk_traced()) ERR( "PWDESK background browse file=%s error=%#lx\\n", debugstr_w(file), failure );
 }
 
 /* the selected picture as the wallpaper: a screen-sized built-in BMP as it is, anything else drawn as
@@ -2199,7 +2213,7 @@ static BOOL orbis_background_apply( HWND dialog, struct orbis_background *bg )
     bg->dirty = FALSE;
     swprintf( text, ARRAY_SIZE(text), L"Applied: %u x %u, %s.", bg->source_width, bg->source_height, orbis_fit_names[mode] );
     orbis_background_status( dialog, text );
-    ERR( "PWDESK background apply source=%s mode=%d target=%s\\n", debugstr_w(path), mode, debugstr_w(target) );
+    if (orbis_desk_traced()) ERR( "PWDESK background apply source=%s mode=%d target=%s\\n", debugstr_w(path), mode, debugstr_w(target) );
     return TRUE;
 }
 
@@ -2227,7 +2241,7 @@ static void orbis_background_init( HWND dialog, struct orbis_background *bg )
         SendDlgItemMessageW( dialog, ORBIS_BG_POSITION, CB_ADDSTRING, 0, (LPARAM)orbis_fit_names[i] );
     SendDlgItemMessageW( dialog, ORBIS_BG_POSITION, CB_SETCURSEL, style, 0 );
     orbis_background_fill_list( dialog, bg, select );
-    ERR( "PWDESK background open builtin=%u current=%s source=%s style=%lu select=%ld\\n", orbis_wallpaper_count,
+    if (orbis_desk_traced()) ERR( "PWDESK background open builtin=%u current=%s source=%s style=%lu select=%ld\\n", orbis_wallpaper_count,
          debugstr_w(current), debugstr_w(source), style, (long)select );
     orbis_background_preview( dialog, bg );
 }

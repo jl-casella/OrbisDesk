@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
+#include "pw_trace.h"  /* alpha 2 */
 
 extern size_t sceKernelGetDirectMemorySize( void );
 extern int32_t sceKernelAvailableFlexibleMemorySize( size_t *size );
@@ -112,7 +113,7 @@ int pw_wine_memory_info( unsigned long long *total, unsigned long long *availabl
                  direct, direct_free, (unsigned)direct_result, flexible, (unsigned)flexible_result,
                  largest, allocated, walk.ranges, (unsigned)walk.last_rc, method ? "summed" : "largest_range",
                  walk.stop, walk.inclusive, walk.offset, walk.start, walk.end, walk.type );
-    else if (method != last_method && switches++ < 16)
+    else if (method != last_method && pw_trace_on() && switches++ < 16)
         fprintf( stderr, "PWMEM direct_free source=%s free=%zu largest=%zu allocated=%lld ranges=%u query_rc=%#x"
                  " walk_stop=%s inclusive=%d last_offset=%#llx last_start=%#llx last_end=%#llx\n",
                  method ? "summed" : "largest_range", direct_free, largest, allocated, walk.ranges,

@@ -60,7 +60,7 @@ ac_drm_device_deinitialize(ac_drm_device *dev)
    const uint64_t left = __atomic_load_n(&dev->bo_count, __ATOMIC_RELAXED);
    const unsigned waiting = dev->num_deferred;
    simple_mtx_unlock(&dev->lock);
-   if (before != after || left || waiting)
+   if (left || waiting || (before != after && ps4_traced()))  /* alpha 2: what is kept always logs */
       ps4_log("radv/ps4: device %p ended: gave back %llu bytes; %llu bytes in %llu buffers its users left are "
               "kept, %u operations still wait\\n", (void *)dev, (unsigned long long)(before - after),
               (unsigned long long)after, (unsigned long long)left, waiting);
@@ -102,7 +102,7 @@ ac_drm_cs_ctx_free(ac_drm_device *dev, uint32_t ctx_id)
       after = __atomic_load_n(&dev->bo_bytes, __ATOMIC_RELAXED);
    }
    simple_mtx_unlock(&dev->lock);
-   if (before != after)
+   if (before != after && ps4_traced())  /* alpha 2 */
       ps4_log("radv/ps4: device %p has no queues: gave back %llu bytes; %llu bytes in buffers now\\n", (void *)dev,
               (unsigned long long)(before - after), (unsigned long long)after);
    return 0;

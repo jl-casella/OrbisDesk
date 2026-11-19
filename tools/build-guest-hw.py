@@ -92,6 +92,20 @@ void ps4_guest_memory_reserved( void *base, void *caller );
 void ps4_guest_memory_released( void *base );
 /* W224: kernelbase process.c; VirtualProtectEx and WriteProcessMemory of a guest thread */
 void ps4_guest_code_writable( HANDLE process, void *addr, SIZE_T size, DWORD prot );
+/* alpha 2: OrbisDesk's trace switch as the launcher hands it to Windows code (PW_TRACE=0|1,
+ * platform/ps4/pw_trace.h); unset counts as on. Read once in each file that includes this. */
+static inline BOOL ps4_pw_traced( void )
+{
+    static LONG traced = -1;
+
+    if (traced < 0)
+    {
+        WCHAR value[4];
+
+        traced = !(GetEnvironmentVariableW( L"PW_TRACE", value, ARRAY_SIZE(value) ) == 1 && value[0] == '0');
+    }
+    return traced;
+}
 '''
 (overlay/'kernelbase').mkdir(parents=True,exist_ok=True);(overlay/'kernelbase/ps4_guest.h').write_text(GUEST_H)
 for header in ('pw_execution_mode.h','pw_execution_policy.h'):
@@ -711,7 +725,7 @@ static void ps4_guest_unload( struct ps4_guest *guest )
                     if (!ours) continue;
                     if (unregister( (const WCHAR *)(ULONG_PTR)atom, (HINSTANCE)bases[k] ))
                     {
-                        ERR( "PWGUEST class %s of module %p unregistered\\n", debugstr_w(name), bases[k] );
+                        if (ps4_pw_traced()) ERR( "PWGUEST class %s of module %p unregistered\\n", debugstr_w(name), bases[k] );
                         unregistered++;
                     }
                     else
@@ -2183,7 +2197,7 @@ static UINT ps4_guest_threads_in( const struct ps4_guest_own *own, UINT own_coun
                     HANDLE thread = OpenThread( THREAD_TERMINATE | SYNCHRONIZE, FALSE, tid );
                     DWORD wait = WAIT_FAILED;
                     if (thread && TerminateThread( thread, 0 )) wait = WaitForSingleObject( thread, 1000 );
-                    ERR( "PWGUEST ended: thread %04lx wait=%lu\\n", tid, wait );
+                    if (ps4_pw_traced()) ERR( "PWGUEST ended: thread %04lx wait=%lu\\n", tid, wait );
                     if (thread) CloseHandle( thread );
                 }
             }
@@ -2773,7 +2787,7 @@ revise('kernelbase','process','''    ps4_guest_pad_profile( app_name, TRUE );  /
 
         if (!LdrFindEntryForAddress( guest->module, &ldr ) && ldr->EntryPoint)
         {
-            ERR( "PWGUEST ilonly entry %p -> %p (loader entry) app=%s\\n", guest->entry, ldr->EntryPoint,
+            if (ps4_pw_traced()) ERR( "PWGUEST ilonly entry %p -> %p (loader entry) app=%s\\n", guest->entry, ldr->EntryPoint,
                  debugstr_w(app_name) );
             guest->entry = ldr->EntryPoint;
         }
@@ -3812,7 +3826,7 @@ static void ps4_overlay_report_hud( const char *reply )
     hud = presented && (guest64 ? loaded : loaded32);
     if (hud == reported) return;
     reported = hud;
-    ERR( "PWOVERLAY mangohud in_front=%d window=%p presented=%p guest64=%d loaded=%d loaded32=%d\\n", hud, hwnd,
+    if (ps4_pw_traced()) ERR( "PWOVERLAY mangohud in_front=%d window=%p presented=%p guest64=%d loaded=%d loaded32=%d\\n", hud, hwnd,
          presented, guest64, loaded, loaded32 );
     ps4_guest_pad_profile( L"<mangohud>", hud );
 }
@@ -4556,7 +4570,7 @@ static void ps4_guest_thread_starts( struct ps4_guest *guest, DWORD self )
             len = 0;
         }
     }
-    if (len) ERR( "PWGUEST thread_starts module=%p%s\\n", guest->module, line );
+    if (len && ps4_pw_traced()) ERR( "PWGUEST thread_starts module=%p%s\\n", guest->module, line );
 }
 
 /* ExitProcess from a guest thread (ntdll RtlExitUserProcess): end the guest's other
@@ -4726,7 +4740,7 @@ revise('kernelbase','process','''    if (presented && owner) guest64 = ps4_overl
     hud = presented && (guest64 ? loaded : loaded32);
     if (hud == reported) return;
     reported = hud;
-    ERR( "PWOVERLAY mangohud in_front=%d window=%p presented=%p guest64=%d loaded=%d loaded32=%d\\n", hud, hwnd,
+    if (ps4_pw_traced()) ERR( "PWOVERLAY mangohud in_front=%d window=%p presented=%p guest64=%d loaded=%d loaded32=%d\\n", hud, hwnd,
          presented, guest64, loaded, loaded32 );''','''    /* 04.26 (run-0234): a page that does not change presents nothing; its window keeps the state it had */
     if (presented) kept = hwnd;
     else if (hwnd && hwnd == kept) presented = hwnd;
@@ -4738,7 +4752,7 @@ revise('kernelbase','process','''    if (presented && owner) guest64 = ps4_overl
     hud = presented && !excluded && (guest64 ? loaded : loaded32);
     if (hud == reported) return;
     reported = hud;
-    ERR( "PWOVERLAY mangohud in_front=%d window=%p presented=%p guest64=%d loaded=%d loaded32=%d excluded=%d\\n", hud,
+    if (ps4_pw_traced()) ERR( "PWOVERLAY mangohud in_front=%d window=%p presented=%p guest64=%d loaded=%d loaded32=%d excluded=%d\\n", hud,
          hwnd, presented, guest64, loaded, loaded32, excluded );''','The window in front keeps its MangoHud state while it does not present (04.26).')
 revise('kernelbase','process','''    TRACE( "(%s %p %lu)\\n", debugstr_w(name), val, size );
 
@@ -4754,7 +4768,7 @@ revise('kernelbase','process','''    TRACE( "(%s %p %lu)\\n", debugstr_w(name), 
         static LONG logged;
 
         if (!InterlockedExchange( &logged, 1 ))
-            ERR( "PWGUEST mangohud excluded module=%p: DISABLE_MANGOHUD=1 for its threads\\n", ps4_guest_or_loading()->module );
+            if (ps4_pw_traced()) ERR( "PWGUEST mangohud excluded module=%p: DISABLE_MANGOHUD=1 for its threads\\n", ps4_guest_or_loading()->module );
         if (size < 2) return 2;
         val[0] = '1';
         val[1] = 0;
@@ -4809,7 +4823,7 @@ static void ps4_thread_new_trace( struct ps4_guest *guest, HANDLE handle, LPTHRE
     for (j = 0; j < guest->thread_count; j++)
         if (WaitForSingleObject( guest->threads[j], 0 ) == WAIT_TIMEOUT) live++;
     RtlLeaveCriticalSection( &guest->lock );
-    ERR( "PWGUEST thread_new module=%p id=%04lx made=%u live=%u by=%s start=%s\\n", guest->module,
+    if (ps4_pw_traced()) ERR( "PWGUEST thread_new module=%p id=%04lx made=%u live=%u by=%s start=%s\\n", guest->module,
          GetThreadId( handle ), made, live, by, from );
 }
 
@@ -4880,7 +4894,7 @@ static void ps4_guest_release_audio( struct ps4_guest *guest )
     if (state != 1) return;
     status = dispatcher( driver, 37, &params );
     if (status) ERR( "PWAUDIO guest %p: releasing its streams failed (%#lx)\\n", guest->module, status );
-    else if (params.orphaned) ERR( "PWAUDIO guest %p: %u streams out of the mixer, %u of others kept\\n",
+    else if (params.orphaned && ps4_pw_traced()) ERR( "PWAUDIO guest %p: %u streams out of the mixer, %u of others kept\\n",
                                    guest->module, params.orphaned, params.kept );
 }
 
@@ -5374,7 +5388,7 @@ static UINT32 ps4_guest_release_gl( struct ps4_guest *guest )
         return 0;
     }
     result = release( &contexts, &desktop );
-    ERR( "PWGUEST gl module=%p result=%d contexts=%u desktop=%u\\n", guest->module, result, contexts, desktop );
+    if (ps4_pw_traced()) ERR( "PWGUEST gl module=%p result=%d contexts=%u desktop=%u\\n", guest->module, result, contexts, desktop );
     return result == 1 ? 1 /* PW_GUEST_RELEASE_GL */ : 0;
 }
 
@@ -5436,7 +5450,7 @@ static void ps4_guest_release_vulkan( struct ps4_guest *guest )
     params.heaps = RtlGetProcessHeaps( 0, NULL );  /* run-0185 */
     status = ps4_guest_pwguest( guest, 0, &params );
     if (status) ERR( "PWGUEST vulkan module=%p release failed (%#lx)\\n", guest->module, status );
-    else if (params.devices || params.shared || params.gl_devices)
+    else if ((params.devices || params.shared || params.gl_devices) && ps4_pw_traced())
         ERR( "PWGUEST vulkan module=%p devices=%u memories=%u bytes=%I64u shared=%u others=%u gl_devices=%u "
              "gl_memories=%u gl_bytes=%I64u\\n", guest->module, params.devices, params.memories, params.bytes,
              params.shared, params.others, params.gl_devices, params.gl_memories, params.gl_bytes );
@@ -5599,7 +5613,7 @@ static void ps4_guest_claim_heaps( struct ps4_guest *guest )
         ps4_guest_heap_set_owner( heaps[i], guest );
         claimed++;
     }
-    if (claimed) ERR( "PWGUEST heaps module=%p claimed=%lu made while it loaded\\n", guest->module, claimed );
+    if (claimed && ps4_pw_traced()) ERR( "PWGUEST heaps module=%p claimed=%lu made while it loaded\\n", guest->module, claimed );
 }
 
 /* a loaded module whose writable data holds the value (a heap handle in a global), or NULL; ntdll, which keeps the
@@ -5677,7 +5691,7 @@ static void ps4_guest_release_heaps( struct ps4_guest *guest )
         if (heaps[i] == process || ps4_guest_heap_owner( heaps[i] ) != guest) continue;
         if ((holder = ps4_guest_heap_holder( heaps[i], ntdll )))
         {
-            ERR( "PWGUEST heap %p of module %p kept: held by %s\\n", heaps[i], guest->module, debugstr_w( holder ) );
+            if (ps4_pw_traced()) ERR( "PWGUEST heap %p of module %p kept: held by %s\\n", heaps[i], guest->module, debugstr_w( holder ) );
             ps4_guest_heap_set_owner( heaps[i], NULL );
             kept++;
             continue;
@@ -5882,7 +5896,7 @@ static void ps4_guest_heap_usage( struct ps4_guest *guest )
         memset( &info, 0, sizeof(info) );
         if (RtlQueryHeapInformation( heaps[i], (HEAP_INFORMATION_CLASS)PW_HEAP_LARGE, &info, sizeof(info), NULL )) return;
         if (info.committed + info.large_bytes < 0x100000) continue;
-        ERR( "PWGUEST heap_usage owner=%p why=start heap=%p holder=%s committed=%Iu large=%Iu blocks=%Iu\\n", guest,
+        if (ps4_pw_traced()) ERR( "PWGUEST heap_usage owner=%p why=start heap=%p holder=%s committed=%Iu large=%Iu blocks=%Iu\\n", guest,
              heaps[i], heaps[i] == process ? "process" : "-", info.committed, info.large_bytes, info.large_blocks );
     }
 }
@@ -5925,7 +5939,7 @@ static void ps4_guest_release_large( struct ps4_guest *guest, HMODULE ntdll )
         info->max = max;
         if (RtlQueryHeapInformation( heaps[i], (HEAP_INFORMATION_CLASS)PW_HEAP_LARGE, info, size, NULL )) break;
         if (info->committed + info->large_bytes >= 0x100000)
-            ERR( "PWGUEST heap_usage owner=%p why=release heap=%p holder=%s committed=%Iu large=%Iu blocks=%Iu\\n", guest,
+            if (ps4_pw_traced()) ERR( "PWGUEST heap_usage owner=%p why=release heap=%p holder=%s committed=%Iu large=%Iu blocks=%Iu\\n", guest,
                  heaps[i], heaps[i] == process ? "process" : holder ? debugstr_w( holder ) : "-", info->committed,
                  info->large_bytes, info->large_blocks );
         if (!info->guest_blocks) continue;
@@ -5975,17 +5989,17 @@ static void ps4_guest_release_large( struct ps4_guest *guest, HMODULE ntdll )
                 other_blocks++;
             }
         }
-        ERR( "PWGUEST heap_large module=%p heap=%p blocks=%Iu bytes=%Iu listed=%lu freed=%lu freed_bytes=%Iu\\n",
+        if (ps4_pw_traced()) ERR( "PWGUEST heap_large module=%p heap=%p blocks=%Iu bytes=%Iu listed=%lu freed=%lu freed_bytes=%Iu\\n",
              guest->module, heaps[i], info->guest_blocks, info->guest_bytes, info->listed, freed, freed_bytes );
     }
     for (k = 0; k < names; k++)
-        ERR( "PWGUEST heap_large module=%p kept bytes=%Iu blocks=%lu from %s via %s\\n", guest->module, kept[k].bytes,
+        if (ps4_pw_traced()) ERR( "PWGUEST heap_large module=%p kept bytes=%Iu blocks=%lu from %s via %s\\n", guest->module, kept[k].bytes,
              kept[k].blocks, debugstr_w( kept[k].caller ), kept[k].via ? debugstr_w( kept[k].via ) : "none" );
     if (other_blocks)
-        ERR( "PWGUEST heap_large module=%p kept bytes=%Iu blocks=%lu from others\\n", guest->module, other_bytes,
+        if (ps4_pw_traced()) ERR( "PWGUEST heap_large module=%p kept bytes=%Iu blocks=%lu from others\\n", guest->module, other_bytes,
              other_blocks );
     if (object_blocks)  /* 04.29: part of the freed ones above */
-        ERR( "PWGUEST heap_large module=%p objects freed_bytes=%Iu blocks=%lu: the terminated guest's, made through "
+        if (ps4_pw_traced()) ERR( "PWGUEST heap_large module=%p objects freed_bytes=%Iu blocks=%lu: the terminated guest's, made through "
              "wined3d.dll\\n", guest->module, object_bytes, object_blocks );
     VirtualFree( info, 0, MEM_RELEASE );
 }
@@ -6553,12 +6567,12 @@ static void ps4_kept_log( struct ps4_kept_list *list, void *module, const char *
             list->other_blocks += list->names[i].blocks;
             continue;
         }
-        ERR( "PWGUEST %s module=%p kept bytes=%Iu blocks=%lu from %s via %s\\n", what, module, list->names[i].bytes,
+        if (ps4_pw_traced()) ERR( "PWGUEST %s module=%p kept bytes=%Iu blocks=%lu from %s via %s\\n", what, module, list->names[i].bytes,
              list->names[i].blocks, debugstr_w( list->names[i].caller ),
              list->names[i].via ? debugstr_w( list->names[i].via ) : "none" );
     }
     if (list->other_blocks)
-        ERR( "PWGUEST %s module=%p kept bytes=%Iu blocks=%lu from others\\n", what, module, list->other_bytes,
+        if (ps4_pw_traced()) ERR( "PWGUEST %s module=%p kept bytes=%Iu blocks=%lu from others\\n", what, module, list->other_bytes,
              list->other_blocks );
 }
 ''','A block a C runtime made for code that is gone is freed; kept blocks are summed by module (04.30, run-0252).')
@@ -6655,12 +6669,12 @@ static void ps4_guest_release_small( struct ps4_guest *guest )
         req->freed_bytes = 0;
     }
     if (info->total || info->missed)
-        ERR( "PWGUEST heap_small module=%p sites=%lu blocks=%Iu bytes=%Iu listed=%lu missed=%lu freed=%lu "
+        if (ps4_pw_traced()) ERR( "PWGUEST heap_small module=%p sites=%lu blocks=%Iu bytes=%Iu listed=%lu missed=%lu freed=%lu "
              "freed_bytes=%Iu\\n", guest->module, info->total, info->blocks, info->bytes, info->listed, info->missed,
              req->freed, req->freed_bytes );
     ps4_kept_log( &kept, guest->module, "heap_small" );
     if (object_blocks)  /* part of the freed ones above */
-        ERR( "PWGUEST heap_small module=%p objects bytes=%Iu blocks=%lu: the terminated guest's, made through "
+        if (ps4_pw_traced()) ERR( "PWGUEST heap_small module=%p objects bytes=%Iu blocks=%lu: the terminated guest's, made through "
              "wined3d.dll\\n", guest->module, object_bytes, object_blocks );
     VirtualFree( info, 0, MEM_RELEASE );
 }
@@ -6700,7 +6714,7 @@ static void ps4_guest_release_unowned( struct ps4_guest *guest )
             }
             ps4_kept_add( &kept, caller, via, block->size, 1 );
         }
-        ERR( "PWGUEST heap_unowned module=%p blocks=%Iu bytes=%Iu listed=%lu freed=%lu freed_bytes=%Iu\\n",
+        if (ps4_pw_traced()) ERR( "PWGUEST heap_unowned module=%p blocks=%Iu bytes=%Iu listed=%lu freed=%lu freed_bytes=%Iu\\n",
              guest->module, info->guest_blocks, info->guest_bytes, info->listed, freed, freed_bytes );
         ps4_kept_log( &kept, guest->module, "heap_unowned" );
     }

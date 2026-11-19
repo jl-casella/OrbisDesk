@@ -54,7 +54,7 @@ A game held to an even 30 by FPS LIMIT is the input [frame generation](FRAME_GEN
 
 ## Logs
 
-The title's log gets:
+The title's log gets the lines below. From 04.37 the `PWFPS vblank count`, `PWFPS auto cap` and 5 s report lines appear only with traces on (`/data/orbisdesk/trace.txt`, see [release traces](RELEASE_TRACES.md#alpha-2-lines)); the setting lines always do.
 
 - `PWOVERLAY fpslimit=<off|30|60|auto> program=<exe> saved=<0|1> errno=<n> why=menu`: the choice was made in the overlay. With `why=start` or `why=exit`, the program in front changed and its saved choice took effect.
 - `PWFPS limit=<setting> cap=<vblanks>`: the sink took the new setting (cap 2 = 30, 1 = 60, 0 = off).
