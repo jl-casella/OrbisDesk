@@ -589,6 +589,16 @@ for arch,windows in (('x86_64','system32'),('x86','syswow64')):
     for relative,digest in gecko['trees'][arch]['files'].items():
         target=prefix/'drive_c/windows'/windows/'gecko'/gecko['version']/relative;target.parent.mkdir(parents=True,exist_ok=True)
         copy_verified(ROOT/'out/wine-gecko'/arch/relative,target,digest)
+# Wine Mono 11.3.0 (tools/stage-wine-mono.py) in C:\windows\mono\mono-2.0, the first place mscoree looks
+# (dlls/mscoree/metahost.c get_mono_path_local), with its licences next to it. About 277 MB.
+mono=json.loads((ROOT/'out/wine-mono/manifest.json').read_text())
+if mono['builder_sha256']!=sha(ROOT/'tools/stage-wine-mono.py'):raise SystemExit('Wine Mono differs from its stager')
+for relative,digest in mono['files'].items():
+    target=prefix/'drive_c/windows/mono/mono-2.0'/relative;target.parent.mkdir(parents=True,exist_ok=True)
+    copy_verified(ROOT/'out/wine-mono/mono-2.0'/relative,target,digest)
+for relative,digest in mono['licenses'].items():
+    target=prefix/'drive_c/windows/mono/licenses'/relative;target.parent.mkdir(parents=True,exist_ok=True)
+    copy_verified(ROOT/'out/wine-mono/licenses'/relative,target,digest)
 # DVD (dvd-plan.md): VLC 3.0.24 x64 (tools/stage-vlc.py) in C:\Program Files\VLC, about 56 MiB (W243); its
 # shortcuts are make-start-menu.py's Programs/Multimedia. Not stripped (the loop below does not
 # look in Program Files). plugins.dat is made on the console ("VLC plugin cache") and survives uploads.

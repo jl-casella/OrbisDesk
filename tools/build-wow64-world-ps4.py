@@ -653,19 +653,24 @@ replace('signal_x86_64','''    if (needed_flags & CONTEXT_I386_DEBUG_REGISTERS) 
 # W246 (1): the legacy EXE window. In a 64-bit process (explorer) placement-free allocations keep out of
 # [0x400000, 0x2000000) when there is room above, so a 32-bit EXE without relocations (Vice City) gets its
 # base. W244: gta-vc.exe went to 00AE0000 unrelocated.
+# alpha-1 (run-0221, and every PES 2014 start in the world since W261): pes2014.exe has no relocations and
+# needs [0x400000, 0x2450000) (image size 0x2050000), more than the 32 MiB window. Just above 0x2000000 sat
+# what the 32-bit world maps when it starts: its process heap (023D0000) and a read-only view of locale.nls
+# (0x23f0000+0xc3000: the file's 794914 bytes in pages). The game always went to base_taken; the window is
+# now [0x400000, 0x8000000) (124 MiB of EXE image), still below the usual DLL base 0x10000000.
 replace('virtual','''        if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
         if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
 ''','''        if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
         if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
 #ifdef __ORBIS__
-        /* OrbisDesk W246: keep the legacy EXE window [0x400000, 0x2000000) for 32-bit EXEs at their base */
+        /* OrbisDesk W246, alpha-1 run-0221: keep the legacy EXE window [0x400000, 0x8000000) for 32-bit EXEs at their base */
         if (is_machine_64bit( main_image_info.Machine ) && !top_down &&
-            (char *)start < (char *)0x2000000 && (char *)end > (char *)0x2000000)
+            (char *)start < (char *)0x8000000 && (char *)end > (char *)0x8000000)
         {
-            if ((ptr = map_reserved_area( (void *)0x2000000, end, host_size, top_down, unix_prot, align_mask )))
+            if ((ptr = map_reserved_area( (void *)0x8000000, end, host_size, top_down, unix_prot, align_mask )))
                 goto done;
             if ((start > address_space_start || end < host_addr_space_limit) &&
-                (ptr = map_free_area( (void *)0x2000000, end, host_size, top_down, unix_prot, align_mask )))
+                (ptr = map_free_area( (void *)0x8000000, end, host_size, top_down, unix_prot, align_mask )))
                 goto done;
         }
 #endif
@@ -767,9 +772,11 @@ replace('virtual','''        if ((status = map_fixed_area( base, size, unix_prot
         if ((status = map_fixed_area( base, size, unix_prot ))) return status;
 #endif
 ''')
-replace('virtual','''        int pw_backing_prot = (unix_prot && view_size >= 0x100000) ? unix_prot : 0;
+# SeaMonkey's flexible reserve (docs/SEAMONKEY_FLEXIBLE_MEMORY.md, tools/build-audio-ps4.py) changed this line of
+# build/audio-ps4/virtual.c: small views take direct memory too once the flexible pool is low.
+replace('virtual','''        int pw_backing_prot = (unix_prot && (view_size >= 0x100000 || pw_flexible_low())) ? unix_prot : 0;  /* flexible reserve */
 #endif
-''','''        int pw_backing_prot = (unix_prot && view_size >= 0x100000) ? unix_prot : 0;
+''','''        int pw_backing_prot = (unix_prot && (view_size >= 0x100000 || pw_flexible_low())) ? unix_prot : 0;  /* flexible reserve */
         int pw_area_prot = pw_backing_prot ? PROT_NONE : unix_prot;  /* OrbisDesk W250 */
 
         pw_late_prot = pw_backing_prot;
@@ -777,8 +784,8 @@ replace('virtual','''        int pw_backing_prot = (unix_prot && view_size >= 0x
         int pw_area_prot = unix_prot;
 #endif
 ''')
-for call in ('map_reserved_area( (void *)0x2000000, end, host_size, top_down, ',
-             'map_free_area( (void *)0x2000000, end, host_size, top_down, ',
+for call in ('map_reserved_area( (void *)0x8000000, end, host_size, top_down, ',
+             'map_free_area( (void *)0x8000000, end, host_size, top_down, ',
              'map_reserved_area( start, end, host_size, top_down, ',
              'map_free_area( start, end, host_size, top_down, '):
     replace('virtual', call + 'unix_prot, align_mask )', call + 'pw_area_prot, align_mask )')

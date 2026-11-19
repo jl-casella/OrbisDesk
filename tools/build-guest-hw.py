@@ -2671,6 +2671,22 @@ static void ps4_guest_pad_profile( const WCHAR *path, BOOL load )
 }''','The pad\'s key profile follows the guest (W213).')
 revise('kernelbase','process','''    guest->entry = (char *)guest->module + nt->OptionalHeader.AddressOfEntryPoint;''','''    guest->entry = (char *)guest->module + nt->OptionalHeader.AddressOfEntryPoint;
     ps4_guest_pad_profile( app_name, TRUE );  /* W213 */''','A starting guest asks for its pad profile (W213).')
+# Wine Mono (2026-11-16, run-0172): an IL-only .NET EXE (PES 2014's settings.exe) starts at mscoree's _CorExeMain,
+# which ntdll's fixup_imports_ilonly puts in the loader entry; its header entry jumps through an import table the
+# loader never binds for such an image, and the guest faulted at its first instruction (c0000005 at the RVA 0x1359e0).
+revise('kernelbase','process','''    ps4_guest_pad_profile( app_name, TRUE );  /* W213 */''','''    ps4_guest_pad_profile( app_name, TRUE );  /* W213 */
+    if (nt->OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR &&
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].VirtualAddress)
+    {
+        LDR_DATA_TABLE_ENTRY *ldr;
+
+        if (!LdrFindEntryForAddress( guest->module, &ldr ) && ldr->EntryPoint)
+        {
+            ERR( "PWGUEST ilonly entry %p -> %p (loader entry) app=%s\\n", guest->entry, ldr->EntryPoint,
+                 debugstr_w(app_name) );
+            guest->entry = ldr->EntryPoint;
+        }
+    }''','A .NET EXE starts at the loader entry, mscoree\'s _CorExeMain (Wine Mono).')
 revise('kernelbase','process','''    ERR( "PS4 guest module %p exits status %lu\\n", guest->module, status );''','''    ERR( "PS4 guest module %p exits status %lu\\n", guest->module, status );
     {
         WCHAR path[MAX_PATH];  /* W213: its pad profile ends with it */

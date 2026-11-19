@@ -1479,6 +1479,110 @@ revise('dlls/win32u/class.c','''        (!fnid && wc->hInstance == user32_module
 revise('dlls/win32u/class.c','''            wc->hInstance     = (instance == user32_module) ? 0 : instance;''',
 '''            wc->hInstance     = (instance == user32_module || (user32_module32 && instance == user32_module32)) ? 0 : instance;''',
 'Builtin window procs per world (W236).')
+# alpha-1 (run-0221, 04.20: PES 2014's settings.exe, WinForms on Wine Mono, "Error creating window handle" in
+# TextBoxBase.CreateHandle after PWFAULT at FF665060): a TextBox is a superclass of "Edit", and its WndProc
+# passes what it does not handle to the proc GetClassInfo gave for "Edit" (CallWindowProc). With visual styles
+# "Edit" is comctl32 v6's global class "6.0.2600.2982!Edit", which explorer's 64-bit side had registered first,
+# with 64-bit comctl32's proc. The 32-bit comctl32 v6 registers it again (RegisterClassNameW) and the server
+# refuses: one class per name and process. W239 gave the 32-bit thread the proc's handle; CallWindowProc then
+# fetched the procs (NtUserCallWindowProc), wow64win cut the 64-bit one to 32 bits (win_proc_params_64to32),
+# and user32 called 0x7FF665060 as FF665060. WM_NCCREATE failed, and so did CreateWindowEx.
+# (1) The 32-bit proc of such a class is kept beside the 64-bit one, and the world's threads get it, as W236
+#     does for user32's builtin classes. The 32-bit registration still fails, as before.
+revise('dlls/win32u/class.c','''        return &builtin_procs32[proc - winproc_array];
+    return proc;
+}
+''','''        return &builtin_procs32[proc - winproc_array];
+    /* alpha-1 (run-0221): a global class both worlds registered, the 64-bit side first */
+    if (have_procs32 && proc >= winproc_array + NTUSER_NB_PROCS && proc < winproc_array + MAX_WINPROCS &&
+        NtCurrentTeb()->WowTebOffset &&
+        (class_procs32[proc - winproc_array].procA || class_procs32[proc - winproc_array].procW))
+        return &class_procs32[proc - winproc_array];
+    return proc;
+}
+''','A global class both worlds register runs its own proc in each (run-0221).')
+revise('dlls/win32u/class.c','''static WINDOWPROC builtin_procs32[NTUSER_NB_PROCS];
+''','''static WINDOWPROC builtin_procs32[NTUSER_NB_PROCS];
+/* alpha-1 (run-0221): the 32-bit procs of global classes the 64-bit side registered first, by winproc index */
+static WINDOWPROC class_procs32[MAX_WINPROCS];
+''','A global class both worlds register runs its own proc in each (run-0221).')
+revise('dlls/win32u/class.c','''/***********************************************************************
+ *	     NtUserRegisterClassExWOW   (win32u.@)
+ */''','''/* alpha-1 (run-0221): a 32-bit thread registered a global class that the 64-bit side had registered with a
+ * 64-bit proc (comctl32 v6's Edit, Button, Static... of explorer, wfm or another 64-bit guest). The server
+ * refused it (ERROR_CLASS_ALREADY_EXISTS); the 32-bit world's threads get the proc of their own DLL instead */
+static void pw_world_class_proc32( HINSTANCE instance, UNICODE_STRING *name, WNDPROC wndproc, UINT style )
+{
+    struct object_lock lock = OBJECT_LOCK_INIT;
+    const class_shm_t *class_shm;
+    WINDOWPROC *ours, *theirs;
+    ULONG_PTR existing = 0;
+    NTSTATUS status;
+    CLASS *class;
+    UINT index;
+
+    if (!have_procs32 || !NtCurrentTeb()->WowTebOffset || !(style & CS_GLOBALCLASS)) return;
+    if (RtlGetLastWin32Error() != ERROR_CLASS_ALREADY_EXISTS) return;
+    if (!(ours = get_winproc_ptr( wndproc )) || ours == WINPROC_PROC16) return;
+    if (((ULONG_PTR)ours->procA | (ULONG_PTR)ours->procW) >> 32) return;
+    if (!(class = find_class( instance, name ))) goto done;
+    while ((status = get_shared_class( class, &lock, &class_shm )) == STATUS_PENDING)
+        existing = class_shm->info.wndproc;
+    release_class_ptr( class );
+    if (status || !(theirs = get_winproc_ptr( (WNDPROC)existing )) || theirs == WINPROC_PROC16) goto done;
+    index = theirs - winproc_array;
+    if (index < NTUSER_NB_PROCS || theirs == ours) goto done;  /* user32's builtin classes: W236 */
+    if (!(((ULONG_PTR)theirs->procA | (ULONG_PTR)theirs->procW) >> 32)) goto done;  /* not a 64-bit proc */
+    pthread_mutex_lock( &winproc_lock );
+    class_procs32[index] = *ours;
+    pthread_mutex_unlock( &winproc_lock );
+    ERR( "PWWOW win32u: global class %s is the 64-bit side's (proc %p/%p); 32-bit threads get %p/%p\\n",
+         debugstr_us(name), theirs->procA, theirs->procW, ours->procA, ours->procW );
+done:
+    RtlSetLastWin32Error( ERROR_CLASS_ALREADY_EXISTS );  /* the registration's own error, unchanged */
+}
+
+/***********************************************************************
+ *	     NtUserRegisterClassExWOW   (win32u.@)
+ */''','A global class both worlds register runs its own proc in each (run-0221).')
+revise('dlls/win32u/class.c','''failed:
+    user_unlock();
+    NtUserDestroyCursor( icon_internal, 0 );
+    free( class );
+    return 0;
+''','''failed:
+    user_unlock();
+    pw_world_class_proc32( instance, name, wndproc, wc->style );  /* run-0221 */
+    NtUserDestroyCursor( icon_internal, 0 );
+    free( class );
+    return 0;
+''','A global class both worlds register runs its own proc in each (run-0221).')
+# (2) Whatever proc is still 64-bit (a 64-bit-only global class, W239's "Wine IME") never reaches 32-bit code
+#     through CallWindowProc or DispatchMessage either: the thread gets its own DefWindowProc, the behaviour
+#     W239 gives the callback path. Before, wow64win cut it to 32 bits and user32 jumped there.
+revise('dlls/win32u/class.c','''    if (!params->procA) params->procA = params->func;
+    if (!params->procW) params->procW = params->func;
+}
+''','''    if (!params->procA) params->procA = params->func;
+    if (!params->procW) params->procW = params->func;
+    /* alpha-1 (run-0221): a 32-bit thread never gets a proc above 4 GiB to call */
+    if (have_procs32 && NtCurrentTeb()->WowTebOffset && params->procW != WINPROC_PROC16 &&
+        (((ULONG_PTR)params->procA | (ULONG_PTR)params->procW) >> 32))
+    {
+        static DWORD logged_thread;
+        DWORD tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
+
+        if (logged_thread != tid)
+        {
+            logged_thread = tid;
+            ERR( "PWWOW win32u: 32-bit thread %04x window %p msg %#x: proc %p/%p is 64-bit; its DefWindowProc instead\\n",
+                 (int)tid, params->hwnd, params->msg, params->procA, params->procW );
+        }
+        params->procA = builtin_procs32[NTUSER_WNDPROC_DEFWND].procA;
+        params->procW = builtin_procs32[NTUSER_WNDPROC_DEFWND].procW;
+    }
+}
+''','A 32-bit thread never gets a 64-bit proc to call (run-0221).')
 # The 32-bit gdi32 reads the GDI handle table and DC attributes through 32-bit pointers (get_gdi_shared:
 # TEB32->GdiBatchCount -> PEB64), and the world's threads use what win32u allocates for them: W235's
 # gui-window32 faulted in gdi32 on a truncated pointer to explorer's table (read of 0x2070F86).
