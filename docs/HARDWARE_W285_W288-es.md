@@ -63,6 +63,28 @@ Límites:
 - Un título relanzado no tiene closer.
 - Dos juegos con d3d9 distintos cargados a la vez comparten un mismo nombre de módulo.
 
+**El d3d9 de Wine que dejó cargado un invitado anterior (04.26):**
+- `reports/wine-hardware-w303/physical/20261118T232351Z/run-0238.log`: Alan Wake's American Nightmare (d3d9
+  `builtin`, wined3d + OpenGL) terminó. Su `pw-wined3d\d3d9.dll` siguió cargado en el mundo de 32 bits: no está
+  entre las líneas `system_unloaded`.
+- Después arrancó Portal 2. Su `d3d9.dll` no tiene ruta, y el loader de Wine primero busca un módulo cargado por su
+  nombre base, así que Portal 2 recibió el d3d9 de Wine en vez del de DXVK. El log muestra `PWD3D renderer=vulkan for
+  L"portal2.exe" from the world (was gl)` y los errores `validate_state_table` de wined3d, y ninguna búsqueda de
+  `openvr_api_dxvk.dll`.
+- Portal 2 dibujó bien su menú sólo en el cuarto izquierdo de la pantalla. El resto era basura. Terminó con un fallo
+  en `shaderapidx9.dll` (estado 100). Arrancado primero (run-0239), corrió en DXVK sin fallos.
+- run-0203 y run-0212 muestran la misma secuencia y la misma línea `from the world`.
+- El cambio (`tools/build-guest-hw.py`, `ps4_guest_d3d_builtin` en el ntdll i386 de los invitados): mientras esté
+  cargado un módulo cuya ruta termina en `\pw-wined3d\d3d8.dll` o `\pw-wined3d\d3d9.dll`, un invitado sin el
+  override `builtin` recibe la copia de syswow64 (la de DXVK) por su ruta completa. La línea del log es
+  `PWGUEST L"d3d9.dll" for L"portal2.exe": L"C:\\windows\\syswow64\\d3d9.dll" (not Wine's, which an earlier guest
+  left loaded)`. Si no, corre la búsqueda de siempre, como antes.
+- La elección se hace en `find_dll_file`, que también usa `GetModuleHandle`, así que el `GetModuleHandle("d3d9.dll")`
+  de un invitado también recibe su propia copia, o ninguna. Un hilo que no es de ningún invitado sigue recibiendo el
+  primer módulo cargado con ese nombre.
+- Verificación: sólo compilación, el `loader.c` del ntdll de Wine para i386 y x86_64 con las mismas advertencias que
+  sin el cambio. No se construyó ni se ejecutó en la consola.
+
 **MangoHud en wined3d:**
 - Desde W259, wined3d tomaba `vkGetInstanceProcAddr` de winevulkan.dll, así que la capa implícita de MangoHud nunca entraba en la instancia de SuperMarioKart. El `in_front=1` de W284 era sólo una estimación del overlay.
 - W287 compila el loader de Vulkan i386 desde una copia cuyo `loader_windows.c` no crea fábrica DXGI (`tools/vk-h0/patch-vulkan-loader-i386-nodxgi.py`). Esa fábrica era la recursión de W257 a través del dxgi de Wine.

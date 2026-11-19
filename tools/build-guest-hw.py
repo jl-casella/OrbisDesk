@@ -2252,7 +2252,9 @@ static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
          guest->module, own_count, trace_only, guest->region_count, leftovers, guest->terminated, live_dir_count );
     for (i = 0; i < own_count; i++)
         ERR( "PWGUEST own %s base=%p size=%Ix refcount=%d\\n", debugstr_w(own[i].name), own[i].base, own[i].size, own[i].count );
-    if (!own_count) goto done;
+    /* 04.29 (run-0246: Doom 3, terminated, has no DLLs of its own, and its 79 MB heap and large blocks stayed): with
+     * none, its heaps and the memory its code reserved are still released */
+    if (!own_count) goto memory;
 
     threads = ps4_guest_threads_in( own, own_count, FALSE );
     /* run-0065 (MangoJuice did not start a second time): a thread of the ended guest's own DLLs that the guest
@@ -2393,6 +2395,7 @@ static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
         }
     }
 
+memory:
     /* the memory their code reserved */
     RtlEnterCriticalSection( &guest->lock );
     for (i = 0; i < guest->region_count; i++)
@@ -3907,6 +3910,61 @@ revise('ntdll','loader','''    *(DWORD *)dir->AddressOfIndex = i;''','''#ifndef 
 #endif
     *(DWORD *)dir->AddressOfIndex = i;''','A 32-bit guest EXE before its TLS index is written (W244).')
 
+# 04.26 (04.25 run-0233/0234: DOOM3.exe, "Unhandled page fault on read access to 04C7E02C at address 7BEE23C1",
+# ntdll32 at 0x7be90000, so alloc_tls_slot reading teb->ThreadLocalStoragePointer): a module with static TLS
+# gives its TLS block to every thread of the process, found with NtGetNextThread. In explorer's process most
+# threads are 64-bit only. For them, wow64's ThreadBasicInformation answers the 64-bit TEB + 0x2000 cut to 32
+# bits, which is unmapped memory or not a TEB at all when that TEB lies above 4 GiB. Only a TEB that is committed,
+# writable and points to itself (Tib.Self, set by ntdll Unix init_teb for every 32-bit TEB) gets the block; the
+# others cannot run 32-bit code, so they need none. One PWWOW line counts the threads left out.
+revise('ntdll','loader','''static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
+{''','''#ifndef _WIN64
+/* PS4 hardware build (04.26): a 32-bit TEB of explorer's 32-bit world, not a 64-bit-only thread's address */
+static BOOL ps4_world_teb( const TEB *teb )
+{
+    MEMORY_BASIC_INFORMATION info;
+
+    if (NtQueryVirtualMemory( GetCurrentProcess(), teb, MemoryBasicInformation, &info, sizeof(info), NULL ) ||
+        info.State != MEM_COMMIT || (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+        !(info.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) ||
+        (const char *)info.BaseAddress + info.RegionSize < (const char *)(teb + 1))
+        return FALSE;
+    return teb->Tib.Self == &teb->Tib;
+}
+#endif
+
+static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
+{''',"Only 32-bit TEBs get a module's TLS block (04.26).")
+revise('ntdll','loader','''    HANDLE thread = NULL, next;
+
+    if (!(dir = RtlImageDirectoryEntryToData( mod->DllBase, TRUE, IMAGE_DIRECTORY_ENTRY_TLS, &size )))''','''    HANDLE thread = NULL, next;
+#ifndef _WIN64
+    UINT ps4_skipped = 0;  /* 04.26 */
+#endif
+
+    if (!(dir = RtlImageDirectoryEntryToData( mod->DllBase, TRUE, IMAGE_DIRECTORY_ENTRY_TLS, &size )))''',
+       "Only 32-bit TEBs get a module's TLS block (04.26).")
+revise('ntdll','loader','''        teb = tbi.TebBaseAddress;
+        if (!teb->ThreadLocalStoragePointer)''','''        teb = tbi.TebBaseAddress;
+#ifndef _WIN64
+        if (!ps4_world_teb( teb ))  /* 04.26: a 64-bit-only thread of explorer's process */
+        {
+            ps4_skipped++;
+            continue;
+        }
+#endif
+        if (!teb->ThreadLocalStoragePointer)''',"Only 32-bit TEBs get a module's TLS block (04.26).")
+revise('ntdll','loader','''    if (thread) NtClose( thread );
+
+#ifndef _WIN64
+    if (!ps4_guest_image_check( mod, dir )) return FALSE;  /* W244 */''','''    if (thread) NtClose( thread );
+
+#ifndef _WIN64
+    if (ps4_skipped)
+        ERR( "PWWOW tls_slot module %s slot %lu: %u threads without a 32-bit TEB left out\\n",
+             debugstr_w(mod->BaseDllName.Buffer), i, ps4_skipped );
+    if (!ps4_guest_image_check( mod, dir )) return FALSE;  /* W244 */''',"Only 32-bit TEBs get a module's TLS block (04.26).")
+
 # W248 (W246: SuperMarioKart left the desktop at its 800x600): a guest's display mode is undone when it ends.
 revise('kernelbase','process','''#include "winnls.h"
 #include "wincontypes.h"''','''#include "winnls.h"
@@ -4378,11 +4436,16 @@ revise('ntdll','loader','''static NTSTATUS find_dll_file( const WCHAR *load_path
  * own from syswow64\\pw-wined3d (on wined3d) instead of syswow64's DXVK. The process's load order reads one
  * AppDefaults key, the main EXE's (explorer.exe), so the guest's is read here. The guest is the thread's
  * (TEB.UserReserved, kernelbase's struct ps4_guest) or, while its EXE loads, that EXE (as kernelbase W273).
+ * 04.26 (run-0238: Portal 2 after Alan Wake drew garbage through Wine's d3d9 and wined3d's Vulkan renderer): Wine's
+ * copy an earlier guest loaded stays loaded in the world, and a name without a path matches a loaded module by its
+ * base name first. While it is loaded, a guest without the override gets syswow64's (DXVK's) by its full name.
  * NULL: the usual search. Loader lock held. */
 static WCHAR *ps4_guest_d3d_builtin( const WCHAR *libname )
 {
     static const WCHAR *const names[] = {L"d3d8", L"d3d9"};
     static const WCHAR dir[] = L"C:\\\\windows\\\\syswow64\\\\pw-wined3d\\\\";
+    static const WCHAR sysdir[] = L"C:\\\\windows\\\\syswow64\\\\";
+    static const WCHAR subdir[] = L"\\\\pw-wined3d\\\\";
     /* the first members of kernelbase's struct ps4_guest (ps4_guest.h) */
     const struct { void *exit_process; void *atexit_table[3]; HMODULE module; } *guest =
         *(void **)NtCurrentTeb()->UserReserved;
@@ -4396,7 +4459,8 @@ static WCHAR *ps4_guest_d3d_builtin( const WCHAR *libname )
     HANDLE root, key;
     NTSTATUS status;
     DWORD size;
-    unsigned int i, len = 0;
+    unsigned int i, len = 0, name_len, tail;
+    BOOL builtin = FALSE, wine_loaded = FALSE;
 
     for (i = 0; i < ARRAY_SIZE(names); i++)
     {
@@ -4413,32 +4477,58 @@ static WCHAR *ps4_guest_d3d_builtin( const WCHAR *libname )
             program = &mod->BaseDllName;
     }
     if (!program || program->Length / sizeof(WCHAR) > 64) return NULL;
+    /* 04.26: is Wine's copy (pw-wined3d/<name>.dll) loaded? */
+    name_len = wcslen( names[i] );
+    tail = ARRAY_SIZE(subdir) - 1 + name_len + 4;
+    for (entry = list->Flink; entry != list && !wine_loaded; entry = entry->Flink)
+    {
+        LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
+        const WCHAR *end;
+
+        if (!mod->FullDllName.Buffer || mod->FullDllName.Length / sizeof(WCHAR) < tail) continue;
+        end = mod->FullDllName.Buffer + mod->FullDllName.Length / sizeof(WCHAR) - tail;
+        wine_loaded = !wcsnicmp( end, subdir, ARRAY_SIZE(subdir) - 1 ) &&
+                      !wcsnicmp( end + ARRAY_SIZE(subdir) - 1, names[i], name_len ) &&
+                      !wcsnicmp( end + ARRAY_SIZE(subdir) - 1 + name_len, L".dll", 4 );
+    }
     wcscpy( path, L"Software\\\\Wine\\\\AppDefaults\\\\" );
     len = wcslen( path );
     memcpy( path + len, program->Buffer, program->Length );
     path[len + program->Length / sizeof(WCHAR)] = 0;
     wcscat( path, L"\\\\DllOverrides" );
-    if (RtlOpenCurrentUser( KEY_READ, &root )) return NULL;
-    RtlInitUnicodeString( &str, path );
-    InitializeObjectAttributes( &attr, &str, OBJ_CASE_INSENSITIVE, root, NULL );
-    status = NtOpenKey( &key, KEY_READ, &attr );
-    NtClose( root );
-    if (status) return NULL;
-    RtlInitUnicodeString( &str, names[i] );
-    status = NtQueryValueKey( key, &str, KeyValuePartialInformation, buffer, sizeof(buffer) - sizeof(WCHAR), &size );
-    NtClose( key );
-    if (status || info->Type != REG_SZ) return NULL;
-    data = (WCHAR *)info->Data;
-    data[info->DataLength / sizeof(WCHAR)] = 0;
-    for (len = 0; data[len] && data[len] != ','; len++) {}
-    if (!(len == 1 && (data[0] == 'b' || data[0] == 'B')) && !(len == 7 && !wcsnicmp( data, L"builtin", 7 ))) return NULL;
-    if (!(fullname = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(dir) + (wcslen( names[i] ) + 4) * sizeof(WCHAR) )))
+    if (!RtlOpenCurrentUser( KEY_READ, &root ))
+    {
+        RtlInitUnicodeString( &str, path );
+        InitializeObjectAttributes( &attr, &str, OBJ_CASE_INSENSITIVE, root, NULL );
+        status = NtOpenKey( &key, KEY_READ, &attr );
+        NtClose( root );
+        if (!status)
+        {
+            RtlInitUnicodeString( &str, names[i] );
+            status = NtQueryValueKey( key, &str, KeyValuePartialInformation, buffer, sizeof(buffer) - sizeof(WCHAR),
+                                      &size );
+            NtClose( key );
+            if (!status && info->Type == REG_SZ)
+            {
+                data = (WCHAR *)info->Data;
+                data[info->DataLength / sizeof(WCHAR)] = 0;
+                for (len = 0; data[len] && data[len] != ','; len++) {}
+                builtin = (len == 1 && (data[0] == 'b' || data[0] == 'B')) || (len == 7 && !wcsnicmp( data, L"builtin", 7 ));
+            }
+        }
+    }
+    if (!builtin && !wine_loaded) return NULL;
+    if (!(fullname = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(dir) + (name_len + 4) * sizeof(WCHAR) )))
         return NULL;
-    wcscpy( fullname, dir );
+    wcscpy( fullname, builtin ? dir : sysdir );
     wcscat( fullname, names[i] );
     wcscat( fullname, L".dll" );
-    ERR( "PWGUEST %s for %s: %s (its AppDefaults DllOverrides)\\n", debugstr_w(libname), debugstr_us(program),
-         debugstr_w(fullname) );
+    if (builtin)
+        ERR( "PWGUEST %s for %s: %s (its AppDefaults DllOverrides)\\n", debugstr_w(libname), debugstr_us(program),
+             debugstr_w(fullname) );
+    else
+        ERR( "PWGUEST %s for %s: %s (not Wine's, which an earlier guest left loaded)\\n", debugstr_w(libname),
+             debugstr_us(program), debugstr_w(fullname) );
     return fullname;
 }
 #endif
@@ -4694,6 +4784,1510 @@ revise('ntdll','loader','''        ERR( "PWWOW guest32 thread %04lx loader_init:
         ERR( "PWWOW guest32 thread %04lx loader_init: tls\\n",''','The steps of a 32-bit thread only with traces (alpha-1).')
 revise('ntdll','loader','''        ERR( "PWWOW guest32 thread %04lx loader_init: attached\\n",''','''        if (pw_loader_traced())  /* alpha-1 */
         ERR( "PWWOW guest32 thread %04lx loader_init: attached\\n",''','The steps of a 32-bit thread only with traces (alpha-1).')
+
+# alpha-1 (run-0165, 2026-11-16: Alan Wake's American Nightmare, 32-bit on DXVK, closed from the overlay after device
+# losses; free memory at each start fell 4.92, 4.17, 3.46, 3.33, 2.70, 2.04 GB, until a level load found no memory):
+# RADV's buffers are direct memory, given back only by vkFreeMemory, and a terminated guest never frees its device
+# memory. win32u records the guest of the thread that created each Vulkan device ("pwguest", tools/build-win32u-ps4.py,
+# platform/ps4/pw_wine_unixlibs.c); once the guest has unloaded (its threads ended, its modules' and the system
+# modules' DllMain(DETACH) run), the device memory it left is freed. Its devices are kept, and so is Zink's memory.
+# alpha-1 (run-0178, 2026-11-17: the same game on wined3d + OpenGL, through Zink, closed from the overlay: 4.77 ->
+# 3.50 GB, "PWGUEST vulkan ... shared=1"): Zink's one device is the process's, made by the first OpenGL guest, and the
+# terminated guest's GL contexts stay in it. When no other guest runs in the world, Mesa's WGL forgets its screen
+# (tools/vk-h0/patch-mesa-wgl-guest.py), and win32u frees the memory of that world's Zink devices (PW_GUEST_RELEASE_GL).
+revise('kernelbase','process','''static void ps4_guest_unload( struct ps4_guest *guest )
+{''','''/* alpha-1 (run-0178): Mesa's WGL in this world lets go of its one screen (Zink's device) when no other guest runs
+ * in the world (tools/vk-h0/patch-mesa-wgl-guest.py); 1 when it did, and win32u may free that device's memory */
+static UINT32 ps4_guest_release_gl( struct ps4_guest *guest )
+{
+    int (CDECL *release)( unsigned int *contexts, unsigned int *desktop );
+    HMODULE gallium = GetModuleHandleW( L"libgallium_wgl.dll" );
+    unsigned int contexts = 0, desktop = 0;
+    UINT i, others = 0;
+    int result;
+
+    if (!gallium) return 0;
+    RtlAcquireSRWLockShared( &ps4_live_lock );
+    for (i = 0; i < ps4_live_count; i++)
+        if (ps4_live_guests[i] != guest) others++;
+    RtlReleaseSRWLockShared( &ps4_live_lock );
+    if (others)
+    {
+        ERR( "PWGUEST gl module=%p kept: %u other guests running\\n", guest->module, others );
+        return 0;
+    }
+    if (!(release = (void *)GetProcAddress( gallium, "pw_wgl_release_screen" )))
+    {
+        ERR( "PWGUEST gl module=%p kept: libgallium_wgl has no pw_wgl_release_screen\\n", guest->module );
+        return 0;
+    }
+    result = release( &contexts, &desktop );
+    ERR( "PWGUEST gl module=%p result=%d contexts=%u desktop=%u\\n", guest->module, result, contexts, desktop );
+    return result == 1 ? 1 /* PW_GUEST_RELEASE_GL */ : 0;
+}
+
+/* alpha-1 (run-0165): what winecrt0's __wine_load_unix_lib and __wine_unix_call do, as for the audio driver (W285);
+ * with no params, only whether win32u's "pwguest" library is there (STATUS_DLL_NOT_FOUND when not) */
+static NTSTATUS ps4_guest_pwguest( struct ps4_guest *guest, unsigned int code, void *params )
+{
+    static NTSTATUS (WINAPI *dispatcher)( UINT64 handle, unsigned int code, void *args );
+    static UINT64 library;
+    static LONG state;  /* 0 not tried, 1 loaded, -1 not available */
+    NTSTATUS status;
+
+    if (!state)
+    {
+        UNICODE_STRING name = RTL_CONSTANT_STRING( L"pwguest" );
+        void **export = (void **)GetProcAddress( GetModuleHandleW( L"ntdll.dll" ), "__wine_unix_call_dispatcher" );
+        UINT64 res[2];
+
+        status = export ? NtQueryVirtualMemory( GetCurrentProcess(), &name, MemoryWineLoadUnixLibByName,
+                                                res, sizeof(res), NULL ) : STATUS_ENTRYPOINT_NOT_FOUND;
+        if (!status)
+        {
+            dispatcher = *export;
+            library = res[1];
+        }
+        state = status ? -1 : 1;
+        if (status) ERR( "PWGUEST vulkan module=%p: no pwguest library (%#lx); its device memory stays\\n",
+                         guest->module, status );
+    }
+    if (state != 1) return STATUS_DLL_NOT_FOUND;
+    return params ? dispatcher( library, code, params ) : STATUS_SUCCESS;
+}
+
+/* alpha-1 (run-0185): win32u logs the free direct and flexible memory and the direct memory of Wine's commits at a
+ * guest's start ("PWVK guest_memory ... why=start"), to compare with the lines of its release */
+static void ps4_guest_memory_line( struct ps4_guest *guest, UINT32 why )
+{
+    /* why: 0 start, 1 heaps_before (run-0190) */
+    struct { UINT64 owner; UINT32 heaps, why; } params = { (ULONG_PTR)guest, RtlGetProcessHeaps( 0, NULL ), why };
+    NTSTATUS status = ps4_guest_pwguest( guest, 1, &params );  /* struct pw_guest_memory_params */
+
+    if (status && status != STATUS_DLL_NOT_FOUND) ERR( "PWGUEST memory_line failed (%#lx)\\n", status );
+}
+
+static void ps4_guest_release_vulkan( struct ps4_guest *guest )
+{
+    struct  /* struct pw_release_guest_vulkan_params, tools/build-win32u-ps4.py */
+    {
+        UINT64 owner, bytes;
+        UINT32 devices, memories, shared, others, flags, gl_devices;
+        UINT64 gl_bytes;
+        UINT32 gl_memories, heaps;
+    } params = { (ULONG_PTR)guest };
+    NTSTATUS status;
+    C_ASSERT( sizeof(params) == 56 );
+
+    if (ps4_guest_pwguest( guest, 0, NULL )) return;  /* without it, Zink's screen is kept too */
+    params.flags = ps4_guest_release_gl( guest );  /* run-0178 */
+    params.heaps = RtlGetProcessHeaps( 0, NULL );  /* run-0185 */
+    status = ps4_guest_pwguest( guest, 0, &params );
+    if (status) ERR( "PWGUEST vulkan module=%p release failed (%#lx)\\n", guest->module, status );
+    else if (params.devices || params.shared || params.gl_devices)
+        ERR( "PWGUEST vulkan module=%p devices=%u memories=%u bytes=%I64u shared=%u others=%u gl_devices=%u "
+             "gl_memories=%u gl_bytes=%I64u\\n", guest->module, params.devices, params.memories, params.bytes,
+             params.shared, params.others, params.gl_devices, params.gl_memories, params.gl_bytes );
+}
+
+static void ps4_guest_unload( struct ps4_guest *guest )
+{''','The Vulkan device memory an ended guest left is freed (alpha-1, run-0165).')
+revise('kernelbase','process','''        ps4_guest_systems_after( guest, &systems );  /* W293 */''','''        ps4_guest_systems_after( guest, &systems );  /* W293 */
+        ps4_guest_release_vulkan( guest );  /* alpha-1 (run-0165) */''','The Vulkan device memory an ended guest left is freed (alpha-1, run-0165).')
+# alpha-1 (run-0185, 2026-11-17, 04.12: the same OpenGL guest terminated, gl_bytes=523534416 freed, and still 0.49 GB
+# less free direct memory and 0.22 GB less free flexible memory at the next start): direct memory is RADV's buffers and,
+# since W175, Wine's commits of 1 MiB or more. win32u logs both, and the free memory, at each guest's start and
+# around its release ("PWVK guest_memory").
+revise('kernelbase','process','''static void ps4_guest_unload( struct ps4_guest *guest );
+''','''static void ps4_guest_unload( struct ps4_guest *guest );
+static void ps4_guest_memory_line( struct ps4_guest *guest, UINT32 why );  /* alpha-1 (run-0185) */
+static void ps4_guest_claim_heaps( struct ps4_guest *guest );  /* alpha-1 (run-0203) */
+''','Free memory and Wine direct memory at each guest start (alpha-1, run-0185).')
+revise('kernelbase','process','''             GetModuleHandleW( L"libMangoHud.dll" ) );
+    }
+''','''             GetModuleHandleW( L"libMangoHud.dll" ) );
+        ps4_guest_memory_line( guest, 0 );  /* alpha-1 (run-0185) */
+    }
+''','Free memory and Wine direct memory at each guest start (alpha-1, run-0185).')
+
+# alpha-1 (run-0190, 2026-11-17, 04.13: Alan Wake on wined3d-gl, terminated from the overlay: 0.86 GB lost, of which
+# Wine's commits of 1 MiB or more 0.41 GB and free flexible memory 0.29 GB, and the 32-bit world's process heaps went
+# from 2 to 5, with regions=0: none of it was VirtualAlloc from the guest's code). A heap's blocks of 508 KB or more
+# are commits of their own (direct memory from 1 MiB, W175) and the smaller ones grow it in 64 KB steps (flexible), so
+# both can be a heap's memory, and no heap a guest created was ever destroyed.
+# alpha-1 (run-0203, 2026-11-17, 04.15: "PWGUEST heaps ... destroyed=0 kept=0 gone=0" after Alan Wake and Portal 2,
+# whose heaps went from 2 to 5 and from 5 to 8): run-0190's record was in kernelbase's HeapCreate, and nothing called
+# it: kernel32's HeapCreate is Wine's own (dlls/kernel32/heap.c), which programs and their C runtimes import, and this
+# build does not rebuild kernel32. ntdll's RtlCreateHeap, which every HeapCreate ends in, now records the guest of the
+# creating thread (TEB.UserReserved), or the guest image load mark (UserReserved[2]); kernelbase gives the heaps made
+# while a guest EXE loaded (its imports' DllMain, msvcr100's heap among them) to that guest at its load_end. When the
+# guest has ended and its modules are unloaded, each heap still recorded for it is destroyed, unless a loaded module's
+# writable data still holds its handle (a C runtime or a system DLL that stays, keeping its heap in a global); that one
+# is kept and named. Reading or setting the record goes through RtlQueryHeapInformation and RtlSetHeapInformation with
+# the class PW_HEAP_GUEST, which Windows does not have.
+revise('ntdll','heap','''/***********************************************************************
+ *           RtlCreateHeap   (NTDLL.@)
+ */''','''/* OrbisDesk alpha-1 (run-0203): the guest of the thread that created each heap, from TEB.UserReserved[0..1] (a guest's
+ * thread), or 1 while a guest EXE loads (UserReserved[2] is PS4_GUEST_LOADING); kernelbase reads and sets it through
+ * RtlQueryHeapInformation and RtlSetHeapInformation with the class PW_HEAP_GUEST (tools/build-guest-hw.py). Kept under
+ * the process heap's lock, with the heap list. The process heap is never recorded. */
+#define PW_HEAP_GUEST 0x5057
+static struct { struct heap *heap; void *guest; } pw_heap_guests[256];
+
+static void *pw_heap_creator(void)
+{
+    void *guest = *(void **)NtCurrentTeb()->UserReserved;
+
+    if (guest) return guest;
+    return NtCurrentTeb()->UserReserved[2] == 0x47345350 /* PS4 guest image load (W052) */ ? (void *)1 : NULL;
+}
+
+/* the process heap's lock is held; a NULL guest forgets the heap */
+static void pw_heap_guest_set( struct heap *heap, void *guest )
+{
+    unsigned int i, free_slot = ARRAY_SIZE(pw_heap_guests);
+    static unsigned int reported;
+
+    for (i = 0; i < ARRAY_SIZE(pw_heap_guests); i++)
+    {
+        if (pw_heap_guests[i].heap == heap)
+        {
+            if (guest) pw_heap_guests[i].guest = guest;
+            else pw_heap_guests[i].heap = NULL;
+            return;
+        }
+        if (!pw_heap_guests[i].heap && free_slot == ARRAY_SIZE(pw_heap_guests)) free_slot = i;
+    }
+    if (!guest) return;
+    if (free_slot < ARRAY_SIZE(pw_heap_guests))
+    {
+        pw_heap_guests[free_slot].heap = heap;
+        pw_heap_guests[free_slot].guest = guest;
+    }
+    else if (!reported++) ERR( "PWGUEST heaps not recorded past %u\\n", i );
+}
+
+static void *pw_heap_guest_get( struct heap *heap )
+{
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(pw_heap_guests); i++)
+        if (pw_heap_guests[i].heap == heap) return pw_heap_guests[i].guest;
+    return NULL;
+}
+
+/***********************************************************************
+ *           RtlCreateHeap   (NTDLL.@)
+ */''','The guest of the thread that created each heap is recorded (alpha-1, run-0203).')
+revise('ntdll','heap','''        list_add_head( &process_heap->entry, &heap->entry );''','''        list_add_head( &process_heap->entry, &heap->entry );
+        pw_heap_guest_set( heap, pw_heap_creator() );  /* alpha-1 (run-0203) */''',
+       'The guest of the thread that created each heap is recorded (alpha-1, run-0203).')
+revise('ntdll','heap','''    list_remove( &heap->entry );''','''    list_remove( &heap->entry );
+    pw_heap_guest_set( heap, NULL );  /* alpha-1 (run-0203) */''','A destroyed heap leaves the record (alpha-1, run-0203).')
+revise('ntdll','heap','''    TRACE( "handle %p, info_class %u, info %p, size_in %Iu, size_out %p.\\n", handle, info_class, info, size_in, size_out );
+''','''    TRACE( "handle %p, info_class %u, info %p, size_in %Iu, size_out %p.\\n", handle, info_class, info, size_in, size_out );
+
+    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_GUEST)  /* alpha-1 (run-0203) */
+    {
+        if (!(heap = unsafe_heap_from_handle( handle, 0, &flags ))) return STATUS_INVALID_HANDLE;
+        if (size_out) *size_out = sizeof(void *);
+        if (size_in < sizeof(void *)) return STATUS_BUFFER_TOO_SMALL;
+        RtlEnterCriticalSection( &process_heap->cs );
+        *(void **)info = pw_heap_guest_get( heap );
+        RtlLeaveCriticalSection( &process_heap->cs );
+        return STATUS_SUCCESS;
+    }
+''','The guest of a heap can be read (alpha-1, run-0203).')
+revise('ntdll','heap','''    TRACE( "handle %p, info_class %u, info %p, size %Iu.\\n", handle, info_class, info, size );
+''','''    TRACE( "handle %p, info_class %u, info %p, size %Iu.\\n", handle, info_class, info, size );
+
+    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_GUEST)  /* alpha-1 (run-0203) */
+    {
+        if (size < sizeof(void *)) return STATUS_BUFFER_TOO_SMALL;
+        if (!(heap = unsafe_heap_from_handle( handle, 0, &flags )) || heap == process_heap) return STATUS_INVALID_HANDLE;
+        RtlEnterCriticalSection( &process_heap->cs );
+        pw_heap_guest_set( heap, *(void **)info );
+        RtlLeaveCriticalSection( &process_heap->cs );
+        return STATUS_SUCCESS;
+    }
+''','The guest of a heap can be set (alpha-1, run-0203).')
+revise('kernelbase','process','''static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
+{
+    static WCHAR live_dirs''','''/* alpha-1 (run-0203): the guest ntdll recorded for a heap (its heap.c revision): the guest of the thread that created
+ * it, 1 for one made while a guest EXE loaded, or NULL */
+#define PW_HEAP_GUEST 0x5057
+static void *ps4_guest_heap_owner( HANDLE heap )
+{
+    void *owner = NULL;
+
+    if (RtlQueryHeapInformation( heap, (HEAP_INFORMATION_CLASS)PW_HEAP_GUEST, &owner, sizeof(owner), NULL )) return NULL;
+    return owner;
+}
+
+static void ps4_guest_heap_set_owner( HANDLE heap, void *owner )
+{
+    RtlSetHeapInformation( heap, (HEAP_INFORMATION_CLASS)PW_HEAP_GUEST, &owner, sizeof(owner) );
+}
+
+/* at its load_end, on the thread that loaded it: the heaps its imports' DllMain made (msvcr100's, run-0190) are the
+ * guest's */
+static void ps4_guest_claim_heaps( struct ps4_guest *guest )
+{
+    HANDLE heaps[256];
+    ULONG count = RtlGetProcessHeaps( ARRAY_SIZE(heaps), heaps ), i, claimed = 0;
+
+    if (count > ARRAY_SIZE(heaps))
+    {
+        ERR( "PWGUEST heaps module=%p: %lu heaps, not claimed\\n", guest->module, count );
+        return;
+    }
+    for (i = 0; i < count; i++)
+    {
+        if (ps4_guest_heap_owner( heaps[i] ) != (void *)1) continue;
+        ps4_guest_heap_set_owner( heaps[i], guest );
+        claimed++;
+    }
+    if (claimed) ERR( "PWGUEST heaps module=%p claimed=%lu made while it loaded\\n", guest->module, claimed );
+}
+
+/* a loaded module whose writable data holds the value (a heap handle in a global), or NULL; ntdll, which keeps the
+ * record, is skipped. The loader lock is held. */
+static const WCHAR *ps4_guest_heap_holder( HANDLE heap, HMODULE ntdll )
+{
+    LIST_ENTRY *list = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList, *entry;
+
+    for (entry = list->Flink; entry != list; entry = entry->Flink)
+    {
+        LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
+        IMAGE_NT_HEADERS *nt;
+        IMAGE_SECTION_HEADER *section;
+        UINT s;
+
+        if (mod->DllBase == (void *)ntdll || !(nt = RtlImageNtHeader( mod->DllBase ))) continue;
+        section = IMAGE_FIRST_SECTION( nt );
+        for (s = 0; s < nt->FileHeader.NumberOfSections; s++, section++)
+        {
+            const DWORD wanted = IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ;
+            DWORD size = section->Misc.VirtualSize ? section->Misc.VirtualSize : section->SizeOfRawData;
+            char *at, *stop;
+
+            if ((section->Characteristics & wanted) != wanted || section->VirtualAddress >= mod->SizeOfImage) continue;
+            if (size > mod->SizeOfImage - section->VirtualAddress) size = mod->SizeOfImage - section->VirtualAddress;
+            at = (char *)mod->DllBase + section->VirtualAddress;
+            stop = at + (size & ~(sizeof(HANDLE) - 1));
+            while (at < stop)
+            {
+                MEMORY_BASIC_INFORMATION mbi;
+                char *region_end;
+
+                if (!VirtualQuery( at, &mbi, sizeof(mbi) )) break;
+                region_end = (char *)mbi.BaseAddress + mbi.RegionSize;
+                if (region_end > stop) region_end = stop;
+                if (mbi.State == MEM_COMMIT && mbi.Protect && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+                {
+                    const HANDLE *p;
+
+                    for (p = (const HANDLE *)at; (const char *)(p + 1) <= region_end; p++)
+                        if (*p == heap) return mod->BaseDllName.Buffer ? mod->BaseDllName.Buffer : L"?";
+                }
+                if (region_end <= at) break;
+                at = region_end;
+            }
+        }
+    }
+    return NULL;
+}
+
+static void ps4_guest_memory_line( struct ps4_guest *guest, UINT32 why );
+
+/* after its own modules (and the system modules only they used) are unloaded: each heap ntdll recorded for the guest is
+ * destroyed, unless a loaded module still holds it. The free memory before is logged (PWVK guest_memory ...
+ * why=heaps_before), and win32u's release_before line follows */
+static void ps4_guest_release_heaps( struct ps4_guest *guest )
+{
+    HANDLE heaps[256], process = GetProcessHeap();
+    HMODULE ntdll = GetModuleHandleW( L"ntdll.dll" );
+    ULONG count, i, destroyed = 0, kept = 0;
+    ULONG_PTR magic;
+
+    ps4_guest_memory_line( guest, 1 );
+    count = RtlGetProcessHeaps( ARRAY_SIZE(heaps), heaps );
+    if (count > ARRAY_SIZE(heaps))
+    {
+        ERR( "PWGUEST heaps module=%p kept: %lu heaps, more than listed\\n", guest->module, count );
+        return;
+    }
+    if (LdrLockLoaderLock( 0, NULL, &magic )) return;
+    for (i = 0; i < count; i++)
+    {
+        const WCHAR *holder;
+
+        if (heaps[i] == process || ps4_guest_heap_owner( heaps[i] ) != guest) continue;
+        if ((holder = ps4_guest_heap_holder( heaps[i], ntdll )))
+        {
+            ERR( "PWGUEST heap %p of module %p kept: held by %s\\n", heaps[i], guest->module, debugstr_w( holder ) );
+            ps4_guest_heap_set_owner( heaps[i], NULL );
+            kept++;
+            continue;
+        }
+        if (!RtlDestroyHeap( heaps[i] )) destroyed++;
+    }
+    LdrUnlockLoaderLock( 0, magic );
+    ERR( "PWGUEST heaps module=%p destroyed=%lu kept=%lu\\n", guest->module, destroyed, kept );
+}
+
+static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
+{
+    static WCHAR live_dirs''','The heaps an ended guest made are destroyed unless a loaded module holds them (alpha-1, run-0203).')
+revise('kernelbase','process','''    NtCurrentTeb()->UserReserved[2] = 0;
+    ps4_guest_loading = NULL;''','''    NtCurrentTeb()->UserReserved[2] = 0;
+    ps4_guest_loading = NULL;
+    if (guest->module) ps4_guest_claim_heaps( guest );  /* alpha-1 (run-0203) */''',
+       'The heaps made while a guest EXE loaded are its own (alpha-1, run-0203).')
+revise('kernelbase','process','''    guest->region_count = guest->region_size = 0;
+    RtlLeaveCriticalSection( &guest->lock );
+
+done:
+    RtlReleaseSRWLockExclusive( &own_lock );''','''    guest->region_count = guest->region_size = 0;
+    RtlLeaveCriticalSection( &guest->lock );
+    if (!leftovers) ps4_guest_release_heaps( guest );  /* alpha-1 (run-0190, run-0203) */
+
+done:
+    RtlReleaseSRWLockExclusive( &own_lock );''','The heaps an ended guest made are destroyed unless a loaded module holds them (alpha-1, run-0203).')
+
+# alpha-1 (run-0212, 2026-11-17, 04.17: Alan Wake on wined3d-gl, terminated from the overlay, still 0.69 GB lost, 0.32 GB
+# of it Wine's commits of 1 MiB or more; "heaps destroyed=1 kept=1" gave back nothing, as msvcr100 had already destroyed
+# its own heap when it unloaded with the guest's modules). What is left is in heaps the guest did not create: the process
+# heap (ucrtbase's malloc, a static C runtime, HeapAlloc) and msvcrt.dll's own heap (malloc of Wine's DLLs, DXVK and
+# Mesa). A heap block of HEAP_MIN_LARGE_BLOCK_SIZE or more (about 508 KB on i386, 1020 KB on x86_64) is a virtual
+# allocation of its own; ntdll now tags each with the guest of the allocating thread (TEB.UserReserved[0]), the code
+# that called RtlAllocateHeap or RtlReAllocateHeap, and the frame above it, in a trailer past the block (the block's
+# block_size stops before it, so an in-place resize cannot reach it). kernelbase lists a guest's tagged blocks through
+# RtlQueryHeapInformation with the class PW_HEAP_LARGE, which Windows does not have. After the guest's heaps, each of
+# its blocks whose allocating code is in no loaded module any more is freed; the others are kept and logged by the
+# module that called and the one above it ("PWGUEST heap_large ... kept ... from ... via ..."). Each heap of 1 MiB or
+# more is logged at the guest's start and at its release ("PWGUEST heap_usage"), so the next log shows which heap kept
+# the rest.
+revise('ntdll','heap','''static NTSTATUS heap_allocate_large( struct heap *heap, ULONG flags, SIZE_T block_size,
+                                     SIZE_T size, void **ret )
+{
+    ARENA_LARGE *arena;
+    SIZE_T total_size = ROUND_SIZE( sizeof(*arena) + size, REGION_ALIGN - 1 );''','''/* OrbisDesk alpha-1 (run-0212): each large block ends in a tag, past its block_size: the guest of the allocating thread
+ * (TEB.UserReserved[0]), the code that called RtlAllocateHeap or RtlReAllocateHeap, and the frame above it.
+ * kernelbase lists a guest's tagged blocks through RtlQueryHeapInformation with the class PW_HEAP_LARGE
+ * (tools/build-guest-hw.py). */
+#define PW_HEAP_LARGE 0x5058
+#define PW_LARGE_TAG  0x544c5750  /* "PWLT" */
+struct pw_large_tag { DWORD magic; void *guest; void *caller; void *via; };
+struct pw_heap_large_block { void *ptr; SIZE_T size; void *caller; void *via; };
+struct pw_heap_large_info
+{
+    void *guest;  /* in: the guest whose blocks are listed, or NULL */
+    ULONG max;    /* in: room in blocks[] */
+    ULONG listed;
+    SIZE_T guest_blocks, guest_bytes, large_blocks, large_bytes, committed;
+    struct pw_heap_large_block blocks[1];
+};
+
+static inline struct pw_large_tag *pw_large_tag( ARENA_LARGE *arena )
+{
+    return (struct pw_large_tag *)((char *)&arena->block + arena->block_size);
+}
+
+static void pw_large_tag_set( void *ptr, void *caller )
+{
+    ARENA_LARGE *arena = CONTAINING_RECORD( (struct block *)ptr - 1, ARENA_LARGE, block );
+    struct pw_large_tag *tag = pw_large_tag( arena );
+    void *frames[8];
+    USHORT count, i;
+
+    tag->guest = *(void **)NtCurrentTeb()->UserReserved;
+    tag->caller = caller;
+    tag->via = NULL;
+    if (tag->guest)
+    {
+        count = RtlCaptureStackBackTrace( 0, ARRAY_SIZE(frames), frames, NULL );
+        for (i = 0; i + 1 < count; i++)
+        {
+            if (frames[i] != caller) continue;
+            tag->via = frames[i + 1];
+            break;
+        }
+    }
+    tag->magic = PW_LARGE_TAG;
+}
+
+/* what the heap's subheaps commit, its large blocks, and those tagged with info->guest (up to info->max listed) */
+static void pw_heap_large_query( struct heap *heap, ULONG flags, struct pw_heap_large_info *info )
+{
+    ARENA_LARGE *arena;
+    SUBHEAP *subheap;
+
+    info->listed = 0;
+    info->guest_blocks = info->guest_bytes = info->large_blocks = info->large_bytes = info->committed = 0;
+    heap_lock( heap, flags );
+    LIST_FOR_EACH_ENTRY( subheap, &heap->subheap_list, SUBHEAP, entry )
+        info->committed += (const char *)subheap_commit_end( subheap ) - (const char *)subheap_base( subheap );
+    LIST_FOR_EACH_ENTRY( arena, &heap->large_list, ARENA_LARGE, entry )
+    {
+        struct pw_large_tag *tag = pw_large_tag( arena );
+        SIZE_T bytes = (char *)(tag + 1) - (char *)arena;
+
+        info->large_blocks++;
+        info->large_bytes += bytes;
+        if (!info->guest || tag->magic != PW_LARGE_TAG || tag->guest != info->guest) continue;
+        info->guest_blocks++;
+        info->guest_bytes += bytes;
+        if (info->listed >= info->max) continue;
+        info->blocks[info->listed].ptr = &arena->block + 1;
+        info->blocks[info->listed].size = bytes;
+        info->blocks[info->listed].caller = tag->caller;
+        info->blocks[info->listed].via = tag->via;
+        info->listed++;
+    }
+    heap_unlock( heap, flags );
+}
+
+static NTSTATUS heap_allocate_large( struct heap *heap, ULONG flags, SIZE_T block_size,
+                                     SIZE_T size, void **ret )
+{
+    ARENA_LARGE *arena;
+    SIZE_T total_size = ROUND_SIZE( sizeof(*arena) + size + sizeof(struct pw_large_tag), REGION_ALIGN - 1 );''',
+       'A large heap block ends in a tag: the allocating guest and code (alpha-1, run-0212).')
+revise('ntdll','heap','''    arena->block_size = (char *)arena + total_size - (char *)block;''','''    /* alpha-1 (run-0212): the tag is past block_size */
+    arena->block_size = (char *)arena + total_size - sizeof(struct pw_large_tag) - (char *)block;''',
+       'A large heap block ends in a tag: the allocating guest and code (alpha-1, run-0212).')
+revise('ntdll','heap','''    if (!status) valgrind_notify_alloc( ptr, size, flags & HEAP_ZERO_MEMORY );
+''','''    if (!status) valgrind_notify_alloc( ptr, size, flags & HEAP_ZERO_MEMORY );
+    if (!status && block_size >= HEAP_MIN_LARGE_BLOCK_SIZE)
+        pw_large_tag_set( ptr, __builtin_return_address( 0 ) );  /* alpha-1 (run-0212) */
+''','A large heap block ends in a tag: the allocating guest and code (alpha-1, run-0212).')
+revise('ntdll','heap','''            memcpy( ret, ptr, min( size, old_size ) );
+            RtlFreeHeap( heap, flags, ptr );
+            status = STATUS_SUCCESS;''','''            memcpy( ret, ptr, min( size, old_size ) );
+            RtlFreeHeap( heap, flags, ptr );
+            status = STATUS_SUCCESS;
+            if (block_get_flags( (struct block *)ret - 1 ) & BLOCK_FLAG_LARGE)
+                pw_large_tag_set( ret, __builtin_return_address( 0 ) );  /* alpha-1 (run-0212) */''',
+       'A large heap block ends in a tag: the allocating guest and code (alpha-1, run-0212).')
+revise('ntdll','heap','''    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_GUEST)  /* alpha-1 (run-0203) */
+    {
+        if (!(heap = unsafe_heap_from_handle( handle, 0, &flags ))) return STATUS_INVALID_HANDLE;
+        if (size_out) *size_out = sizeof(void *);''','''    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_LARGE)  /* alpha-1 (run-0212) */
+    {
+        struct pw_heap_large_info *large = info;
+        SIZE_T head = offsetof( struct pw_heap_large_info, blocks );
+
+        if (!(heap = unsafe_heap_from_handle( handle, 0, &flags ))) return STATUS_INVALID_HANDLE;
+        if (size_in < head || large->max > (size_in - head) / sizeof(large->blocks[0])) return STATUS_BUFFER_TOO_SMALL;
+        pw_heap_large_query( heap, flags, large );
+        if (size_out) *size_out = head + large->listed * sizeof(large->blocks[0]);
+        return STATUS_SUCCESS;
+    }
+
+    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_GUEST)  /* alpha-1 (run-0203) */
+    {
+        if (!(heap = unsafe_heap_from_handle( handle, 0, &flags ))) return STATUS_INVALID_HANDLE;
+        if (size_out) *size_out = sizeof(void *);''','The large heap blocks of a guest can be listed (alpha-1, run-0212).')
+revise('kernelbase','process','''static void ps4_guest_claim_heaps( struct ps4_guest *guest );  /* alpha-1 (run-0203) */
+''','''static void ps4_guest_claim_heaps( struct ps4_guest *guest );  /* alpha-1 (run-0203) */
+static void ps4_guest_heap_usage( struct ps4_guest *guest );  /* alpha-1 (run-0212) */
+''','Each large heap is logged at the start of a guest (alpha-1, run-0212).')
+revise('kernelbase','process','''        ps4_guest_memory_line( guest, 0 );  /* alpha-1 (run-0185) */
+''','''        ps4_guest_memory_line( guest, 0 );  /* alpha-1 (run-0185) */
+        ps4_guest_heap_usage( guest );  /* alpha-1 (run-0212) */
+''','Each large heap is logged at the start of a guest (alpha-1, run-0212).')
+revise('kernelbase','process','''/* after its own modules (and the system modules only they used) are unloaded: each heap ntdll recorded for the guest is''','''/* alpha-1 (run-0212): ntdll's large-block tags (its heap.c revision), listed through RtlQueryHeapInformation */
+#define PW_HEAP_LARGE 0x5058
+struct pw_heap_large_block { void *ptr; SIZE_T size; void *caller; void *via; };
+struct pw_heap_large_info
+{
+    void *guest;  /* in: the guest whose blocks are listed, or NULL */
+    ULONG max;    /* in: room in blocks[] */
+    ULONG listed;
+    SIZE_T guest_blocks, guest_bytes, large_blocks, large_bytes, committed;
+    struct pw_heap_large_block blocks[1];
+};
+
+/* the name of the loaded module that holds the address, or NULL; valid while the loader lock is held */
+static const WCHAR *ps4_guest_code_module( void *address )
+{
+    LDR_DATA_TABLE_ENTRY *mod;
+
+    if (!address || LdrFindEntryForAddress( address, &mod )) return NULL;
+    return mod->BaseDllName.Buffer ? mod->BaseDllName.Buffer : L"?";
+}
+
+/* at the guest's start: each heap of 1 MiB or more, what its subheaps commit and its large blocks */
+static void ps4_guest_heap_usage( struct ps4_guest *guest )
+{
+    HANDLE heaps[256], process = GetProcessHeap();
+    ULONG count = RtlGetProcessHeaps( ARRAY_SIZE(heaps), heaps ), i;
+    struct pw_heap_large_info info;
+
+    for (i = 0; i < count && i < ARRAY_SIZE(heaps); i++)
+    {
+        memset( &info, 0, sizeof(info) );
+        if (RtlQueryHeapInformation( heaps[i], (HEAP_INFORMATION_CLASS)PW_HEAP_LARGE, &info, sizeof(info), NULL )) return;
+        if (info.committed + info.large_bytes < 0x100000) continue;
+        ERR( "PWGUEST heap_usage owner=%p why=start heap=%p holder=%s committed=%Iu large=%Iu blocks=%Iu\\n", guest,
+             heaps[i], heaps[i] == process ? "process" : "-", info.committed, info.large_bytes, info.large_blocks );
+    }
+}
+
+/* 04.29 (run-0244: Alan Wake, terminated, kept 114 MB of large blocks that wined3d.dll had allocated through
+ * ucrtbase): a module whose large blocks belong only to the objects a program made with it. wined3d's process-wide
+ * state (its window procedure and swapchain-state tables, its budget notifications) holds small entries; a terminated
+ * guest never releases its Direct3D objects, and its windows, through which wined3d would reach them, are gone.
+ * DXVK is not one: its d3d9.dll keeps one instance for the process (run-0219). */
+static BOOL ps4_guest_object_module( const WCHAR *name )
+{
+    return name && !wcsicmp( name, L"wined3d.dll" );
+}
+
+/* after the guest's own heaps: its large blocks in the heaps that stay (the process heap, msvcrt.dll's, a kept one).
+ * A block whose allocating code is in no loaded module any more (the guest's own modules, a system module that went
+ * with them) is freed, and so is, for a terminated guest, one that an object module called or allocated (04.29); the
+ * others are kept and summed by the module that called RtlAllocateHeap and the module of the frame above it ("none"
+ * when that is in no loaded module). The loader lock is held. */
+static void ps4_guest_release_large( struct ps4_guest *guest, HMODULE ntdll )
+{
+    static const ULONG max = 4096;
+    struct { const WCHAR *caller, *via; SIZE_T bytes; ULONG blocks; } kept[8];
+    HANDLE heaps[256], process = GetProcessHeap();
+    ULONG count = RtlGetProcessHeaps( ARRAY_SIZE(heaps), heaps ), i, j, k, names = 0, other_blocks = 0;
+    SIZE_T size = offsetof( struct pw_heap_large_info, blocks ) + max * sizeof(struct pw_heap_large_block);
+    SIZE_T other_bytes = 0, object_bytes = 0;  /* 04.29 */
+    ULONG object_blocks = 0;
+    struct pw_heap_large_info *info;
+
+    if (count > ARRAY_SIZE(heaps)) count = ARRAY_SIZE(heaps);
+    if (!(info = VirtualAlloc( NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE ))) return;
+    for (i = 0; i < count; i++)
+    {
+        const WCHAR *holder = heaps[i] == process ? NULL : ps4_guest_heap_holder( heaps[i], ntdll );
+        SIZE_T freed_bytes = 0;
+        ULONG freed = 0;
+
+        info->guest = guest;
+        info->max = max;
+        if (RtlQueryHeapInformation( heaps[i], (HEAP_INFORMATION_CLASS)PW_HEAP_LARGE, info, size, NULL )) break;
+        if (info->committed + info->large_bytes >= 0x100000)
+            ERR( "PWGUEST heap_usage owner=%p why=release heap=%p holder=%s committed=%Iu large=%Iu blocks=%Iu\\n", guest,
+                 heaps[i], heaps[i] == process ? "process" : holder ? debugstr_w( holder ) : "-", info->committed,
+                 info->large_bytes, info->large_blocks );
+        if (!info->guest_blocks) continue;
+        for (j = 0; j < info->listed; j++)
+        {
+            const struct pw_heap_large_block *block = &info->blocks[j];
+            const WCHAR *caller = ps4_guest_code_module( block->caller ), *via = NULL;
+            BOOL object = FALSE;
+
+            if (caller && guest->terminated)  /* 04.29 */
+            {
+                via = ps4_guest_code_module( block->via );
+                object = ps4_guest_object_module( caller ) || ps4_guest_object_module( via );
+            }
+            if (!caller || object)
+            {
+                if (RtlFreeHeap( heaps[i], 0, block->ptr ))
+                {
+                    freed++;
+                    freed_bytes += block->size;
+                    if (object)
+                    {
+                        object_blocks++;
+                        object_bytes += block->size;
+                    }
+                }
+                continue;
+            }
+            via = ps4_guest_code_module( block->via );
+            for (k = 0; k < names; k++) if (kept[k].caller == caller && kept[k].via == via) break;
+            if (k == names && names < ARRAY_SIZE(kept))
+            {
+                kept[k].caller = caller;
+                kept[k].via = via;
+                kept[k].bytes = 0;
+                kept[k].blocks = 0;
+                names++;
+            }
+            if (k < names)
+            {
+                kept[k].bytes += block->size;
+                kept[k].blocks++;
+            }
+            else
+            {
+                other_bytes += block->size;
+                other_blocks++;
+            }
+        }
+        ERR( "PWGUEST heap_large module=%p heap=%p blocks=%Iu bytes=%Iu listed=%lu freed=%lu freed_bytes=%Iu\\n",
+             guest->module, heaps[i], info->guest_blocks, info->guest_bytes, info->listed, freed, freed_bytes );
+    }
+    for (k = 0; k < names; k++)
+        ERR( "PWGUEST heap_large module=%p kept bytes=%Iu blocks=%lu from %s via %s\\n", guest->module, kept[k].bytes,
+             kept[k].blocks, debugstr_w( kept[k].caller ), kept[k].via ? debugstr_w( kept[k].via ) : "none" );
+    if (other_blocks)
+        ERR( "PWGUEST heap_large module=%p kept bytes=%Iu blocks=%lu from others\\n", guest->module, other_bytes,
+             other_blocks );
+    if (object_blocks)  /* 04.29: part of the freed ones above */
+        ERR( "PWGUEST heap_large module=%p objects freed_bytes=%Iu blocks=%lu: the terminated guest's, made through "
+             "wined3d.dll\\n", guest->module, object_bytes, object_blocks );
+    VirtualFree( info, 0, MEM_RELEASE );
+}
+
+/* after its own modules (and the system modules only they used) are unloaded: each heap ntdll recorded for the guest is''',
+       'The large heap blocks of an ended guest whose code is gone are freed (alpha-1, run-0212).')
+revise('kernelbase','process','''        if (!RtlDestroyHeap( heaps[i] )) destroyed++;
+    }
+    LdrUnlockLoaderLock( 0, magic );
+    ERR( "PWGUEST heaps module=%p destroyed=%lu kept=%lu\\n", guest->module, destroyed, kept );''','''        if (!RtlDestroyHeap( heaps[i] )) destroyed++;
+    }
+    ERR( "PWGUEST heaps module=%p destroyed=%lu kept=%lu\\n", guest->module, destroyed, kept );
+    ps4_guest_release_large( guest, ntdll );  /* alpha-1 (run-0212) */
+    LdrUnlockLoaderLock( 0, magic );''','The large heap blocks of an ended guest whose code is gone are freed (alpha-1, run-0212).')
+
+# 04.30 (run-0252, run-0253, 2026-11-19, 04.29: Alan Wake on wined3d-gl, terminated from the overlay, still 0.42-0.65 GB
+# lost per start). Its large blocks made through wined3d were freed (123 MB); what stayed is in the process heap:
+# 170-200 MB of small blocks, which carry no owner, and 80 MB of large blocks per start that no guest's thread made.
+# On i386, a small block that a guest's thread allocates in the process heap now carries its allocation site (the
+# guest, the code that called RtlAllocateHeap or RtlReAllocateHeap, the frame above it) in the heap's own user-value
+# slot (HEAP_ADD_USER_INFO); such blocks bypass the LFH, so every one is reached under the heap lock. Each site counts
+# its live blocks and bytes. After a guest's large blocks, kernelbase lists its sites and has the blocks of the sites
+# it chose freed: those whose code is gone, or, for a terminated guest, made through wined3d.dll (as large blocks).
+# "Code gone" now also covers a block a C runtime allocated for code that is gone (the frame above malloc). The large
+# blocks of no guest's thread are listed too, with the frame above, and freed when their code is gone. Logged as
+# "PWGUEST heap_small ..." and "PWGUEST heap_unowned ...". C:/orbis/nosmalltags.txt turns the small-block sites off.
+revise('ntdll','heap','''    tag->via = NULL;
+    if (tag->guest)
+    {
+        count = RtlCaptureStackBackTrace( 0, ARRAY_SIZE(frames), frames, NULL );
+        for (i = 0; i + 1 < count; i++)
+        {
+            if (frames[i] != caller) continue;
+            tag->via = frames[i + 1];
+            break;
+        }
+    }''','''    tag->via = NULL;
+    /* 04.30 (run-0253: 88 large blocks per start were no guest's): the frame above for every block */
+    count = RtlCaptureStackBackTrace( 0, ARRAY_SIZE(frames), frames, NULL );
+    for (i = 0; i + 1 < count; i++)
+    {
+        if (frames[i] != caller) continue;
+        tag->via = frames[i + 1];
+        break;
+    }''','A large heap block of no guest records the frame above its caller too (04.30, run-0253).')
+revise('ntdll','heap','''#define PW_LARGE_TAG  0x544c5750  /* "PWLT" */
+''','''#define PW_LARGE_TAG  0x544c5750  /* "PWLT" */
+#define PW_LARGE_NO_GUEST ((void *)~(ULONG_PTR)0)  /* 04.30: info->guest that lists the blocks of no guest */
+''','The large heap blocks of no guest can be listed (04.30, run-0253).')
+revise('ntdll','heap','''        if (!info->guest || tag->magic != PW_LARGE_TAG || tag->guest != info->guest) continue;''','''        if (!info->guest || tag->magic != PW_LARGE_TAG) continue;
+        if (tag->guest != (info->guest == PW_LARGE_NO_GUEST ? NULL : info->guest)) continue;  /* 04.30 */''',
+       'The large heap blocks of no guest can be listed (04.30, run-0253).')
+revise('ntdll','heap','''/***********************************************************************
+ *           RtlAllocateHeap   (NTDLL.@)
+ */
+void *WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE handle, ULONG flags, SIZE_T size )
+{
+    struct heap *heap;
+    SIZE_T block_size;
+    void *ptr = NULL;
+    ULONG heap_flags;
+    NTSTATUS status;
+
+    heap = unsafe_heap_from_handle( handle, flags, &heap_flags );
+    if ((block_size = heap_get_block_size( heap, heap_flags, size )) == ~0U)
+        status = STATUS_NO_MEMORY;
+    else if (block_size >= HEAP_MIN_LARGE_BLOCK_SIZE)''','''/* OrbisDesk 04.30 (run-0252, run-0253: Alan Wake, terminated, kept 170-200 MB of small blocks in the process heap,
+ * which carry no owner): on i386, a small block that a guest's thread (TEB.UserReserved[0]) allocates in the process
+ * heap carries its allocation site in the heap's user-value slot (HEAP_ADD_USER_INFO): the guest, the code that called
+ * RtlAllocateHeap or RtlReAllocateHeap, and the frame above it. Such blocks bypass the LFH, so all of them are reached
+ * under the heap lock. A site counts its live blocks and bytes. kernelbase lists a guest's sites through
+ * RtlQueryHeapInformation (PW_HEAP_SITES) and, after the guest ended, has the blocks of the sites it chose freed and
+ * all its sites ended through RtlSetHeapInformation (PW_HEAP_SITES_FREE) (tools/build-guest-hw.py).
+ * C:/orbis/nosmalltags.txt turns them off. */
+#define PW_HEAP_SITES      0x5059
+#define PW_HEAP_SITES_FREE 0x505a
+#define PW_SITE_COUNT  8192
+#define PW_SITE_PROBES 64
+struct pw_site
+{
+    LONG state;    /* 0 never used, 2 in use, 3 its guest ended (reused once it has no block) */
+    LONG release;  /* its blocks are being freed, under the process heap's lock */
+    void *guest, *caller, *via;
+    LONG blocks, bytes;
+};
+struct pw_heap_site { void *site, *caller, *via; LONG blocks, bytes; };
+struct pw_heap_sites
+{
+    void *guest;  /* in: the guest whose sites are listed */
+    ULONG max;    /* in: room in sites[] */
+    ULONG listed, total, missed;
+    SIZE_T blocks, bytes;
+    struct pw_heap_site sites[1];
+};
+struct pw_heap_sites_free
+{
+    void *guest;  /* in: the guest that ended */
+    ULONG count;  /* in: its sites whose blocks are freed */
+    ULONG freed;  /* out */
+    SIZE_T freed_bytes;
+    void *sites[1];
+};
+static struct pw_site pw_sites[PW_SITE_COUNT];
+static LONG pw_sites_lock, pw_sites_missed;
+
+static inline void pw_sites_enter(void)
+{
+    while (InterlockedCompareExchange( &pw_sites_lock, 1, 0 )) NtYieldExecution();
+}
+
+static inline void pw_sites_leave(void)
+{
+    InterlockedExchange( &pw_sites_lock, 0 );
+}
+
+#ifndef _WIN64
+static LONG pw_small_state;  /* 0 not read yet, 1 on, 2 off */
+
+static BOOL pw_small_enabled(void)
+{
+    LONG state = ReadNoFence( &pw_small_state );
+
+    if (!state)
+    {
+        static const WCHAR off[] = L"\\\\??\\\\C:\\\\orbis\\\\nosmalltags.txt";
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        FILE_BASIC_INFORMATION info;
+
+        RtlInitUnicodeString( &name, off );
+        InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, 0, NULL );
+        InterlockedCompareExchange( &pw_small_state, NtQueryAttributesFile( &attr, &info ) ? 1 : 2, 0 );
+        state = ReadNoFence( &pw_small_state );
+    }
+    return state == 1;
+}
+#endif
+
+/* the guest whose small block of the process heap gets a site, or NULL; a resized block keeps its site's */
+static inline void *pw_small_guest( const struct heap *heap, ULONG flags, const struct pw_site *site )
+{
+#ifdef _WIN64
+    return NULL;
+#else
+    void *guest;
+
+    if (!heap || heap != process_heap || (flags & (HEAP_ADD_USER_INFO | HEAP_NO_SERIALIZE))) return NULL;
+    if (site) return site->guest;
+    if (!(guest = *(void **)NtCurrentTeb()->UserReserved) || !pw_small_enabled()) return NULL;
+    return guest;
+#endif
+}
+
+/* where RtlSetUserValueHeap keeps a block's user value */
+static inline struct pw_site **pw_small_slot( const struct block *block, ULONG flags )
+{
+    char *tmp = (char *)block + block_get_size( block ) - block->tail_size + sizeof(void *);
+
+    if ((flags & HEAP_TAIL_CHECKING_ENABLED) || RUNNING_ON_VALGRIND) tmp += BLOCK_ALIGN;
+    return (struct pw_site **)tmp;
+}
+
+static inline BOOL pw_site_valid( const struct pw_site *site )
+{
+    const char *at = (const char *)site, *start = (const char *)pw_sites;
+
+    return at >= start && at < (const char *)(pw_sites + PW_SITE_COUNT) && !((at - start) % sizeof(*site));
+}
+
+/* the site of a tagged small block of the process heap, or NULL */
+static struct pw_site *pw_small_site( const struct heap *heap, ULONG flags, const struct block *block )
+{
+    static const UINT mask = BLOCK_FLAG_FREE | BLOCK_FLAG_LARGE | BLOCK_FLAG_LFH | BLOCK_FLAG_USER_INFO;
+    struct pw_site *site;
+
+    if (heap != process_heap || (block_get_flags( block ) & mask) != BLOCK_FLAG_USER_INFO) return NULL;
+    if (block_get_type( block ) != BLOCK_TYPE_USED) return NULL;
+    site = *pw_small_slot( block, flags );
+    return pw_site_valid( site ) ? site : NULL;
+}
+
+/* the site of (guest, caller, via), made if needed; NULL when its probe run is full */
+static struct pw_site *pw_site_get( void *guest, void *caller, void *via )
+{
+    ULONG_PTR key = (ULONG_PTR)guest ^ ((ULONG_PTR)caller * 0x9e3779b1u) ^ ((ULONG_PTR)via * 0x85ebca6bu);
+    unsigned int start = (unsigned int)((key ^ (key >> 15)) % PW_SITE_COUNT), i, n;
+    struct pw_site *site, *found = NULL;
+
+    for (n = 0, i = start; n < PW_SITE_PROBES; n++, i = (i + 1) % PW_SITE_COUNT)
+    {
+        LONG state = ReadAcquire( &pw_sites[i].state );
+
+        site = &pw_sites[i];
+        if (!state) break;
+        if (state == 2 && site->guest == guest && site->caller == caller && site->via == via) return site;
+    }
+    pw_sites_enter();
+    for (n = 0, i = start; n < PW_SITE_PROBES; n++, i = (i + 1) % PW_SITE_COUNT)
+    {
+        site = &pw_sites[i];
+        if (site->state == 2)
+        {
+            if (site->guest != guest || site->caller != caller || site->via != via) continue;
+            found = site;
+            break;
+        }
+        if (site->state == 3 && ReadNoFence( &site->blocks )) continue;
+        /* never used, or ended with no block left: readers skip it until it is in use */
+        site->guest = guest;
+        site->caller = caller;
+        site->via = via;
+        site->blocks = site->bytes = site->release = 0;
+        WriteRelease( &site->state, 2 );
+        found = site;
+        break;
+    }
+    pw_sites_leave();
+    return found;
+}
+
+static void pw_small_tag( ULONG flags, void *ptr, SIZE_T size, void *guest, void *caller, struct pw_site *site )
+{
+    struct block *block = (struct block *)ptr - 1;
+
+    if (!site)
+    {
+        void *frames[8], *via = NULL;
+        USHORT count, i;
+
+        count = RtlCaptureStackBackTrace( 0, ARRAY_SIZE(frames), frames, NULL );
+        for (i = 0; i + 1 < count; i++)
+        {
+            if (frames[i] != caller) continue;
+            via = frames[i + 1];
+            break;
+        }
+        if (!(site = pw_site_get( guest, caller, via ))) InterlockedIncrement( &pw_sites_missed );
+    }
+    *pw_small_slot( block, flags ) = site;
+    if (!site) return;
+    InterlockedIncrement( &site->blocks );
+    InterlockedExchangeAdd( &site->bytes, (LONG)size );
+}
+
+/* before a small block of the process heap is freed */
+static void pw_small_untag( const struct heap *heap, ULONG flags, struct block *block )
+{
+    struct pw_site *site = pw_small_site( heap, flags, block );
+
+    if (!site) return;
+    *pw_small_slot( block, flags ) = NULL;
+    InterlockedDecrement( &site->blocks );
+    InterlockedExchangeAdd( &site->bytes, -(LONG)(block_get_size( block ) - block_get_overhead( block )) );
+}
+
+/* RtlReAllocateHeap of a tagged block: its new block size, with room for the site kept */
+static SIZE_T pw_small_resize_size( const struct heap *heap, ULONG *flags, const struct block *block, SIZE_T size,
+                                    SIZE_T *old )
+{
+    *old = block_get_size( block ) - block_get_overhead( block );
+    *flags |= HEAP_ADD_USER_INFO;
+    return heap_get_block_size( heap, *flags, size );
+}
+
+/* after a tagged block was resized in place, which cleared its user value */
+static void pw_small_resized( ULONG flags, void *ptr, struct pw_site *site, SIZE_T old, SIZE_T size )
+{
+    *pw_small_slot( (struct block *)ptr - 1, flags ) = site;
+    InterlockedExchangeAdd( &site->bytes, (LONG)size - (LONG)old );
+}
+
+static void pw_small_query( struct pw_heap_sites *info )
+{
+    unsigned int i;
+
+    info->listed = info->total = 0;
+    info->blocks = info->bytes = 0;
+    info->missed = ReadNoFence( &pw_sites_missed );
+    for (i = 0; i < PW_SITE_COUNT; i++)
+    {
+        struct pw_site *site = &pw_sites[i];
+        LONG blocks, bytes;
+
+        if (ReadAcquire( &site->state ) != 2 || site->guest != info->guest) continue;
+        if ((blocks = ReadNoFence( &site->blocks )) <= 0) continue;
+        bytes = ReadNoFence( &site->bytes );
+        info->total++;
+        info->blocks += blocks;
+        info->bytes += bytes;
+        if (info->listed >= info->max) continue;
+        info->sites[info->listed].site = site;
+        info->sites[info->listed].caller = site->caller;
+        info->sites[info->listed].via = site->via;
+        info->sites[info->listed].blocks = blocks;
+        info->sites[info->listed].bytes = bytes;
+        info->listed++;
+    }
+}
+
+/* the blocks of the listed sites of an ended guest are freed, then all its sites end; the heap lock is taken. A freed
+ * block merges only with free neighbours, so the next block still in use is found before it is freed. */
+static void pw_small_free( struct heap *heap, struct pw_heap_sites_free *req )
+{
+    SUBHEAP *subheap, *next_subheap;
+    ULONG flags = heap->flags, i;
+
+    req->freed = 0;
+    req->freed_bytes = 0;
+    heap_lock( heap, 0 );
+    pw_sites_enter();
+    for (i = 0; i < req->count; i++)
+    {
+        struct pw_site *site = req->sites[i];
+        if (pw_site_valid( site ) && site->state == 2 && site->guest == req->guest) site->release = 1;
+    }
+    pw_sites_leave();
+    if (req->count)
+    {
+        LIST_FOR_EACH_ENTRY_SAFE( subheap, next_subheap, &heap->subheap_list, SUBHEAP, entry )
+        {
+            struct block *block, *next;
+
+            for (block = first_block( subheap ); block; block = next)
+            {
+                struct pw_site *site;
+                SIZE_T size, block_size;
+
+                if ((next = next_block( subheap, block )) && (block_get_flags( next ) & BLOCK_FLAG_FREE))
+                    next = next_block( subheap, next );
+                if (!(site = pw_small_site( heap, flags, block )) || !site->release) continue;
+                block_size = block_get_size( block );
+                size = block_size - block_get_overhead( block );
+                *pw_small_slot( block, flags ) = NULL;
+                InterlockedDecrement( &site->blocks );
+                InterlockedExchangeAdd( &site->bytes, -(LONG)size );
+                if (heap_free_block( heap, flags, block )) continue;
+                if (heap->bins) InterlockedIncrement( &heap->bins[BLOCK_SIZE_BIN( block_size )].count_freed );
+                req->freed++;
+                req->freed_bytes += size;
+            }
+        }
+    }
+    pw_sites_enter();
+    for (i = 0; i < PW_SITE_COUNT; i++)
+    {
+        struct pw_site *site = &pw_sites[i];
+
+        if (site->state != 2 || site->guest != req->guest) continue;
+        site->release = 0;
+        WriteRelease( &site->state, 3 );
+    }
+    pw_sites_leave();
+    heap_unlock( heap, 0 );
+}
+
+/* RtlAllocateHeap's body (04.30): caller is the code that called RtlAllocateHeap or RtlReAllocateHeap, site the one a
+ * block moved by RtlReAllocateHeap keeps, or NULL */
+static void *pw_allocate_heap( HANDLE handle, ULONG flags, SIZE_T size, void *caller, struct pw_site *site )
+{
+    struct heap *heap;
+    SIZE_T block_size;
+    void *ptr = NULL, *guest = NULL;
+    ULONG heap_flags;
+    NTSTATUS status;
+
+    heap = unsafe_heap_from_handle( handle, flags, &heap_flags );
+    if ((block_size = heap_get_block_size( heap, heap_flags, size )) == ~0U)
+        status = STATUS_NO_MEMORY;
+    else if (block_size < HEAP_MIN_LARGE_BLOCK_SIZE - BLOCK_ALIGN && (guest = pw_small_guest( heap, heap_flags, site )))
+    {
+        /* 04.30: a guest's small block of the process heap, with its site, not through the LFH */
+        heap_flags |= HEAP_ADD_USER_INFO;
+        block_size = heap_get_block_size( heap, heap_flags, size );
+        heap_lock( heap, heap_flags );
+        status = heap_allocate_block( heap, heap_flags, block_size, size, &ptr );
+        heap_unlock( heap, heap_flags );
+
+        if (!status)
+        {
+            if (heap->bins)
+            {
+                SIZE_T bin = BLOCK_SIZE_BIN( block_get_size( (struct block *)ptr - 1 ) );
+                InterlockedIncrement( &heap->bins[bin].count_alloc );
+                if (!ReadNoFence( &heap->bins[bin].enabled )) bin_try_enable( heap, &heap->bins[bin] );
+            }
+            pw_small_tag( heap_flags, ptr, size, guest, caller, site );
+        }
+    }
+    else if (block_size >= HEAP_MIN_LARGE_BLOCK_SIZE)''','A small block a guest allocates in the process heap carries its site (04.30, run-0252).')
+revise('ntdll','heap','''        pw_large_tag_set( ptr, __builtin_return_address( 0 ) );  /* alpha-1 (run-0212) */
+
+    TRACE( "handle %p, flags %#lx, size %#Ix, return %p, status %#lx.\\n", handle, flags, size, ptr, status );
+    heap_set_status( heap, flags, status );
+    return ptr;
+}''','''        pw_large_tag_set( ptr, caller );  /* alpha-1 (run-0212); 04.30: the caller given */
+
+    TRACE( "handle %p, flags %#lx, size %#Ix, return %p, status %#lx.\\n", handle, flags, size, ptr, status );
+    heap_set_status( heap, flags, status );
+    return ptr;
+}
+
+/***********************************************************************
+ *           RtlAllocateHeap   (NTDLL.@)
+ */
+void *WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE handle, ULONG flags, SIZE_T size )
+{
+    return pw_allocate_heap( handle, flags, size, __builtin_return_address( 0 ), NULL );  /* 04.30 */
+}''','A small block a guest allocates in the process heap carries its site (04.30, run-0252).')
+revise('ntdll','heap','''    else if (!(block = heap_delay_free( heap, heap_flags, block )))
+        status = STATUS_SUCCESS;''','''    else if (pw_small_untag( heap, heap_flags, block ), !(block = heap_delay_free( heap, heap_flags, block )))  /* 04.30 */
+        status = STATUS_SUCCESS;''','A freed small block leaves its site (04.30, run-0252).')
+revise('ntdll','heap','''    ULONG heap_flags;
+    void *ret = NULL;
+    NTSTATUS status;
+
+    if (!ptr) return NULL;
+''','''    ULONG heap_flags;
+    void *ret = NULL;
+    NTSTATUS status;
+    struct pw_site *site = NULL;  /* 04.30 */
+    SIZE_T site_size = 0;
+
+    if (!ptr) return NULL;
+''','A resized small block keeps its site (04.30, run-0252).')
+revise('ntdll','heap','''    else if (!(block = unsafe_block_from_ptr( heap, heap_flags, ptr )))
+        status = STATUS_INVALID_PARAMETER;
+    else if ((status = heap_resize_in_place( heap, heap_flags, block, block_size, size,
+                                        &old_size, &ret )))
+    {
+        if (flags & HEAP_REALLOC_IN_PLACE_ONLY)
+            status = STATUS_NO_MEMORY;
+        else if (!(ret = RtlAllocateHeap( heap, flags, size )))
+            status = STATUS_NO_MEMORY;''','''    else if (!(block = unsafe_block_from_ptr( heap, heap_flags, ptr )))
+        status = STATUS_INVALID_PARAMETER;
+    /* 04.30: a tagged small block keeps its site, in place or moved */
+    else if ((site = pw_small_site( heap, heap_flags, block )) &&
+             (block_size = pw_small_resize_size( heap, &heap_flags, block, size, &site_size )) == ~0U)
+        status = STATUS_NO_MEMORY;
+    else if ((status = heap_resize_in_place( heap, heap_flags, block, block_size, size,
+                                        &old_size, &ret )))
+    {
+        if (flags & HEAP_REALLOC_IN_PLACE_ONLY)
+            status = STATUS_NO_MEMORY;
+        else if (!(ret = pw_allocate_heap( heap, flags, size, __builtin_return_address( 0 ), site )))
+            status = STATUS_NO_MEMORY;''','A resized small block keeps its site (04.30, run-0252).')
+revise('ntdll','heap','''                pw_large_tag_set( ret, __builtin_return_address( 0 ) );  /* alpha-1 (run-0212) */
+        }
+    }
+''','''                pw_large_tag_set( ret, __builtin_return_address( 0 ) );  /* alpha-1 (run-0212) */
+        }
+    }
+    else if (site) pw_small_resized( heap_flags, ret, site, site_size, size );  /* 04.30 */
+''','A resized small block keeps its site (04.30, run-0252).')
+revise('ntdll','heap','''    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_LARGE)  /* alpha-1 (run-0212) */
+''','''    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_SITES)  /* 04.30 (run-0252) */
+    {
+        struct pw_heap_sites *sites = info;
+        SIZE_T head = offsetof( struct pw_heap_sites, sites );
+
+        if (!(heap = unsafe_heap_from_handle( handle, 0, &flags )) || heap != process_heap) return STATUS_INVALID_HANDLE;
+        if (size_in < head || sites->max > (size_in - head) / sizeof(sites->sites[0])) return STATUS_BUFFER_TOO_SMALL;
+        pw_small_query( sites );
+        if (size_out) *size_out = head + sites->listed * sizeof(sites->sites[0]);
+        return STATUS_SUCCESS;
+    }
+
+    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_LARGE)  /* alpha-1 (run-0212) */
+''','The small-block sites of a guest can be listed (04.30, run-0252).')
+revise('ntdll','heap','''    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_GUEST)  /* alpha-1 (run-0203) */
+    {
+        if (size < sizeof(void *)) return STATUS_BUFFER_TOO_SMALL;''','''    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_SITES_FREE)  /* 04.30 (run-0252) */
+    {
+        struct pw_heap_sites_free *req = info;
+        SIZE_T head = offsetof( struct pw_heap_sites_free, sites );
+
+        if (!(heap = unsafe_heap_from_handle( handle, 0, &flags )) || heap != process_heap) return STATUS_INVALID_HANDLE;
+        if (size < head || req->count > (size - head) / sizeof(req->sites[0])) return STATUS_BUFFER_TOO_SMALL;
+        pw_small_free( heap, req );
+        return STATUS_SUCCESS;
+    }
+
+    if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_GUEST)  /* alpha-1 (run-0203) */
+    {
+        if (size < sizeof(void *)) return STATUS_BUFFER_TOO_SMALL;''','The blocks of the chosen sites of an ended guest are freed (04.30, run-0252).')
+revise('kernelbase','process','''static BOOL ps4_guest_object_module( const WCHAR *name )
+{
+    return name && !wcsicmp( name, L"wined3d.dll" );
+}
+''','''static BOOL ps4_guest_object_module( const WCHAR *name )
+{
+    return name && !wcsicmp( name, L"wined3d.dll" );
+}
+
+/* 04.30 (run-0252): a module whose allocations are made for the code that called it: the C runtimes and the Win32
+ * heap functions */
+static BOOL ps4_guest_crt_module( const WCHAR *name )
+{
+    return name && (!wcsicmp( name, L"ucrtbase.dll" ) || !wcsnicmp( name, L"msvcr", 5 ) ||
+                    !wcsicmp( name, L"kernelbase.dll" ) || !wcsicmp( name, L"kernel32.dll" ));
+}
+
+/* a block whose allocating code is in no loaded module any more: the code that called RtlAllocateHeap, or, when that
+ * is a C runtime, the code that called it (04.30). The loader lock is held. */
+static BOOL ps4_guest_code_gone( const WCHAR *caller, void *via_address, const WCHAR *via )
+{
+    if (!caller) return TRUE;
+    return via_address && !via && ps4_guest_crt_module( caller );
+}
+
+/* 04.30: what was kept, summed by the module that called RtlAllocateHeap and the module of the frame above it */
+#define PS4_KEPT_MAX 32
+struct ps4_kept_list
+{
+    struct { const WCHAR *caller, *via; SIZE_T bytes; ULONG blocks; } names[PS4_KEPT_MAX];
+    ULONG count, other_blocks;
+    SIZE_T other_bytes;
+};
+
+static void ps4_kept_add( struct ps4_kept_list *list, const WCHAR *caller, const WCHAR *via, SIZE_T bytes, ULONG blocks )
+{
+    ULONG k;
+
+    for (k = 0; k < list->count; k++) if (list->names[k].caller == caller && list->names[k].via == via) break;
+    if (k == list->count)
+    {
+        if (k == PS4_KEPT_MAX)
+        {
+            list->other_bytes += bytes;
+            list->other_blocks += blocks;
+            return;
+        }
+        list->names[k].caller = caller;
+        list->names[k].via = via;
+        list->names[k].bytes = 0;
+        list->names[k].blocks = 0;
+        list->count++;
+    }
+    list->names[k].bytes += bytes;
+    list->names[k].blocks += blocks;
+}
+
+/* the eight largest, then the rest as "others" */
+static void ps4_kept_log( struct ps4_kept_list *list, void *module, const char *what )
+{
+    ULONG i, k, best;
+
+    for (i = 0; i < list->count; i++)
+    {
+        for (best = i, k = i + 1; k < list->count; k++) if (list->names[k].bytes > list->names[best].bytes) best = k;
+        if (best != i)
+        {
+            const WCHAR *caller = list->names[i].caller, *via = list->names[i].via;
+            SIZE_T bytes = list->names[i].bytes;
+            ULONG blocks = list->names[i].blocks;
+
+            list->names[i] = list->names[best];
+            list->names[best].caller = caller;
+            list->names[best].via = via;
+            list->names[best].bytes = bytes;
+            list->names[best].blocks = blocks;
+        }
+        if (i >= 8)
+        {
+            list->other_bytes += list->names[i].bytes;
+            list->other_blocks += list->names[i].blocks;
+            continue;
+        }
+        ERR( "PWGUEST %s module=%p kept bytes=%Iu blocks=%lu from %s via %s\\n", what, module, list->names[i].bytes,
+             list->names[i].blocks, debugstr_w( list->names[i].caller ),
+             list->names[i].via ? debugstr_w( list->names[i].via ) : "none" );
+    }
+    if (list->other_blocks)
+        ERR( "PWGUEST %s module=%p kept bytes=%Iu blocks=%lu from others\\n", what, module, list->other_bytes,
+             list->other_blocks );
+}
+''','A block a C runtime made for code that is gone is freed; kept blocks are summed by module (04.30, run-0252).')
+revise('kernelbase','process','''            const WCHAR *caller = ps4_guest_code_module( block->caller ), *via = NULL;
+            BOOL object = FALSE;
+
+            if (caller && guest->terminated)  /* 04.29 */
+            {
+                via = ps4_guest_code_module( block->via );
+                object = ps4_guest_object_module( caller ) || ps4_guest_object_module( via );
+            }
+            if (!caller || object)''','''            const WCHAR *caller = ps4_guest_code_module( block->caller ), *via = ps4_guest_code_module( block->via );
+            BOOL object = FALSE;
+
+            if (caller && guest->terminated)  /* 04.29 */
+                object = ps4_guest_object_module( caller ) || ps4_guest_object_module( via );
+            if (ps4_guest_code_gone( caller, block->via, via ) || object)  /* 04.30: or a C runtime's, for gone code */''',
+       'A large block a C runtime made for code that is gone is freed (04.30, run-0252).')
+revise('kernelbase','process','''            via = ps4_guest_code_module( block->via );
+            for (k = 0; k < names; k++)''','''            for (k = 0; k < names; k++)''','A large block a C runtime made for code that is gone is freed (04.30, run-0252).')
+revise('kernelbase','process','''/* after its own modules (and the system modules only they used) are unloaded: each heap ntdll recorded for the guest is''',
+'''/* 04.30 (run-0252, run-0253: Alan Wake, terminated, kept 170-200 MB of small blocks in the process heap per start):
+ * ntdll's small-block sites (its heap.c revision), listed and freed through Rtl(Query|Set)HeapInformation */
+#define PW_HEAP_SITES      0x5059
+#define PW_HEAP_SITES_FREE 0x505a
+#define PW_LARGE_NO_GUEST ((void *)~(ULONG_PTR)0)
+struct pw_heap_site { void *site, *caller, *via; LONG blocks, bytes; };
+struct pw_heap_sites
+{
+    void *guest;  /* in: the guest whose sites are listed */
+    ULONG max;    /* in: room in sites[] */
+    ULONG listed, total, missed;
+    SIZE_T blocks, bytes;
+    struct pw_heap_site sites[1];
+};
+struct pw_heap_sites_free
+{
+    void *guest;  /* in: the guest that ended */
+    ULONG count;  /* in: its sites whose blocks are freed */
+    ULONG freed;  /* out */
+    SIZE_T freed_bytes;
+    void *sites[1];
+};
+
+/* after its large blocks: the small blocks the guest's threads allocated in the process heap (i386). The blocks of a site
+ * whose code is gone are freed, and, for a terminated guest, those of a site in an object module (as for large blocks);
+ * then all its sites end. The others are kept and summed by module. The loader lock is held. */
+static void ps4_guest_release_small( struct ps4_guest *guest )
+{
+    static const ULONG max = 8192;
+    SIZE_T size = offsetof( struct pw_heap_sites, sites ) + max * sizeof(struct pw_heap_site);
+    SIZE_T free_size = offsetof( struct pw_heap_sites_free, sites ) + max * sizeof(void *), object_bytes = 0;
+    ULONG i, object_blocks = 0;
+    struct ps4_kept_list kept;
+    struct pw_heap_sites *info;
+    struct pw_heap_sites_free *req;
+    HANDLE process = GetProcessHeap();
+
+    size = (size + 15) & ~(SIZE_T)15;
+    if (!(info = VirtualAlloc( NULL, size + free_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE ))) return;
+    req = (struct pw_heap_sites_free *)((char *)info + size);
+    memset( &kept, 0, sizeof(kept) );
+    info->guest = guest;
+    info->max = max;
+    if (RtlQueryHeapInformation( process, (HEAP_INFORMATION_CLASS)PW_HEAP_SITES, info, size, NULL ))
+    {
+        VirtualFree( info, 0, MEM_RELEASE );
+        return;
+    }
+    req->guest = guest;
+    req->count = 0;
+    for (i = 0; i < info->listed; i++)
+    {
+        const struct pw_heap_site *site = &info->sites[i];
+        const WCHAR *caller = ps4_guest_code_module( site->caller ), *via = ps4_guest_code_module( site->via );
+        BOOL object = caller && guest->terminated && (ps4_guest_object_module( caller ) || ps4_guest_object_module( via ));
+
+        if (ps4_guest_code_gone( caller, site->via, via ) || object)
+        {
+            req->sites[req->count++] = site->site;
+            if (object)
+            {
+                object_blocks += site->blocks;
+                object_bytes += site->bytes;
+            }
+            continue;
+        }
+        ps4_kept_add( &kept, caller, via, site->bytes, site->blocks );
+    }
+    /* also ends its sites when none is freed */
+    if (RtlSetHeapInformation( process, (HEAP_INFORMATION_CLASS)PW_HEAP_SITES_FREE, req, free_size ))
+    {
+        req->freed = 0;
+        req->freed_bytes = 0;
+    }
+    if (info->total || info->missed)
+        ERR( "PWGUEST heap_small module=%p sites=%lu blocks=%Iu bytes=%Iu listed=%lu missed=%lu freed=%lu "
+             "freed_bytes=%Iu\\n", guest->module, info->total, info->blocks, info->bytes, info->listed, info->missed,
+             req->freed, req->freed_bytes );
+    ps4_kept_log( &kept, guest->module, "heap_small" );
+    if (object_blocks)  /* part of the freed ones above */
+        ERR( "PWGUEST heap_small module=%p objects bytes=%Iu blocks=%lu: the terminated guest's, made through "
+             "wined3d.dll\\n", guest->module, object_bytes, object_blocks );
+    VirtualFree( info, 0, MEM_RELEASE );
+}
+
+/* 04.30 (run-0253: 88 large blocks of 83 MB per start were made by no guest's thread): the process heap's large blocks
+ * of no guest. Those whose code is gone are freed; the others are summed by module. The loader lock is held. */
+static void ps4_guest_release_unowned( struct ps4_guest *guest )
+{
+    static const ULONG max = 4096;
+    SIZE_T size = offsetof( struct pw_heap_large_info, blocks ) + max * sizeof(struct pw_heap_large_block);
+    SIZE_T freed_bytes = 0;
+    ULONG j, freed = 0;
+    struct ps4_kept_list kept;
+    struct pw_heap_large_info *info;
+    HANDLE process = GetProcessHeap();
+
+    if (!(info = VirtualAlloc( NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE ))) return;
+    memset( &kept, 0, sizeof(kept) );
+    info->guest = PW_LARGE_NO_GUEST;
+    info->max = max;
+    if (!RtlQueryHeapInformation( process, (HEAP_INFORMATION_CLASS)PW_HEAP_LARGE, info, size, NULL ) &&
+        info->guest_blocks)
+    {
+        for (j = 0; j < info->listed; j++)
+        {
+            const struct pw_heap_large_block *block = &info->blocks[j];
+            const WCHAR *caller = ps4_guest_code_module( block->caller ), *via = ps4_guest_code_module( block->via );
+
+            if (ps4_guest_code_gone( caller, block->via, via ))
+            {
+                if (RtlFreeHeap( process, 0, block->ptr ))
+                {
+                    freed++;
+                    freed_bytes += block->size;
+                }
+                continue;
+            }
+            ps4_kept_add( &kept, caller, via, block->size, 1 );
+        }
+        ERR( "PWGUEST heap_unowned module=%p blocks=%Iu bytes=%Iu listed=%lu freed=%lu freed_bytes=%Iu\\n",
+             guest->module, info->guest_blocks, info->guest_bytes, info->listed, freed, freed_bytes );
+        ps4_kept_log( &kept, guest->module, "heap_unowned" );
+    }
+    VirtualFree( info, 0, MEM_RELEASE );
+}
+
+/* after its own modules (and the system modules only they used) are unloaded: each heap ntdll recorded for the guest is''',
+       'The small blocks of an ended guest and the large blocks of no guest are released (04.30, run-0252).')
+revise('kernelbase','process','''    ps4_guest_release_large( guest, ntdll );  /* alpha-1 (run-0212) */
+''','''    ps4_guest_release_large( guest, ntdll );  /* alpha-1 (run-0212) */
+    ps4_guest_release_small( guest );  /* 04.30 (run-0252) */
+    ps4_guest_release_unowned( guest );  /* 04.30 (run-0253) */
+''','The small blocks of an ended guest and the large blocks of no guest are released (04.30, run-0252).')
+
+# 04.32 (run-0261, 2026-11-19, 04.30: Alan Wake on wined3d-gl, terminated from the overlay twice, lost 0.58 then 0.21
+# GB). Of its small blocks in the process heap, 127 and 124 MB were freed; 74 and 59 MB stayed as "ucrtbase.dll via
+# ucrtbase.dll": the C runtime allocated them through more of itself (_aligned_malloc -> _aligned_offset_malloc ->
+# malloc, realloc -> malloc, _strdup), so the frame above malloc is ucrtbase again and neither "code gone" nor the
+# wined3d rule could see who asked. A site now also records the three frames above that one (Wine builds its i386 PE
+# modules with frame pointers, so the frames inside the C runtime are exact). At the release, when the caller is a C
+# runtime, the frame that counts is the first one above it that is not a C runtime's; the rules and the kept lines use
+# that frame. Large blocks are unchanged (their kept "ucrtbase via ucrtbase" share is 1-4 MB and does not grow).
+revise('ntdll','heap','''    LONG release;  /* its blocks are being freed, under the process heap's lock */
+    void *guest, *caller, *via;
+    LONG blocks, bytes;
+};
+struct pw_heap_site { void *site, *caller, *via; LONG blocks, bytes; };''','''    LONG release;  /* its blocks are being freed, under the process heap's lock */
+    void *guest, *caller, *via;
+    void *up[3];  /* 04.32: the three frames above via */
+    LONG blocks, bytes;
+};
+struct pw_heap_site { void *site, *caller, *via; LONG blocks, bytes; void *up[3]; };''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+revise('ntdll','heap','''static struct pw_site *pw_site_get( void *guest, void *caller, void *via )
+{
+    ULONG_PTR key = (ULONG_PTR)guest ^ ((ULONG_PTR)caller * 0x9e3779b1u) ^ ((ULONG_PTR)via * 0x85ebca6bu);''','''static struct pw_site *pw_site_get( void *guest, void *caller, void *via, void *const *up )
+{
+    ULONG_PTR key = (ULONG_PTR)guest ^ ((ULONG_PTR)caller * 0x9e3779b1u) ^ ((ULONG_PTR)via * 0x85ebca6bu) ^
+                    ((ULONG_PTR)up[0] * 0xc2b2ae35u) ^ ((ULONG_PTR)up[1] * 0x27d4eb2fu) ^ ((ULONG_PTR)up[2] * 0x165667b1u);''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+revise('ntdll','heap','''        if (state == 2 && site->guest == guest && site->caller == caller && site->via == via) return site;''','''        if (state == 2 && site->guest == guest && site->caller == caller && site->via == via &&
+            site->up[0] == up[0] && site->up[1] == up[1] && site->up[2] == up[2]) return site;''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+revise('ntdll','heap','''            if (site->guest != guest || site->caller != caller || site->via != via) continue;''','''            if (site->guest != guest || site->caller != caller || site->via != via ||
+                site->up[0] != up[0] || site->up[1] != up[1] || site->up[2] != up[2]) continue;''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+revise('ntdll','heap','''        site->via = via;
+        site->blocks = site->bytes = site->release = 0;''','''        site->via = via;
+        site->up[0] = up[0];
+        site->up[1] = up[1];
+        site->up[2] = up[2];
+        site->blocks = site->bytes = site->release = 0;''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+revise('ntdll','heap','''        void *frames[8], *via = NULL;
+        USHORT count, i;
+
+        count = RtlCaptureStackBackTrace( 0, ARRAY_SIZE(frames), frames, NULL );
+        for (i = 0; i + 1 < count; i++)
+        {
+            if (frames[i] != caller) continue;
+            via = frames[i + 1];
+            break;
+        }
+        if (!(site = pw_site_get( guest, caller, via ))) InterlockedIncrement( &pw_sites_missed );''','''        void *frames[12], *via = NULL, *up[3] = { NULL, NULL, NULL };
+        USHORT count, i;
+
+        count = RtlCaptureStackBackTrace( 0, ARRAY_SIZE(frames), frames, NULL );
+        for (i = 0; i + 1 < count; i++)
+        {
+            if (frames[i] != caller) continue;
+            via = frames[i + 1];
+            if (i + 2 < count) up[0] = frames[i + 2];  /* 04.32 */
+            if (i + 3 < count) up[1] = frames[i + 3];
+            if (i + 4 < count) up[2] = frames[i + 4];
+            break;
+        }
+        if (!(site = pw_site_get( guest, caller, via, up ))) InterlockedIncrement( &pw_sites_missed );''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+revise('ntdll','heap','''        info->sites[info->listed].via = site->via;
+''','''        info->sites[info->listed].via = site->via;
+        info->sites[info->listed].up[0] = site->up[0];  /* 04.32 */
+        info->sites[info->listed].up[1] = site->up[1];
+        info->sites[info->listed].up[2] = site->up[2];
+''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+revise('kernelbase','process','''struct pw_heap_site { void *site, *caller, *via; LONG blocks, bytes; };''','''struct pw_heap_site { void *site, *caller, *via; LONG blocks, bytes; void *up[3]; };''',
+       '''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+revise('kernelbase','process','''/* after its large blocks: the small blocks the guest's threads allocated in the process heap (i386). The blocks of a site''','''/* 04.32 (run-0261: 74 and 59 MB kept as "ucrtbase.dll via ucrtbase.dll"): the frame that counts for a site. When the
+ * caller is a C runtime and the frame above it is one too (_aligned_malloc or _strdup calling malloc), it is the first
+ * of the three frames above that is not a C runtime's; *via is its module. Without them, via stays. The loader lock is
+ * held. */
+static void *ps4_site_frame( const WCHAR *caller, const struct pw_heap_site *site, const WCHAR **via )
+{
+    void *frame = site->via;
+    ULONG i;
+
+    if (!ps4_guest_crt_module( caller )) return frame;
+    for (i = 0; i < ARRAY_SIZE(site->up) && site->up[i] && ps4_guest_crt_module( *via ); i++)
+    {
+        frame = site->up[i];
+        *via = ps4_guest_code_module( frame );
+    }
+    return frame;
+}
+
+/* after its large blocks: the small blocks the guest's threads allocated in the process heap (i386). The blocks of a site''',
+       '''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+revise('kernelbase','process','''        const WCHAR *caller = ps4_guest_code_module( site->caller ), *via = ps4_guest_code_module( site->via );
+        BOOL object = caller && guest->terminated && (ps4_guest_object_module( caller ) || ps4_guest_object_module( via ));
+
+        if (ps4_guest_code_gone( caller, site->via, via ) || object)''','''        const WCHAR *caller = ps4_guest_code_module( site->caller ), *via = ps4_guest_code_module( site->via );
+        void *frame = ps4_site_frame( caller, site, &via );  /* 04.32 */
+        BOOL object = caller && guest->terminated && (ps4_guest_object_module( caller ) || ps4_guest_object_module( via ));
+
+        if (ps4_guest_code_gone( caller, frame, via ) || object)''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
+
+# alpha-1 (run-0215, 2026-11-17, 04.17: GTA San Andreas, exit status 0, lost 0.47 and 0.39 GB of direct memory that
+# was not Wine's own commits after its device memory was freed): a guest that ended by itself (not terminated by the
+# overlay's close or a crash, W209) also has its Vulkan devices destroyed by win32u, with a time limit
+# (PW_GUEST_RELEASE_DEVICES, tools/build-win32u-ps4.py). A terminated guest keeps today's release: its threads were
+# stopped wherever they were, and a queue wait could block. run-0219: its instances stay (DXVK's d3d9.dll, which
+# stays loaded, takes the same VkInstance at the next start).
+revise('kernelbase','process','''    params.flags = ps4_guest_release_gl( guest );  /* run-0178 */''','''    params.flags = ps4_guest_release_gl( guest );  /* run-0178 */
+    if (!guest->terminated) params.flags |= 2;  /* alpha-1 (run-0215): PW_GUEST_RELEASE_DEVICES */''',
+       'The Vulkan devices of a guest that ended by itself are destroyed (alpha-1, run-0215).')
+
+# alpha-1 (run-0121, 2026-11-13: PES 2014's settings.exe, an IL-only .NET EXE, failed to load at 0x400000 with
+# "mscoree.dll not found" (c0000135); its next start found "image_not_at_base preferred=0x400000 size=0x156000
+# status=0xc0000018 occupied=0x400000+0x156000", its own image). When build_module fails to resolve imports it takes
+# the module out of the loader's lists but sets *module to NULL, so load_native_dll does not unmap the view: Wine
+# leaves it, as the failed process normally ends. A guest EXE in explorer's shared process kept its fixed base taken
+# until OrbisDesk ended. Its view is unmapped; the modref stays allocated, as upstream leaves it (dependencies may
+# point to it), and nothing in the image has run.
+revise('ntdll','loader','''             * As these might reference our wm, we don't free it.
+             */
+            *module = NULL;''','''             * As these might reference our wm, we don't free it.
+             */
+            /* PS4 hardware build (alpha-1, run-0121): a guest EXE's view is unmapped, or its fixed base
+             * stays taken in explorer's process (c0000018 at the next start) */
+            if (NtCurrentTeb()->UserReserved[2] == 0x47345350 /* PS4 guest image load (W052) */ &&
+                !(nt->FileHeader.Characteristics & IMAGE_FILE_DLL))
+            {
+                ERR( "PWGUEST load_failed unmap %s at %p status %#lx\\n", debugstr_us( nt_name ), *module, status );
+                NtUnmapViewOfSection( NtCurrentProcess(), *module );
+            }
+            *module = NULL;''','A guest EXE whose imports fail is unmapped (alpha-1, run-0121).')
 
 # (out/guest-hw-i386): the i386 ones are the guests' ntdll, kernelbase and ucrtbase in explorer's
 # 32-bit world, in wine/lib/wine/i386-guest (tools/build-wine-hardware.py), which ntdll Unix searches

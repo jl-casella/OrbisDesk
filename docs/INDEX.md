@@ -162,6 +162,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [HARDWARE_W228.md](HARDWARE_W228.md) — W228: ROOT mode and USB drives as units
 - [HARDWARE_W284.md](HARDWARE_W284.md) — OrbisDesk: package with a clean name (W284)
 - [HARDWARE_W285_W288.md](HARDWARE_W285_W288.md) — W285–W288: guest audio streams, GPU log folder, GRAPHICS menu and MangoHud on wined3d
+- [HARDWARE_guest-gpu-memory.md](HARDWARE_guest-gpu-memory.md) — GPU memory of guests that end inside explorer
 - [HARDWARE_mando-hid.md](HARDWARE_mando-hid.md) — Command as a HID gamepad (Wine HID stack within the process)
 - [HARDWARE_mando-juegos-analisis.md](HARDWARE_mando-juegos-analisis.md) — Command for games after W195: analysis (draft, no code changes)
 

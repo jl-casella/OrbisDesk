@@ -2627,6 +2627,899 @@ revise('dlls/win32u/ps5drv.c','''    if (repaint) NtUserRedrawWindow( hwnd, NULL
 }''','''    if (repaint) NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
     if (repaint) report_shown( hwnd );  /* W293 */
 }''','A window shown ends the app starting pointer (W293).')
+# alpha-1 (run-0165, 2026-11-16: Alan Wake's American Nightmare, a 32-bit guest on DXVK, started seven times in one
+# session; free memory at each start 4.92, 4.17, 3.46, 3.33, 2.70, 2.04 GB, 0.63-0.75 GB lost at each overlay close
+# after a device loss, then "PWVM commit_backing ... direct memory failed; no memory"). The guests share this process,
+# and RADV's buffers on the console are direct memory (Crema's ac_ps4_drm.c) that only vkFreeMemory gives back: a guest
+# whose threads were terminated never frees its device memory. Each VkDevice records the guest of the thread that
+# created it and each VkDeviceMemory its device; kernelbase frees what a guest's devices still hold once the guest has
+# unloaded (pw_guest_unix_call_funcs, "pwguest" in platform/ps4/pw_wine_unixlibs.c; tools/build-guest-hw.py).
+revise('dlls/win32u/vulkan.c','''struct instance
+{
+    struct vulkan_instance obj;
+    BOOL enable_win32_surface;''','''struct instance
+{
+    struct vulkan_instance obj;
+    BOOL enable_win32_surface;
+    BOOL pw_shared;  /* OrbisDesk alpha-1 (run-0165): Zink's, process-wide (libgallium_wgl stays loaded) */''',
+       'A Zink instance is marked process-wide (alpha-1, run-0165).')
+revise('dlls/win32u/vulkan.c','''static void win32u_vkFreeMemory( VkDevice client_device, VkDeviceMemory client_memory, const VkAllocationCallbacks *allocator )
+{
+    struct vulkan_device *device = vulkan_device_from_handle( client_device );''','''static void pw_vk_free_memory( struct vulkan_device *device, VkDeviceMemory client_memory );
+
+static void win32u_vkFreeMemory( VkDevice client_device, VkDeviceMemory client_memory, const VkAllocationCallbacks *allocator )
+{
+    pw_vk_free_memory( vulkan_device_from_handle( client_device ), client_memory );
+}
+
+/* OrbisDesk alpha-1 (run-0165): from the device's own record too, when the program that allocated it has ended */
+static void pw_vk_free_memory( struct vulkan_device *device, VkDeviceMemory client_memory )
+{''',"Device memory can be freed without the program's device handle (alpha-1, run-0165).")
+revise('dlls/win32u/vulkan.c','''/* W254: begin/end lines for the threads of explorer's 32-bit world (have_procs32, class.c W236) */''','''/* OrbisDesk alpha-1 (run-0165: Alan Wake's American Nightmare closed from the overlay after device losses lost
+ * 0.63-0.75 GB each time, until a level load found no memory): the guests share this process, and RADV's buffers
+ * are direct memory that only vkFreeMemory gives back. Each device records the guest of the thread that created it
+ * (TEB.UserReserved[0], of the 32-bit TEB for a WoW64 thread; tools/build-guest-hw.py), each device memory its device.
+ * When a guest has unloaded, kernelbase frees the memory its devices still hold (pw_guest_unix_call_funcs). The
+ * devices are kept: destroying one waits for its queues, which a terminated thread may have left busy. A Zink
+ * device is kept with its memory: libgallium_wgl and its screen stay loaded for every guest. Memory that is not
+ * recorded here was freed already, with its guest or its device, and is not freed twice. */
+struct pw_vk_device
+{
+    struct list entry;
+    struct vulkan_device *device;
+    UINT64 owner;  /* the guest whose thread created it; 0 for none, or once its memory was released */
+    BOOL wow;      /* a 32-bit guest */
+    BOOL shared;   /* Zink's */
+    BOOL abandoned;  /* Zink's, after Mesa's WGL let go of its screen once: its memory was freed */
+};
+
+struct pw_vk_memory
+{
+    struct rb_entry entry;
+    struct list released;  /* while its guest's release frees it */
+    struct vulkan_device *device;
+    VkDeviceMemory memory;
+    UINT64 handle;
+    VkDeviceSize size;
+};
+
+static int pw_vk_memory_compare( const void *key, const struct rb_entry *entry )
+{
+    UINT64 a = *(const UINT64 *)key, b = RB_ENTRY_VALUE( entry, const struct pw_vk_memory, entry )->handle;
+
+    return a < b ? -1 : a > b;
+}
+
+static pthread_mutex_t pw_vk_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct list pw_vk_devices = LIST_INIT( pw_vk_devices );
+static struct rb_tree pw_vk_memories = { pw_vk_memory_compare };
+
+static UINT64 pw_vk_owner( BOOL *wow )
+{
+    TEB *teb = NtCurrentTeb();
+
+    *wow = teb->WowTebOffset != 0;
+    if (*wow) return ((TEB32 *)((char *)teb + teb->WowTebOffset))->UserReserved[0];
+    return *(ULONG_PTR *)teb->UserReserved;
+}
+
+/* the device memory records of a device, out of the tree into a list (pw_vk_lock held) */
+static void pw_vk_take_memory( struct vulkan_device *device, struct list *out )
+{
+    struct pw_vk_memory *memory;
+    struct list taken = LIST_INIT( taken );
+
+    RB_FOR_EACH_ENTRY( memory, &pw_vk_memories, struct pw_vk_memory, entry )
+        if (memory->device == device) list_add_tail( &taken, &memory->released );
+    LIST_FOR_EACH_ENTRY( memory, &taken, struct pw_vk_memory, released ) rb_remove( &pw_vk_memories, &memory->entry );
+    list_move_tail( out, &taken );
+}
+
+static VkResult pw_vk_create_instance( const VkInstanceCreateInfo *info, const VkAllocationCallbacks *allocator,
+                                       VkInstance *instance )
+{
+    static const char zink[] = "mesa zink";  /* zink_instance.py's engine name */
+    const char *engine = info->pApplicationInfo ? info->pApplicationInfo->pEngineName : NULL;
+    VkResult res = win32u_vkCreateInstance( info, allocator, instance );
+    unsigned int i;
+
+    if (res || !engine) return res;
+    for (i = 0; i < sizeof(zink) && engine[i] == zink[i]; i++) {}
+    if (i == sizeof(zink)) instance_from_handle( *instance )->pw_shared = TRUE;
+    return res;
+}
+
+static VkResult pw_vk_create_device( VkPhysicalDevice physical_device, const VkDeviceCreateInfo *info,
+                                     const VkAllocationCallbacks *allocator, VkDevice *device )
+{
+    struct pw_vk_device *record = calloc( 1, sizeof(*record) );
+    struct instance *instance;
+    VkResult res;
+
+    if (!record) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    if ((res = win32u_vkCreateDevice( physical_device, info, allocator, device )))
+    {
+        free( record );
+        return res;
+    }
+    record->device = vulkan_device_from_handle( *device );
+    record->owner = pw_vk_owner( &record->wow );
+    instance = CONTAINING_RECORD( record->device->physical_device->instance, struct instance, obj );
+    record->shared = instance->pw_shared;
+    pthread_mutex_lock( &pw_vk_lock );
+    list_add_tail( &pw_vk_devices, &record->entry );
+    pthread_mutex_unlock( &pw_vk_lock );
+    return VK_SUCCESS;
+}
+
+/* the program's vkDestroyDevice: device memory it left is freed first (RADV's device does not free it) */
+static void pw_vk_destroy_device( VkDevice client_device, const VkAllocationCallbacks *allocator )
+{
+    struct vulkan_device *device = client_device ? vulkan_device_from_handle( client_device ) : NULL;
+    struct pw_vk_device *record, *found = NULL;
+    struct pw_vk_memory *memory, *next;
+    struct list left = LIST_INIT( left );
+
+    if (!device) return;
+    pthread_mutex_lock( &pw_vk_lock );
+    LIST_FOR_EACH_ENTRY( record, &pw_vk_devices, struct pw_vk_device, entry )
+        if (record->device == device)
+        {
+            found = record;
+            list_remove( &record->entry );
+            break;
+        }
+    pw_vk_take_memory( device, &left );
+    pthread_mutex_unlock( &pw_vk_lock );
+    LIST_FOR_EACH_ENTRY_SAFE( memory, next, &left, struct pw_vk_memory, released )
+    {
+        pw_vk_free_memory( device, memory->memory );
+        free( memory );
+    }
+    free( found );
+    win32u_vkDestroyDevice( client_device, allocator );
+}
+
+static VkResult pw_vk_allocate_memory( VkDevice device, const VkMemoryAllocateInfo *info,
+                                       const VkAllocationCallbacks *allocator, VkDeviceMemory *memory )
+{
+    struct pw_vk_memory *record = malloc( sizeof(*record) );
+    struct rb_entry *stale;
+    VkResult res;
+
+    if (!record) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    if ((res = win32u_vkAllocateMemory( device, info, allocator, memory )))
+    {
+        free( record );
+        return res;
+    }
+    record->device = vulkan_device_from_handle( device );
+    record->memory = *memory;
+    record->handle = (UINT64)(UINT_PTR)*memory;
+    record->size = info->allocationSize;
+    pthread_mutex_lock( &pw_vk_lock );
+    if ((stale = rb_get( &pw_vk_memories, &record->handle )))
+    {
+        rb_remove( &pw_vk_memories, stale );
+        free( RB_ENTRY_VALUE( stale, struct pw_vk_memory, entry ) );
+    }
+    rb_put( &pw_vk_memories, &record->handle, &record->entry );
+    pthread_mutex_unlock( &pw_vk_lock );
+    return VK_SUCCESS;
+}
+
+static void pw_vkFreeMemory( VkDevice client_device, VkDeviceMemory client_memory, const VkAllocationCallbacks *allocator )
+{
+    UINT64 handle = (UINT64)(UINT_PTR)client_memory;
+    struct rb_entry *entry;
+
+    if (!client_memory) return;
+    pthread_mutex_lock( &pw_vk_lock );
+    if ((entry = rb_get( &pw_vk_memories, &handle ))) rb_remove( &pw_vk_memories, entry );
+    pthread_mutex_unlock( &pw_vk_lock );
+    if (!entry) return;  /* freed already, with its guest or its device */
+    free( RB_ENTRY_VALUE( entry, struct pw_vk_memory, entry ) );
+    win32u_vkFreeMemory( client_device, client_memory, allocator );
+}
+
+/* kernelbase's call when a guest has unloaded (tools/build-guest-hw.py); owner is its struct ps4_guest */
+struct pw_release_guest_vulkan_params
+{
+    UINT64 owner;
+    UINT64 bytes;     /* device memory freed */
+    UINT32 devices;   /* the guest's devices, kept */
+    UINT32 memories;  /* device memory objects freed */
+    UINT32 shared;    /* the guest's Zink devices, kept with their memory */
+    UINT32 others;    /* devices of the desktop or other guests */
+    UINT32 flags;     /* in: PW_GUEST_RELEASE_GL */
+    UINT32 gl_devices;   /* Zink devices of this world whose memory was freed */
+    UINT64 gl_bytes;
+    UINT32 gl_memories;
+    UINT32 heaps;     /* in: the process heaps of the guest's world (run-0185, for the guest memory line) */
+};
+
+/* run-0178: Mesa's WGL in this world let go of its screen (pw_wgl_release_screen, tools/vk-h0/patch-mesa-wgl-guest.py,
+ * with no guest running in the world): no one uses its Zink devices again */
+#define PW_GUEST_RELEASE_GL 1
+
+/* run-0185 (04.12: a terminated OpenGL guest, 524 MB of its Zink memory freed, and still 0.49 GB less free direct
+ * memory and 0.22 GB less free flexible memory at the next start): direct memory has two users, RADV's buffers and,
+ * since W175, Wine's commits of 1 MiB or more (pw_vm_direct_bytes, tools/build-audio-ps4.py). This line splits them,
+ * at a guest's start and before and after its release. Crema frees device memory once the GPU is done with it, and
+ * keeps the newest 96 MB of freed buffers per device until that device allocates or frees again. */
+extern int pw_wine_memory_info( unsigned long long *total, unsigned long long *available );  /* pw_wine_memory.c */
+/* A weak default: link-wine-boot.py links the proven virtual.o, without the counter, and an undefined weak symbol
+ * would be a dynamic import create-fself refuses; the hardware link's WoW64-world virtual.o has the real one. */
+__attribute__((weak,visibility("default"))) unsigned long long pw_vm_direct_bytes( unsigned int *runs )
+{
+    *runs = 0;
+    return 0;
+}
+extern size_t sceKernelGetDirectMemorySize( void );
+
+static void pw_vk_memory_line( UINT64 owner, BOOL wow, const char *why, UINT32 heaps )
+{
+    unsigned long long total = 0, available = 0, direct = sceKernelGetDirectMemorySize(), flexible, wine;
+    unsigned int runs = 0;
+
+    if (pw_wine_memory_info( &total, &available ) || total < direct || available + direct < total)
+    {
+        ERR( "PWVK guest_memory owner=%#llx wow=%d why=%s failed\\n", (unsigned long long)owner, wow, why );
+        return;
+    }
+    flexible = total - direct;
+    wine = pw_vm_direct_bytes( &runs );
+    ERR( "PWVK guest_memory owner=%#llx wow=%d why=%s direct_free=%llu flexible=%llu wine_direct=%llu wine_runs=%u "
+         "heaps=%u\\n", (unsigned long long)owner, wow, why, available - flexible, flexible, wine, runs, heaps );
+}
+
+/* kernelbase's call at a guest's start, and (run-0190) before an ended guest's heaps are destroyed
+ * (tools/build-guest-hw.py) */
+struct pw_guest_memory_params
+{
+    UINT64 owner;
+    UINT32 heaps;  /* the process heaps of the guest's world */
+    UINT32 why;    /* 0 start, 1 heaps_before */
+};
+
+static NTSTATUS pw_guest_memory( struct pw_guest_memory_params *params, BOOL wow )
+{
+    pw_vk_memory_line( params->owner, wow, params->why == 1 ? "heaps_before" : "start", params->heaps );
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pw_release_guest_vulkan( struct pw_release_guest_vulkan_params *params, BOOL wow )
+{
+    struct pw_vk_device *record;
+    struct pw_vk_memory *memory, *next;
+    struct list freed = LIST_INIT( freed ), gl = LIST_INIT( gl );
+
+    params->bytes = params->gl_bytes = 0;
+    params->devices = params->memories = params->shared = params->others = 0;
+    params->gl_devices = params->gl_memories = 0;
+    if (!params->owner) return STATUS_INVALID_PARAMETER;
+    pw_vk_memory_line( params->owner, wow, "release_before", params->heaps );  /* run-0185 */
+    pthread_mutex_lock( &pw_vk_lock );
+    LIST_FOR_EACH_ENTRY( record, &pw_vk_devices, struct pw_vk_device, entry )
+    {
+        /* run-0178: whichever guest made it; the device itself is kept, as a guest's. run-0190 (04.13: the second
+         * terminated OpenGL guest gave back nothing): and again each time Mesa's WGL lets go of its screen, since
+         * Zink's next screen takes the same VkDevice (zink_screen.c keeps one per physical device, device_table) */
+        if (record->shared && record->wow == wow && (params->flags & PW_GUEST_RELEASE_GL))
+        {
+            params->gl_devices++;
+            record->abandoned = TRUE;
+            record->owner = 0;
+            pw_vk_take_memory( record->device, &gl );
+        }
+        else if (record->owner != params->owner || record->wow != wow) params->others++;
+        else if (record->shared) params->shared++;
+        else
+        {
+            params->devices++;
+            record->owner = 0;  /* a later guest at the same address is another program */
+            pw_vk_take_memory( record->device, &freed );
+        }
+    }
+    pthread_mutex_unlock( &pw_vk_lock );
+    LIST_FOR_EACH_ENTRY_SAFE( memory, next, &freed, struct pw_vk_memory, released )
+    {
+        params->memories++;
+        params->bytes += memory->size;
+        pw_vk_free_memory( memory->device, memory->memory );
+        free( memory );
+    }
+    LIST_FOR_EACH_ENTRY_SAFE( memory, next, &gl, struct pw_vk_memory, released )
+    {
+        params->gl_memories++;
+        params->gl_bytes += memory->size;
+        pw_vk_free_memory( memory->device, memory->memory );
+        free( memory );
+    }
+    if (params->devices || params->shared || params->gl_devices)
+        ERR( "PWVK guest_release owner=%#llx wow=%d devices=%u memories=%u bytes=%llu shared=%u others=%u "
+             "gl_devices=%u gl_memories=%u gl_bytes=%llu\\n",
+                 (unsigned long long)params->owner, wow, params->devices, params->memories,
+                 (unsigned long long)params->bytes, params->shared, params->others, params->gl_devices,
+                 params->gl_memories, (unsigned long long)params->gl_bytes );
+    pw_vk_memory_line( params->owner, wow, "release_after", params->heaps );  /* run-0185 */
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS pw_guest_release_vulkan( void *args )
+{
+    return pw_release_guest_vulkan( args, FALSE );
+}
+
+static NTSTATUS pw_wow64_guest_release_vulkan( void *args )
+{
+    return pw_release_guest_vulkan( args, TRUE );
+}
+
+static NTSTATUS pw_guest_memory_native( void *args )
+{
+    return pw_guest_memory( args, FALSE );
+}
+
+static NTSTATUS pw_wow64_guest_memory( void *args )
+{
+    return pw_guest_memory( args, TRUE );
+}
+
+/* platform/ps4/pw_wine_unixlibs.c, "pwguest"; win32u's object keeps only default-visibility symbols global */
+__attribute__((visibility("default"))) const unixlib_entry_t pw_guest_unix_call_funcs[] =
+{
+    pw_guest_release_vulkan,
+    pw_guest_memory_native,  /* run-0185 */
+};
+__attribute__((visibility("default"))) const unixlib_entry_t pw_guest_unix_call_wow64_funcs[] =
+{
+    pw_wow64_guest_release_vulkan,
+    pw_wow64_guest_memory,  /* run-0185 */
+};
+
+/* W254: begin/end lines for the threads of explorer's 32-bit world (have_procs32, class.c W236) */''',
+       "Device memory records the guest that created its device; an ended guest's memory is freed (alpha-1, run-0165).")
+for _old,_new in (('    res = win32u_vkCreateInstance( info, allocator, instance );',
+                   '    res = pw_vk_create_instance( info, allocator, instance );  /* alpha-1 (run-0165) */'),
+                  ('    res = win32u_vkCreateDevice( physical_device, info, allocator, device );',
+                   '    res = pw_vk_create_device( physical_device, info, allocator, device );  /* alpha-1 (run-0165) */'),
+                  ('    win32u_vkDestroyDevice( device, allocator );',
+                   '    pw_vk_destroy_device( device, allocator );  /* alpha-1 (run-0165) */'),
+                  ('    res = win32u_vkAllocateMemory( device, info, allocator, memory );',
+                   '    res = pw_vk_allocate_memory( device, info, allocator, memory );  /* alpha-1 (run-0165) */'),
+                  ('    .p_vkFreeMemory = win32u_vkFreeMemory,',
+                   '    .p_vkFreeMemory = pw_vkFreeMemory,  /* alpha-1 (run-0165) */')):
+    revise('dlls/win32u/vulkan.c',_old,_new,'Vulkan devices and their memory are recorded with their guest (alpha-1, run-0165).')
+# alpha-1 (run-0215, 2026-11-17, 04.17: GTA San Andreas exited with status 0 twice without releasing its Direct3D
+# device; its 19 device memory objects, 170 MB, were freed at its end, and still 0.47 and 0.39 GB of direct memory that
+# is not Wine's own commits were lost). The device was kept, with what RADV allocates for itself and what the program's
+# leaked objects hold (command, descriptor and query pools, shader arenas, rings, the images of a swapchain nobody
+# destroyed). For a guest that ended through its own exit (not the overlay's or a crash's terminate), kernelbase now
+# also asks for its devices to go (PW_GUEST_RELEASE_DEVICES): its swapchains stop being GPU layers on the calling
+# thread, then a helper thread destroys the swapchains, waits for each device to be idle and destroys it. RADV's
+# buffers go back to Crema, which gives them back once its device has no queue left
+# (tools/vk-h0/patch-crema-release.py). The caller waits at most 3 s: a queue left busy, or a lock held, by one of the
+# guest's threads that was terminated at its exit blocks only the helper, which then keeps what it has not destroyed.
+# Swapchains are recorded for this (pw_swapchains); the program's own vkDestroySwapchainKHR drops them.
+# run-0219 (04.19): the instances went too, and every later start of GTA San Andreas died in vkCreateDevice
+# (c0000005 in the Unix call). Its real device is DXVK's: DXVK's d3d9.dll keeps one DxvkInstance for the whole process
+# (Singleton<DxvkInstance> g_dxvkInstance, released with the last Direct3D 9 object, which the game never releases),
+# and the 32-bit world keeps d3d9.dll loaded after the guest ("system_modules ... loaded=46 unloaded=1"). The next
+# start took the same VkInstance and VkPhysicalDevice, whose win32u objects the teardown had freed. Instances are not
+# destroyed any more: a module that stays loaded may hold them. Their VkDevices are each program's own.
+revise('dlls/win32u/vulkan.c','''struct swapchain
+{
+    struct vulkan_swapchain obj;
+    struct surface *surface;
+    VkExtent2D extents;
+};''','''struct swapchain
+{
+    struct vulkan_swapchain obj;
+    struct surface *surface;
+    VkExtent2D extents;
+    struct list pw_entry;             /* OrbisDesk alpha-1 (run-0215): in pw_swapchains */
+    struct vulkan_device *pw_device;
+};
+
+/* OrbisDesk alpha-1 (run-0215): every swapchain and its device, for an ended guest's teardown */
+static pthread_mutex_t pw_swapchain_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct list pw_swapchains = LIST_INIT( pw_swapchains );''','Swapchains record their device (alpha-1, run-0215).')
+revise('dlls/win32u/vulkan.c','''    instance->p_insert_object( instance, &swapchain->obj.obj );
+
+    *ret = swapchain->obj.client.swapchain;''','''    instance->p_insert_object( instance, &swapchain->obj.obj );
+    swapchain->pw_device = device;  /* alpha-1 (run-0215) */
+    pthread_mutex_lock( &pw_swapchain_lock );
+    list_add_tail( &pw_swapchains, &swapchain->pw_entry );
+    pthread_mutex_unlock( &pw_swapchain_lock );
+
+    *ret = swapchain->obj.client.swapchain;''','Swapchains record their device (alpha-1, run-0215).')
+revise('dlls/win32u/vulkan.c','''    device->p_vkDestroySwapchainKHR( device->host.device, swapchain->obj.host.swapchain, NULL );
+    instance->p_remove_object( instance, &swapchain->obj.obj );
+
+    free( swapchain );''','''    device->p_vkDestroySwapchainKHR( device->host.device, swapchain->obj.host.swapchain, NULL );
+    instance->p_remove_object( instance, &swapchain->obj.obj );
+    pthread_mutex_lock( &pw_swapchain_lock );  /* alpha-1 (run-0215) */
+    list_remove( &swapchain->pw_entry );
+    pthread_mutex_unlock( &pw_swapchain_lock );
+
+    free( swapchain );''','Swapchains record their device (alpha-1, run-0215).')
+revise('dlls/win32u/vulkan.c','''    BOOL abandoned;  /* Zink's, after Mesa's WGL let go of its screen once: its memory was freed */''','''    BOOL abandoned;  /* Zink's, after Mesa's WGL let go of its screen once: its memory was freed */
+    BOOL teardown;   /* run-0215: its guest ended by itself; the device goes after its memory */''',
+       'The devices of a guest that ended by itself are destroyed (alpha-1, run-0215).')
+revise('dlls/win32u/vulkan.c','''/* kernelbase's call when a guest has unloaded (tools/build-guest-hw.py); owner is its struct ps4_guest */''','''/* run-0215: the teardown of a guest that ended by itself, on a helper thread. It has no TEB: nothing here may call
+ * into Wine's user or debug code, so its line goes to stderr. Each step only uses objects that were taken out of the
+ * records first, so a helper that is stuck leaves nothing that anyone else would free again. run-0219: instances stay
+ * (a module that stays loaded, such as DXVK's d3d9.dll with its process-wide DxvkInstance, may use them again). */
+#define PW_GUEST_RELEASE_DEVICES 2
+struct pw_vk_teardown
+{
+    struct list devices;    /* struct pw_vk_device, out of pw_vk_devices */
+    struct list swapchains; /* struct swapchain, out of pw_swapchains, no longer GPU layers */
+    UINT64 owner;
+    BOOL wow;
+    UINT32 swapchain_count, device_count;
+    LONG done, refs;
+};
+
+static void pw_vk_teardown_release( struct pw_vk_teardown *teardown )
+{
+    if (!__atomic_sub_fetch( &teardown->refs, 1, __ATOMIC_ACQ_REL )) free( teardown );
+}
+
+static void *pw_vk_teardown_thread( void *arg )
+{
+    struct pw_vk_teardown *teardown = arg;
+    struct pw_vk_device *record, *next_record;
+    struct swapchain *swapchain, *next_swapchain;
+    struct timespec start, end;
+    unsigned int i;
+
+    clock_gettime( CLOCK_MONOTONIC, &start );
+    LIST_FOR_EACH_ENTRY_SAFE( swapchain, next_swapchain, &teardown->swapchains, struct swapchain, pw_entry )
+    {
+        struct vulkan_device *device = swapchain->pw_device;
+        struct vulkan_instance *owner = device->physical_device->instance;
+
+        device->p_vkDestroySwapchainKHR( device->host.device, swapchain->obj.host.swapchain, NULL );
+        owner->p_remove_object( owner, &swapchain->obj.obj );
+        list_remove( &swapchain->pw_entry );
+        free( swapchain );
+        teardown->swapchain_count++;
+    }
+    LIST_FOR_EACH_ENTRY_SAFE( record, next_record, &teardown->devices, struct pw_vk_device, entry )
+    {
+        struct vulkan_device *device = record->device;
+        struct vulkan_instance *owner = device->physical_device->instance;
+
+        device->p_vkDeviceWaitIdle( device->host.device );
+        device->p_vkDestroyDevice( device->host.device, NULL );
+        for (i = 0; i < device->queue_count; i++) owner->p_remove_object( owner, &device->queues[i].obj );
+        owner->p_remove_object( owner, &device->obj );
+        free( device );
+        list_remove( &record->entry );
+        free( record );
+        teardown->device_count++;
+    }
+    clock_gettime( CLOCK_MONOTONIC, &end );
+    fprintf( stderr, "PWVK guest_teardown owner=%#llx wow=%d swapchains=%u devices=%u ms=%lld\\n",
+             (unsigned long long)teardown->owner, teardown->wow, teardown->swapchain_count, teardown->device_count,
+             (long long)((end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000) );
+    __atomic_store_n( &teardown->done, 1, __ATOMIC_RELEASE );
+    pw_vk_teardown_release( teardown );
+    return NULL;
+}
+
+static void pw_vk_memory_line( UINT64 owner, BOOL wow, const char *why, UINT32 heaps );
+
+/* on kernelbase's thread: the guest's swapchains stop being GPU layers here (ps5drv's screen and window code needs a
+ * Wine thread), the rest goes on the helper; up to 3 s are waited for it */
+static void pw_vk_teardown( struct list *devices, UINT64 owner, BOOL wow, UINT32 heaps )
+{
+    struct pw_vk_teardown *teardown;
+    struct pw_vk_device *record, *next_record;
+    struct swapchain *swapchain, *next_swapchain;
+    pthread_attr_t attr;
+    pthread_t thread;
+    unsigned int waited;
+
+    if (list_empty( devices )) return;
+    if (!(teardown = calloc( 1, sizeof(*teardown) )))
+    {
+        ERR( "PWVK guest_teardown owner=%#llx kept: no memory\\n", (unsigned long long)owner );
+        return;  /* its devices stay, out of the records, as before this change */
+    }
+    list_init( &teardown->devices );
+    list_init( &teardown->swapchains );
+    teardown->owner = owner;
+    teardown->wow = wow;
+    teardown->refs = 2;
+    LIST_FOR_EACH_ENTRY_SAFE( record, next_record, devices, struct pw_vk_device, entry )
+    {
+        list_remove( &record->entry );
+        list_add_tail( &teardown->devices, &record->entry );
+        pthread_mutex_lock( &pw_swapchain_lock );
+        LIST_FOR_EACH_ENTRY_SAFE( swapchain, next_swapchain, &pw_swapchains, struct swapchain, pw_entry )
+        {
+            if (swapchain->pw_device != record->device) continue;
+            list_remove( &swapchain->pw_entry );
+            list_add_tail( &teardown->swapchains, &swapchain->pw_entry );
+        }
+        pthread_mutex_unlock( &pw_swapchain_lock );
+    }
+#ifdef __ORBIS__
+    LIST_FOR_EACH_ENTRY( swapchain, &teardown->swapchains, struct swapchain, pw_entry )
+    {
+        extern void ps5_vulkan_forget( HWND hwnd, UINT64 swapchain );  /* ps5drv.c */
+        ps5_vulkan_forget( swapchain->surface->hwnd, (UINT64)(UINT_PTR)swapchain->obj.host.swapchain );
+    }
+#endif
+    pthread_attr_init( &attr );
+    pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_DETACHED );
+    if (pthread_create( &thread, &attr, pw_vk_teardown_thread, teardown ))
+    {
+        pthread_attr_destroy( &attr );
+        ERR( "PWVK guest_teardown owner=%#llx kept: no thread\\n", (unsigned long long)owner );
+        return;  /* its devices stay, out of the records, as before this change */
+    }
+    pthread_attr_destroy( &attr );
+    for (waited = 0; waited < 3000 && !__atomic_load_n( &teardown->done, __ATOMIC_ACQUIRE ); waited += 10)
+        usleep( 10000 );
+    if (!__atomic_load_n( &teardown->done, __ATOMIC_ACQUIRE ))
+        ERR( "PWVK guest_teardown owner=%#llx wow=%d still running after %u ms: what it has not destroyed is kept\\n",
+             (unsigned long long)owner, wow, waited );
+    pw_vk_teardown_release( teardown );
+    pw_vk_memory_line( owner, wow, "teardown_after", heaps );
+}
+
+/* kernelbase's call when a guest has unloaded (tools/build-guest-hw.py); owner is its struct ps4_guest */''',
+       'The devices of a guest that ended by itself are destroyed (alpha-1, run-0215; instances stay, run-0219).')
+revise('dlls/win32u/vulkan.c','''    struct pw_vk_device *record;
+    struct pw_vk_memory *memory, *next;
+    struct list freed = LIST_INIT( freed ), gl = LIST_INIT( gl );''','''    struct pw_vk_device *record, *next_record;
+    struct pw_vk_memory *memory, *next;
+    struct list freed = LIST_INIT( freed ), gl = LIST_INIT( gl ), teardown = LIST_INIT( teardown );''',
+       'The devices of a guest that ended by itself are destroyed (alpha-1, run-0215).')
+revise('dlls/win32u/vulkan.c','''            pw_vk_take_memory( record->device, &freed );
+        }
+    }
+    pthread_mutex_unlock( &pw_vk_lock );''','''            pw_vk_take_memory( record->device, &freed );
+            if (params->flags & PW_GUEST_RELEASE_DEVICES) record->teardown = TRUE;  /* run-0215 */
+        }
+    }
+    LIST_FOR_EACH_ENTRY_SAFE( record, next_record, &pw_vk_devices, struct pw_vk_device, entry )
+    {
+        if (!record->teardown) continue;
+        list_remove( &record->entry );
+        list_add_tail( &teardown, &record->entry );
+    }
+    pthread_mutex_unlock( &pw_vk_lock );''','The devices of a guest that ended by itself are destroyed (alpha-1, run-0215).')
+revise('dlls/win32u/vulkan.c','''    pw_vk_memory_line( params->owner, wow, "release_after", params->heaps );  /* run-0185 */
+    return STATUS_SUCCESS;''','''    pw_vk_memory_line( params->owner, wow, "release_after", params->heaps );  /* run-0185 */
+    if (params->flags & PW_GUEST_RELEASE_DEVICES)  /* run-0215 */
+        pw_vk_teardown( &teardown, params->owner, wow, params->heaps );
+    return STATUS_SUCCESS;''','The devices of a guest that ended by itself are destroyed (alpha-1, run-0215).')
+# ESTIRAR in an emulated mode (W303 run-0214: THAW's 800x600 Zink image fitted 4:3 inside its 1280x720 window, the
+# bars inside the view): the full-screen window's image is the view when fit_image left bars around it; input and
+# the pointer follow its origin.
+revise('dlls/win32u/ps5drv.c','''static UINT input_width(void) { return max( screen_width, (UINT)max( monitor_rect.right, 0 ) ); }''','''/* the full-screen view's top-left in screen pixels: the image of a game in an emulated mode (present_screen) */
+static POINT view_origin;
+static UINT input_width(void) { return max( screen_width, (UINT)max( monitor_rect.right, 0 ) ); }''',
+       'The full-screen view can start inside the screen (ESTIRAR in an emulated mode).')
+revise('dlls/win32u/ps5drv.c','''        if (!fit)
+        {
+            static HWND shown_full;''','''        /* an emulated mode (Wine scales the program's 800x600 to the desktop): the window covers the screen and its
+         * Vulkan image is fitted inside with bars (fit_image). The image is the view, so the sink keeps its aspect
+         * or, with the overlay's ESTIRAR, fills the output; the pointer and input follow its origin. */
+        {
+            static RECT logged;
+            RECT image = {0};
+
+            if (full >= 0 && !mode_full && windows[full].vk_pixels && !windows[full].vk_child)
+            {
+                const struct ps5_window *window = &windows[full];
+
+                image = window->vk_rect;
+                if (image.left <= window->client.left && image.top <= window->client.top &&
+                    image.right >= window->client.right && image.bottom >= window->client.bottom)
+                    SetRectEmpty( &image );  /* it fills its window: no bars */
+            }
+            if (!IsRectEmpty( &image ) && image.left >= 0 && image.top >= 0)
+            {
+                view_origin.x = image.left;
+                view_origin.y = image.top;
+                view_width = image.right - image.left;
+                view_height = image.bottom - image.top;
+            }
+            else
+            {
+                view_origin.x = view_origin.y = 0;
+                SetRectEmpty( &image );
+            }
+            if (!EqualRect( &image, &logged ))
+            {
+                if (!IsRectEmpty( &image ))
+                    fprintf( stderr, "PWSINK fullscreen image hwnd=%p origin=%d,%d %ux%u client=%d,%d-%d,%d\\n",
+                             windows[full].hwnd, (int)image.left, (int)image.top, view_width, view_height,
+                             (int)windows[full].client.left, (int)windows[full].client.top,
+                             (int)windows[full].client.right, (int)windows[full].client.bottom );
+                else if (!IsRectEmpty( &logged )) fprintf( stderr, "PWSINK fullscreen image off\\n" );
+                logged = image;
+            }
+        }
+        if (!fit)
+        {
+            static HWND shown_full;''','The view of a game in an emulated mode is its image (ESTIRAR).')
+revise('dlls/win32u/ps5drv.c','''        if (pw_stack_log)  /* W256: flags 0x1 is a Vulkan image read by address */''','''        if (view_origin.x || view_origin.y)  /* the view starts inside the screen (an emulated mode's image) */
+            for (i = 0; i < count; i++)
+            {
+                layers[i].left -= view_origin.x;
+                layers[i].right -= view_origin.x;
+                layers[i].top -= view_origin.y;
+                layers[i].bottom -= view_origin.y;
+            }
+        if (pw_stack_log)  /* W256: flags 0x1 is a Vulkan image read by address */''',
+       'Layers in the view, which can start inside the screen (ESTIRAR).')
+revise('dlls/win32u/ps5drv.c','''            cursor.x = min( max( event.x, 0 ), (INT)input_width() - 1 );  /* W265 */
+            cursor.y = min( max( event.y, 0 ), (INT)input_height() - 1 );''','''            /* the pointer is in the view; the view can start inside the screen (an emulated mode's image) */
+            cursor.x = min( max( event.x + view_origin.x, 0 ), (INT)input_width() - 1 );  /* W265 */
+            cursor.y = min( max( event.y + view_origin.y, 0 ), (INT)input_height() - 1 );''',
+       'Absolute pointer input in the view (ESTIRAR).')
+revise('dlls/win32u/ps5drv.c','''    RECT vk_rect;
+''','''    RECT vk_rect;
+    BOOL vk_child;          /* the image is a child window's (W229), not the window's own */
+''','Whose image a layer is (ESTIRAR).')
+revise('dlls/win32u/ps5drv.c','''        window->vk_rect = fit_image( child || IsRectEmpty( &window->client ) ? client : &window->client, width, height );''',
+       '''        window->vk_rect = fit_image( child || IsRectEmpty( &window->client ) ? client : &window->client, width, height );
+        window->vk_child = child;''','Whose image a layer is (ESTIRAR).')
+# 04.19 (SeaMonkey on OpenGL through Zink: a blue area over its title bar, run-0219 has no line that places it): the
+# first frame of each swapchain in a window logs where its image goes, and the next two stacks are listed.
+revise('dlls/win32u/ps5drv.c','''        window->vk_rect = fit_image( child || IsRectEmpty( &window->client ) ? client : &window->client, width, height );
+        window->vk_child = child;
+''','''        window->vk_rect = fit_image( child || IsRectEmpty( &window->client ) ? client : &window->client, width, height );
+        window->vk_child = child;
+        if (window->vk_swapchain != swapchain)  /* 04.19: a new swapchain's first frame in this window */
+        {
+            fprintf( stderr, "PWVK layer hwnd=%p window=%p child=%d image=%ux%u visible=(%d,%d)-(%d,%d) "
+                     "client=(%d,%d)-(%d,%d) passed=(%d,%d)-(%d,%d) at=(%d,%d)-(%d,%d)\\n", hwnd, window->hwnd, child,
+                     width, height, window->visible.left, window->visible.top, window->visible.right,
+                     window->visible.bottom, window->client.left, window->client.top, window->client.right,
+                     window->client.bottom, client->left, client->top, client->right, client->bottom,
+                     window->vk_rect.left, window->vk_rect.top, window->vk_rect.right, window->vk_rect.bottom );
+            pw_stack_log = 2;
+        }
+''','Where a new swapchain\'s image goes, and the stacks after it (04.19).')
+
+# 04.26 (04.25 on the console, SeaMonkey with OpenGL on: its GPU image showed 34 pixels too high, the menu bar cut,
+# a black band under the status bar, clicks acting higher than shown; 34 is the window's height minus its client
+# height there, run-0224's visible=(90,46)-(976,720) client=(94,76)-(972,716)). The PWVK layer line comes only at a
+# swapchain's first frame in a window; the swapchain SeaMonkey made after it, and any resize, were not logged. Here
+# each window's image size, client size and window size are logged when any of them changes (the first 64 changes of
+# the title): an image as tall as the window rather than the client, or a stale one after a resize, shows there.
+# Read only.
+revise('dlls/win32u/vulkan.c','''    pw_wine_vk_window_presented( (unsigned long long)(UINT_PTR)hwnd );  /* W242 */
+''','''    pw_wine_vk_window_presented( (unsigned long long)(UINT_PTR)hwnd );  /* W242 */
+    {
+        /* 04.26: image, client and window sizes when one of them changes (tools/build-win32u-ps4.py). Read only. */
+        static HWND last_hwnd;
+        static UINT last[6];
+        static LONG changes;
+        struct ratio pw_dpi = get_dpi_for_window( hwnd );
+        RECT pw_client, pw_window;
+        UINT now[6];
+
+        if (get_client_rect( hwnd, &pw_client, pw_dpi ) && get_window_rect( hwnd, &pw_window, pw_dpi ))
+        {
+            now[0] = width;
+            now[1] = height;
+            now[2] = pw_client.right - pw_client.left;
+            now[3] = pw_client.bottom - pw_client.top;
+            now[4] = pw_window.right - pw_window.left;
+            now[5] = pw_window.bottom - pw_window.top;
+            if ((hwnd != last_hwnd || memcmp( now, last, sizeof(now) )) && InterlockedIncrement( &changes ) <= 64)
+                ERR( "PWVK size hwnd=%p swapchain=%s image=%ux%u client=%ux%u window=%ux%u%s\\n", hwnd,
+                     wine_dbgstr_longlong( (ULONGLONG)host_swapchain ), now[0], now[1], now[2], now[3], now[4], now[5],
+                     now[0] != now[2] || now[1] != now[3] ? " differs" : "" );
+            last_hwnd = hwnd;
+            memcpy( last, now, sizeof(now) );
+        }
+    }
+''','The size of each Vulkan image against its window, when one changes (04.26).')
+# 04.30 (04.29 on the console, SeaMonkey with OpenGL on, run-0254 and run-0255): "PWVK size hwnd=0x1c00b4 image=1154x617
+# client=1154x617 window=1162x651", and the image goes at the client area ("PWVK layer ... at=(74,50)-(1228,667)"). So
+# the 34-pixel shift is inside the image: the program drew a frame as tall as its window into a drawable as tall as
+# its client area (GL's rows go bottom-up). Gecko's compositor runs on its own thread and reads its widget's size
+# there. 04.32 (04.30 on the console, run-0262): the 04.30 trace, armed at the first present of a framed window and
+# kept to that window, logged nothing, although Mesa's WGL reads the client rect of its window at each swap, on the
+# swapping thread. Now GetClientRect and GetWindowRect from a thread other than the window's own are logged for any window, once
+# per window, thread, kind and returned size, the first 48: which window and which size each thread got, from the
+# start. Cross-thread reads are rare in Windows programs, so this stays short. With
+# tools/vk-h0/patch-mesa-gl-viewport-trace.py (the viewport Gecko sets and the drawable Mesa reads) one run tells
+# which size was the window's. Read only.
+revise('dlls/win32u/window.c','''/* see GetClientRect */
+BOOL get_client_rect( HWND hwnd, RECT *rect, struct ratio dpi )
+''','''/* 04.32 (tools/build-win32u-ps4.py): a window's rectangle read by a thread other than its own, once per window,
+ * thread, kind and size, the first 48 */
+static void pw_rect_trace( const char *what, HWND hwnd, UINT dpi, BOOL ret, const RECT *rect )
+{
+    static struct { HWND hwnd; DWORD thread; char what; LONG cx, cy; } seen[64];
+    static LONG count;
+    DWORD thread, owner;
+    LONG cx, cy;
+    unsigned int i;
+
+    if (count >= 48) return;
+    thread = GetCurrentThreadId();
+    owner = get_window_thread( hwnd, NULL );
+    if (!owner || owner == thread) return;
+    cx = ret ? rect->right - rect->left : -1;
+    cy = ret ? rect->bottom - rect->top : -1;
+    for (i = 0; i < ARRAY_SIZE(seen) && seen[i].hwnd; i++)
+        if (seen[i].hwnd == hwnd && seen[i].thread == thread && seen[i].what == what[0]) break;
+    if (i < ARRAY_SIZE(seen))
+    {
+        if (seen[i].hwnd && seen[i].cx == cx && seen[i].cy == cy) return;
+        seen[i].hwnd = hwnd;
+        seen[i].thread = thread;
+        seen[i].what = what[0];
+        seen[i].cx = cx;
+        seen[i].cy = cy;
+    }
+    if (InterlockedIncrement( &count ) > 48) return;
+    ERR( "PWRECT %s hwnd=%p thread=%04x owner=%04x dpi=%u ret=%d rect=%s\\n", what, hwnd, (int)thread, (int)owner,
+         dpi, ret, ret ? wine_dbgstr_rect( rect ) : "-" );
+}
+
+/* see GetClientRect */
+BOOL get_client_rect( HWND hwnd, RECT *rect, struct ratio dpi )
+''','Rectangle reads from other threads (04.32).')
+revise('dlls/win32u/window.c','''    case NtUserCallHwndParam_GetWindowRect:
+    {
+        struct get_window_rects_params *params = (void *)param;
+        struct ratio dpi = {params->dpi, 1};
+        return get_window_rect( hwnd, params->rect, dpi );
+    }
+    case NtUserCallHwndParam_GetClientRect:
+    {
+        struct get_window_rects_params *params = (void *)param;
+        struct ratio dpi = {params->dpi, 1};
+        return get_client_rect( hwnd, params->rect, dpi );
+    }
+''','''    case NtUserCallHwndParam_GetWindowRect:
+    {
+        struct get_window_rects_params *params = (void *)param;
+        struct ratio dpi = {params->dpi, 1};
+        BOOL ret = get_window_rect( hwnd, params->rect, dpi );
+
+        pw_rect_trace( "window", hwnd, params->dpi, ret, params->rect );
+        return ret;
+    }
+    case NtUserCallHwndParam_GetClientRect:
+    {
+        struct get_window_rects_params *params = (void *)param;
+        struct ratio dpi = {params->dpi, 1};
+        BOOL ret = get_client_rect( hwnd, params->rect, dpi );
+
+        pw_rect_trace( "client", hwnd, params->dpi, ret, params->rect );
+        return ret;
+    }
+''','Rectangle reads from other threads (04.32).')
+
+# 04.24, PES 2014 settings.exe (run-0224): WinForms draws the text of its own controls with a
+# LOGFONT that keeps the Font's GdiCharSet. A form designed on Japanese Windows asks for charset
+# 128 (Shift-JIS). No staged font covers it (Tahoma, Tahoma Bold, Marlett; no fontconfig), so
+# find_matching_face drops the charset filter and find_any_face takes the first family in name
+# order: Marlett, a symbol-only font. Every label, button and radio text came out as Marlett's
+# window glyphs. Windows' mapper never gives a symbol font to a request that did not name it or
+# ask for SYMBOL_CHARSET; skip symbol-only faces in that charset-less fallback, and take them only
+# when nothing else exists.
+revise('dlls/win32u/font.c','''    /* otherwise try only scalable */
+    WINE_RB_FOR_EACH_ENTRY( family, &family_name_tree, struct gdi_font_family, name_entry )
+    {
+        if ((family->family_name[0] == '@') == !want_vertical) continue;
+        if ((face = find_best_matching_face( family, lf, fs, FALSE ))) return face;
+    }
+    if (!can_use_bitmap) return NULL;
+    /* then also bitmap fonts */
+    WINE_RB_FOR_EACH_ENTRY( family, &family_name_tree, struct gdi_font_family, name_entry )
+    {
+        if ((family->family_name[0] == '@') == !want_vertical) continue;
+        if ((face = find_best_matching_face( family, lf, fs, can_use_bitmap ))) return face;
+    }
+    return NULL;
+}
+''','''    /* otherwise try only scalable */
+    WINE_RB_FOR_EACH_ENTRY( family, &family_name_tree, struct gdi_font_family, name_entry )
+    {
+        if ((family->family_name[0] == '@') == !want_vertical) continue;
+        if ((face = find_best_matching_face( family, lf, fs, FALSE )) &&
+            !pw_symbol_only_fallback( face, lf, fs )) return face;
+    }
+    if (!can_use_bitmap) return NULL;
+    /* then also bitmap fonts */
+    WINE_RB_FOR_EACH_ENTRY( family, &family_name_tree, struct gdi_font_family, name_entry )
+    {
+        if ((family->family_name[0] == '@') == !want_vertical) continue;
+        if ((face = find_best_matching_face( family, lf, fs, can_use_bitmap )) &&
+            !pw_symbol_only_fallback( face, lf, fs )) return face;
+    }
+    return NULL;
+}
+''','A symbol-only font is not a fallback for text (04.24, run-0224).')
+revise('dlls/win32u/font.c','''static struct gdi_font_face *find_any_face( const LOGFONTW *lf, FONTSIGNATURE fs,
+                                            BOOL can_use_bitmap, BOOL want_vertical )
+{''','''/* OrbisDesk 04.24 (run-0224): with the charset filter off (no font has the requested charset),
+ * a face that only has a symbol code page is no fallback for text unless symbols were asked for.
+ * The runtime's fonts are Tahoma and Marlett, and Marlett comes first in name order. */
+static BOOL pw_symbol_only_fallback( const struct gdi_font_face *face, const LOGFONTW *lf, FONTSIGNATURE fs )
+{
+    static int logged;
+
+    if (fs.fsCsb[0] || lf->lfCharSet == SYMBOL_CHARSET) return FALSE;
+    if (!(face->fs.fsCsb[0] & FS_SYMBOL) || (face->fs.fsCsb[0] & ~FS_SYMBOL)) return FALSE;
+    if (logged < 8)
+    {
+        logged++;
+        ERR( "PWFONT %s charset %u: no font has its charset; not the symbol font %s\\n",
+             debugstr_w(lf->lfFaceName), lf->lfCharSet, debugstr_w(face->family->family_name) );
+    }
+    return TRUE;
+}
+
+static struct gdi_font_face *find_any_face( const LOGFONTW *lf, FONTSIGNATURE fs,
+                                            BOOL can_use_bitmap, BOOL want_vertical )
+{''','The symbol-only test and its log (04.24, run-0224).')
+revise('dlls/win32u/font.c','''    if (want_vertical && (face = find_any_face( lf, csi->fs, can_use_bitmap, FALSE ))) return face;
+    return NULL;
+}''','''    if (want_vertical && (face = find_any_face( lf, csi->fs, can_use_bitmap, FALSE ))) return face;
+    /* OrbisDesk 04.24: only symbol fonts are installed; they are still better than no font */
+    {
+        struct gdi_font_family *family;
+
+        WINE_RB_FOR_EACH_ENTRY( family, &family_name_tree, struct gdi_font_family, name_entry )
+        {
+            if (family->family_name[0] == '@') continue;
+            if ((face = find_best_matching_face( family, lf, csi->fs, can_use_bitmap ))) return face;
+        }
+    }
+    return NULL;
+}''','The last resort when only symbol fonts exist (04.24, run-0224).')
+
+# 04.26 (W303 run-0238, mouse look in Alan Wake's American Nightmare): the title's pointer (native/hw_pad.c) follows
+# the cursor after relative motion, which the USB mouse now is, and after a program's SetCursorPos.
+revise('dlls/win32u/ps5drv.c','''unsigned long long pw_hw_separate_window( int x, int y ) { (void)x; (void)y; return 0; }
+''','''unsigned long long pw_hw_separate_window( int x, int y ) { (void)x; (void)y; return 0; }
+/* 04.26: the title's pointer (native/hw_pad.c) starts from where the cursor is, in view pixels: after relative motion
+ * and after a program's SetCursorPos. This weak default does nothing in links without it. */
+void pw_hw_pad_pointer_at( int x, int y ) __attribute__((weak, visibility("default")));
+void pw_hw_pad_pointer_at( int x, int y ) { (void)x; (void)y; }
+''','The title pointer follows the cursor (mouse look).')
+revise('dlls/win32u/ps5drv.c','''            cursor.x = min( max( cursor.x + event.x, 0 ), (INT)input_width() - 1 );  /* W265 */
+            cursor.y = min( max( cursor.y + event.y, 0 ), (INT)input_height() - 1 );
+            break;''','''            cursor.x = min( max( cursor.x + event.x, 0 ), (INT)input_width() - 1 );  /* W265 */
+            cursor.y = min( max( cursor.y + event.y, 0 ), (INT)input_height() - 1 );
+            pw_hw_pad_pointer_at( cursor.x - view_origin.x, cursor.y - view_origin.y );  /* 04.26 */
+            break;''','The title pointer follows relative motion (mouse look).')
+revise('dlls/win32u/ps5drv.c','''static BOOL ps5_SetCursorPos( INT x, INT y )
+{
+    cursor.x = x;
+    cursor.y = y;
+    return TRUE;
+}''','''static BOOL ps5_SetCursorPos( INT x, INT y )
+{
+    static UINT warps;
+
+    cursor.x = x;
+    cursor.y = y;
+    /* 04.26: mouse look puts the cursor back in the middle (GetCursorPos and SetCursorPos, dinput's exclusive mouse):
+     * the title's pointer starts from here, or its next move would carry the old position (W303 run-0238) */
+    pw_hw_pad_pointer_at( x - view_origin.x, y - view_origin.y );
+    if (++warps <= 8 || !(warps % 1000))
+        fprintf( stderr, "PWINPUT warp n=%u to %d,%d (SetCursorPos) tid=%04x\\n", warps, (int)x, (int)y,
+                 (UINT)GetCurrentThreadId() );
+    return TRUE;
+}''','A program warp moves the title pointer (mouse look).')
+
 target=overlay/'dlls/win32u/freetype.c'
 target.write_text(target.read_text().replace('dlclose(ft_handle);','/* Static FreeType: no dynamic library handle to close. */'))
 makefile=(UNIX/'Makefile').read_text().splitlines()

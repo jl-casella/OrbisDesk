@@ -30,6 +30,9 @@ extern const void *pw_crypt32_unix_call_funcs[],*pw_crypt32_unix_call_wow64_func
 extern const void *pw_dwrite_unix_call_funcs[],*pw_dwrite_unix_call_wow64_funcs[];
 /* W178 (phase 7): xinput's Unix side, the console's pad as controller 0 (tools/build-xinput-hw.py) */
 extern const void *pw_xinput_unix_call_funcs[],*pw_xinput_unix_call_wow64_funcs[];
+/* alpha-1 (run-0165): "pwguest", kernelbase's calls at a guest's end that reach win32u's Unix side: the Vulkan
+ * device memory an ended guest left is freed (tools/build-win32u-ps4.py, tools/build-guest-hw.py) */
+extern const void *pw_guest_unix_call_funcs[],*pw_guest_unix_call_wow64_funcs[];
 /* The pad comes from the hardware launcher (native/hw_pad.c). An ELF without it has no pad:
  * xinput's pad_init then fails and xinput keeps its HID path. */
 __attribute__((weak)) int pw_wine_pad_available(void)

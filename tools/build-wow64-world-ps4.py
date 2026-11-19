@@ -832,6 +832,58 @@ replace('virtual','''        fprintf( stderr, "PWBOOT image_map_addr_unavailable
             fprintf( stderr, "PWBOOT image_map_addr_unavailable requested=%llx mapped=%p\\n",
                      (unsigned long long)pe_mapping->image.map_addr, view->base );''')
 
+# 04.25 (run-0226, DOOM3.exe: "unaligned shared mapping 0x2b26000-0x2b27000 not supported"): a writable shared
+# image section (IMAGE_SCN_MEM_SHARED | IMAGE_SCN_MEM_WRITE) is a MAP_SHARED mapping of the server's shared-section
+# file, which the 16 KB host page allows only when the section covers whole host pages. A 4 KB-aligned section
+# that does not gets a private copy of that file's bytes instead, the way unaligned private sections are read
+# (map_file_into_view's read fallback). Every guest lives in this one process, so no other process maps the
+# section; what is lost is sharing between two guests that load the same image (each has its own copy). A
+# failed read keeps the image from loading, as before. Writable shared views of data files are unchanged.
+replace('virtual','''/***********************************************************************
+ *           get_committed_size
+''','''#ifdef __ORBIS__
+/* OrbisDesk 04.25: a writable shared image section that is not whole host pages becomes a private copy. */
+static NTSTATUS pw_map_shared_section( struct file_view *view, const UNICODE_STRING *nt_name, const BYTE *name,
+                                       int fd, size_t start, size_t size, off_t offset )
+{
+    char *map_addr = ROUND_ADDR( (char *)view->base + start, page_mask );
+    char *host_addr = ROUND_ADDR( (char *)view->base + start, host_page_mask );
+    size_t map_size = ROUND_SIZE( start, size, page_mask ), host_size;
+    ssize_t copied;
+
+    /* the same test as map_file_into_view's */
+    if (map_addr + map_size >= (char *)view->base + view->size) host_size = map_size;
+    else host_size = ROUND_SIZE( 0, map_size, host_page_mask );
+    if (host_addr == map_addr && host_size == map_size)
+        return map_file_into_view( view, fd, start, size, offset, VPROT_COMMITTED | VPROT_READ | VPROT_WRITE, FALSE );
+
+    mprotect( map_addr, map_size, PROT_READ | PROT_WRITE );
+    copied = pread( fd, map_addr, map_size, offset );
+    fprintf( stderr, "PWLOAD shared_section_private image=%s section=%.8s address=%p size=%zx offset=%llx "
+             "host_page=%zx copied=%zd errno=%d\\n", debugstr_us(nt_name), name, map_addr, map_size,
+             (unsigned long long)offset, (size_t)host_page_size, copied, copied < 0 ? errno : 0 );
+    if (copied < 0) return STATUS_INVALID_PARAMETER;
+    /* the server's file holds every shared section at full size; zero a shorter tail all the same */
+    if ((size_t)copied < map_size) memset( map_addr + copied, 0, map_size - copied );
+    return STATUS_SUCCESS;
+}
+#endif
+
+
+/***********************************************************************
+ *           get_committed_size
+''')
+replace('virtual','''            if (map_file_into_view( view, shared_fd, sec[i].VirtualAddress, map_size, pos,
+                                    VPROT_COMMITTED | VPROT_READ | VPROT_WRITE, FALSE ) != STATUS_SUCCESS)
+''','''#ifdef __ORBIS__
+            if (pw_map_shared_section( view, nt_name, sec[i].Name, shared_fd, sec[i].VirtualAddress, map_size,
+                                       pos ) != STATUS_SUCCESS)  /* OrbisDesk 04.25 */
+#else
+            if (map_file_into_view( view, shared_fd, sec[i].VirtualAddress, map_size, pos,
+                                    VPROT_COMMITTED | VPROT_READ | VPROT_WRITE, FALSE ) != STATUS_SUCCESS)
+#endif
+''')
+
 # W255 (W253: Vice City ended with no signal and no CE- code): Wine's own exits leave a line.
 replace('thread','''void abort_process( int status )
 {

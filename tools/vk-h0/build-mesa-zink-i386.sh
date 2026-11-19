@@ -53,6 +53,8 @@ if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ] || [ "$old_cross" != "$(c
     -Dtools= -Dgallium-va=disabled -Dgallium-rusticl=false
 fi
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-zink.py $SRC
+# alpha-1 (run-0178: a terminated OpenGL guest left its contexts in the one Zink device): the screen can be released
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-wgl-guest.py $SRC
 # W264 (W262: every 32-bit program that loaded this Mesa ended the app): no WGL hook on the process's other threads
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-wgl-hooks.py $SRC
 # W266 (W264: Call of Duty's "zink: could not create swapchain" after a surface for hwnd 0): WGL/kopper traces
