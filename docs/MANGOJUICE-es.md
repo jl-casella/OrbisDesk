@@ -120,6 +120,30 @@ En cuanto MangoHud leyó el archivo de MangoJuice, mostrar y ocultar desde el ov
 
 Hardware, versión de la app 04.08 (run-0158): d3d9test32 se ejecutó como invitado de 32 bits con MangoHud cargado (`loaded32=1`). El overlay envió dos veces `Shift+F12 held 250 ms`, y el usuario vio cómo el HUD se ocultaba y volvía. La desaparición de la fila de GPU al desmarcarla se vio en vkcube con la 04.06. Las demás combinaciones no se comprobaron en la 04.08: la alternancia en un programa de 64 bits, la fila de GPU en un programa de 32 bits y que Estadisticas lea el archivo.
 
+### Programas que nunca muestran MangoHud (04.26)
+
+El usuario decidió el 2026-11-18 que MangoHud no se muestra nunca para `seamonkey.exe`. Todos los demás programas lo conservan, con los ajustes de MangoJuice y el mostrar y ocultar del overlay.
+- [build-guest-hw.py](../tools/build-guest-hw.py) guarda la lista (`ps4_guest_no_hud`), por el nombre de archivo del EXE invitado.
+- El cargador de Vulkan lee la `disable_environment` de MangoHud, `DISABLE_MANGOHUD`, en cada `vkCreateInstance`. Todos los invitados comparten el entorno de explorer, así que `GetEnvironmentVariableW` de kernelbase responde `1` a un hilo de un invitado de la lista, y solo a él. El cargador deja entonces la capa fuera de la cadena de ese programa. `libMangoHud.dll` puede estar ya cargada por otro programa, pero no intercepta ni dibuja nada para este. La primera vez, el log tiene `PWGUEST mangohud excluded module=…`.
+- El cerrador informa de que no hay MangoHud delante para un programa de la lista (`PWOVERLAY mangohud in_front=0 … excluded=1`). Así que ESTADISTICAS del overlay enciende allí su propia lectura y no envía Shift+F12.
+- [build-wine-hardware.py](../tools/build-wine-hardware.py) registra la lista en el manifiesto del paquete (`mangohud.excluded_programs`).
+
+### Mostrar y ocultar en un programa que deja de presentar (04.26)
+
+Run-0234 (SeaMonkey, OpenGL activado) muestra por qué el usuario no podía ocultar MangoHud allí. No es algo propio de SeaMonkey: afecta a todo programa con MangoHud que deja de presentar, como una página estática o un programa en pausa que no redibuja.
+- El cerrador contaba MangoHud delante solo mientras una swapchain de Vulkan hubiera presentado en la ventana de delante en los últimos 2 s. Una página que no cambia no presenta nada. Con la ventana de SeaMonkey delante el informe pasaba de 0 a 1 (`in_front=0 window=0x900ba presented=0`). El overlay también necesitaba una presentación en los últimos 2 s. Mientras cualquiera de los dos era 0, ESTADISTICAS alternaba la lectura propia del overlay, no MangoHud.
+- MangoHud lee su tecla en su gancho de presentación, como mucho cada 100 ms. El overlay mantenía Shift+F12 durante 250 ms, así que sin ninguna presentación en ese tiempo la tecla no se leía.
+- Ahora el cerrador conserva el estado que tenía la ventana de delante mientras presentaba, hasta que otra ventana pase delante. ESTADISTICAS del overlay actúa sobre MangoHud siempre que el cerrador lo informa delante.
+- El overlay mantiene Shift+F12 al menos 250 ms y hasta la primera presentación de Vulkan después (un contador en [wine_vk_runtime.c](../native/wine_vk_runtime.c), que sube después de que haya corrido el gancho de MangoHud), como mucho 3 s. MangoHud solo vuelve a alternar después de 400 ms pulsada, así que la tecla se suelta en la primera presentación pasados 250 ms. El log tiene `PWOVERLAY mangohud key up: … ms, … presents`. `0 presents` significa que el programa no dibujó nada en 3 s, y MangoHud no leyó la tecla.
+- [hw_overlay.c](../native/hw_overlay.c), kernelbase y `wine_vk_runtime.c` compilan sin avisos nuevos: el overlay y el runtime para la consola con `-Wall`, y kernelbase para x86_64 e i386 con los comandos registrados del builder.
+
+### La fila de RAM en GiB (04.26)
+
+En la 04.25, la fila de RAM de MangoHud marcaba "859.8 GiB" en la consola. `src/memory_win32.cpp`, del fork MangoHud-Windows, divide los bytes de `GlobalMemoryStatusEx` entre 1024 * 1024, así que guarda la memoria usada, la total y la de intercambio en MiB. `src/hud_elements.cpp` las rotula como GiB, como las guarda MangoHud en Linux, y su log y su gráfica de RAM también las usan como GiB. Así que la fila mostraba 859.8 MiB, y lo tenía todo HUD con la fila de RAM, de 32 y de 64 bits.
+- [patch-mangohud-win-memory.py](../tools/vk-h0/patch-mangohud-win-memory.py) guarda los tres valores en GiB.
+- [build-mangohud.sh](../tools/vk-h0/build-mangohud.sh) lo aplica y registra `src/memory_win32.cpp`. [build-mangohud-i386.sh](../tools/vk-h0/build-mangohud-i386.sh) comprueba su marca, y [build-wine-hardware.py](../tools/build-wine-hardware.py) rechaza un árbol sin ella.
+- El archivo parcheado compila con llvm-mingw para x86_64 e i686 con `-Wall -Wextra`, sin avisos. No se tocan los ajustes de MangoJuice ni el mostrar y ocultar del overlay.
+
 ## Qué se comprobó y qué no
 
 - El builder se ejecutó de principio a fin.

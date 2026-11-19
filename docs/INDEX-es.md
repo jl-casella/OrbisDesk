@@ -222,7 +222,10 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 
 - [CI-es.md](CI-es.md) — Ejecutar CI y medir la matriz de plataforma
 - [DESKTOP_BACKGROUND-es.md](DESKTOP_BACKGROUND-es.md) — Diálogo de fondo de escritorio: tus propias imágenes como fondo (borrador)
+- [FPS_LIMIT-es.md](FPS_LIMIT-es.md) — Límite de FPS (por programa)
+- [FRAME_GENERATION-es.md](FRAME_GENERATION-es.md) — Generación de fotogramas (experimental)
 - [MANGOJUICE-es.md](MANGOJUICE-es.md) — MangoJuice: el programa de ajustes de MangoHud
+- [OVERLAY_MENU-es.md](OVERLAY_MENU-es.md) — El menú del overlay con L3+R3 (04.31)
 - [POP_SEPARATE_PROCESS-es.md](POP_SEPARATE_PROCESS-es.md) — Procesos de Windows separados (fases B–D de PoP)
 - [PROCESS_FAMILY_PROBES-es.md](PROCESS_FAMILY_PROBES-es.md) — Sondas de familias de procesos para launchers de base fija
 - [RELEASES-es.md](RELEASES-es.md) — Construcción del producto, releases y rama de desarrollo

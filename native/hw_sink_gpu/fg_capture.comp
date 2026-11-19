@@ -1,0 +1,31 @@
+#version 450
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Frame generation, stage 2 (docs/FRAME_GENERATION.md): the presented image becomes the generator's own. One
+// invocation per luminance texel copies its 2x2 pixels from where Mesa's headless WSI left them (read by GPU
+// address, as screen.frag reads image layers) into the current history slot, tightly packed, and writes their
+// mean luminance. As in screen.frag (W153) the address is the uniform base plus a 32-bit offset, so ACO reads
+// it with MUBUF and not FLAT; framegen.inc.c checks the compiled code. Reads are never inside a branch (W149);
+// only the stores are.
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_GOOGLE_include_directive : require
+#include "fg_common.glsl"
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Word { uint word; };
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  uvec2 l = gl_GlobalInvocationID.xy;
+  bool inside = all(lessThan(l, p.luma));
+  uvec2 lc = min(l, p.luma - 1u);
+  uint64_t base = packUint2x32(p.source);
+  float sum = 0.0;
+  for (uint j = 0u; j < 2u; ++j)
+    for (uint i = 0u; i < 2u; ++i) {
+      uvec2 want = lc * 2u + uvec2(i, j);
+      uvec2 px = min(want, p.size - 1u);
+      uint word = Word(base + uint64_t((px.y * p.stride + px.x) * 4u)).word;
+      if (inside && all(equal(want, px))) cur_color[px.y * p.size.x + px.x] = word;
+      sum += luma_of(word);
+    }
+  if (inside) cur_luma[l.y * p.luma.x + l.x] = sum * 0.25;
+}

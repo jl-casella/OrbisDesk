@@ -21,12 +21,15 @@ rm -rf $W && cp -a $X $W
 for check in 'src/win/main.cpp:OrbisDesk: no hook thread' 'src/vulkan.cpp:OrbisDesk W096: shared-process overlay lock.' \
              'src/vulkan.cpp:OrbisDesk W099: join outside the UI lock.' 'src/overlay.cpp:OrbisDesk W102: sample on the frame thread' \
              'src/fps_metrics.h:OrbisDesk W102: calculate on the frame thread' 'src/fps_metrics.h:#include <sstream>' \
-             'src/overlay_params.cpp:OrbisDesk: Windows hotkeys keep their defaults'; do
+             'src/overlay_params.cpp:OrbisDesk: Windows hotkeys keep their defaults' \
+             'src/file_utils.cpp:OrbisDesk 04.26: GPU name without std::regex' \
+             'src/memory_win32.cpp:OrbisDesk 04.26: RAM in GiB' \
+             'src/hud_elements.cpp:OrbisDesk 04.20: frame generation frames on screen'; do
   file=${check%%:*}; marker=${check#*:}
   # or its historical spelling, in a working copy patched before the rename (tools/project_brand.py normalize_marker)
   grep -qF "$marker" "$W/$file" || grep -qF "${marker/OrbisDesk/Orbis-win}" "$W/$file" || { echo "missing in $file: $marker (run build-mangohud.sh)"; exit 1; }
 done
-[ -f $W/src/orbis_metrics.h ] && [ -f $W/src/orbis_telemetry.h ] || { echo 'Orbis metrics patch missing (run build-mangohud.sh)'; exit 1; }
+[ -f $W/src/orbis_metrics.h ] && [ -f $W/src/orbis_telemetry.h ] && [ -f $W/src/orbis_framegen.h ] || { echo 'Orbis metrics patch missing (run build-mangohud.sh)'; exit 1; }
 # ADL's allocation callback is __stdcall (AMD's ADL SDK, ADL_MAIN_MALLOC_CALLBACK; adl.cpp defines it so); the
 # fork's typedef leaves that out: the same type on x64, a compile error on x86. ADL (atiadlxx.dll) does not
 # exist on the console: it only has to compile.
@@ -98,7 +101,8 @@ record={'dll_sha256':sha(build/'src/libMangoHud.dll'),'json':'MangoHud.x86.json'
         'sources':{name:sha(source/name) for name in
                    ('src/vulkan.cpp','src/notify.h','src/notify_win32.cpp','src/win/main.cpp',
                     'src/overlay.cpp','src/fps_metrics.h','src/cpu_win32.cpp',
-                    'src/hud_elements.cpp','src/orbis_metrics.h','src/orbis_telemetry.h','src/adl.h','src/keybinds.cpp')}}
+                    'src/hud_elements.cpp','src/orbis_metrics.h','src/orbis_telemetry.h','src/orbis_framegen.h','src/adl.h',
+                    'src/keybinds.cpp')}}
 (build/'orbis-build.json').write_text(json.dumps(record,indent=2)+'\n')
 print(json.dumps(record))
 PY

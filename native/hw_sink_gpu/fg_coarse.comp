@@ -1,0 +1,33 @@
+#version 450
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Frame generation, stage 3 (docs/FRAME_GENERATION.md): coarse motion. One invocation per coarse cell (8x8
+// luminance texels, 16x16 pixels) compares 16 samples of the cell (every other texel) with the previous frame
+// at every even offset within +-12 texels (+-24 pixels): 13x13 candidates. The cost is the mean absolute
+// luminance difference plus a small charge per texel of motion, so a flat or static area keeps zero motion.
+#extension GL_GOOGLE_include_directive : require
+#include "fg_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const int RADIUS = 12;
+const float MOTION_CHARGE = 0.0004;   // per texel of |dx|+|dy|
+
+void main() {
+  uvec2 c = gl_GlobalInvocationID.xy;
+  bool inside = all(lessThan(c, p.coarse));
+  ivec2 origin = ivec2(min(c, p.coarse - 1u)) * 8 + 1;
+  float best = 1e9;
+  ivec2 best_offset = ivec2(0);
+  for (int dy = -RADIUS; dy <= RADIUS; dy += 2)
+    for (int dx = -RADIUS; dx <= RADIUS; dx += 2) {
+      float sum = 0.0;
+      for (int k = 0; k < 16; ++k) {
+        ivec2 q = origin + ivec2((k & 3) * 2, (k >> 2) * 2);  // the cell's samples: no array (see fg_fine.comp)
+        sum += abs(luma_cur(q) - luma_prev(q - ivec2(dx, dy)));
+      }
+      float cost = sum / 16.0 + MOTION_CHARGE * float(abs(dx) + abs(dy));
+      bool better = cost < best;
+      best = better ? cost : best;
+      best_offset = better ? ivec2(dx, dy) : best_offset;
+    }
+  if (inside) coarse_field[c.y * p.coarse.x + c.x] = vec4(vec2(best_offset), best, 0.0);
+}

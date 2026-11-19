@@ -89,6 +89,11 @@ for stage in ('vert','frag'):
 # with FLAT instructions (hw_sink_gpu.c pipeline_init)
 run([vk/'host-tools/bin/glslang','-V','--target-env','vulkan1.1','-DPOOL_ONLY','--vn','screen_frag_pool',
      '-o',shader_dir/'screen_frag_pool.h',sink_gpu_dir/'screen.frag'])
+# Frame generation (docs/FRAME_GENERATION.md): its compute passes, precompiled like the sink's shaders (no GLSL
+# compiler at run time); hw_sink_gpu.c includes framegen.inc.c, which includes these headers
+for fg_pass in ('capture','coarse','fine','blend'):
+    run([vk/'host-tools/bin/glslang','-V','--target-env','vulkan1.1','--vn','fg_'+fg_pass+'_comp',
+         '-o',shader_dir/('fg_'+fg_pass+'_comp.h'),sink_gpu_dir/('fg_'+fg_pass+'.comp')])
 sink_gpu=work/'hw_sink_gpu.o';run([*vk_flags,'-I'+str(shader_dir),'-c',sink_gpu_dir/'hw_sink_gpu.c','-o',sink_gpu])
 cxx_libs=[]
 for name in ('libc++.a','libc++abi.a'):
@@ -466,9 +471,13 @@ subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-mwindows','-Wl,--no-insert-time
 shutil.copyfile(work/'separate_probe64.exe',prefix/'drive_c/orbis/separate_probe64.exe')
 # W181: pad key profiles for keyboard-only games (native/hw_pad.c reads C:\orbis\padmaps\<exe>.ini when
 # the launcher runs that program); SuperMarioKart.exe's maps the pad to its arrows, space and Enter.
+# 04.36: the overlay's KEY MAPPING edits these on the console (tools/console_state.py keeps the user's copy across
+# updates); C:\orbis\padmaps-default holds the shipped ones, which its DEFAULT action restores (native/hw_overlay.c).
 (prefix/'drive_c/orbis/padmaps').mkdir(exist_ok=True)
+(prefix/'drive_c/orbis/padmaps-default').mkdir(exist_ok=True)
 for profile in sorted((ROOT/'fixtures/padmaps').glob('*.ini')):
     shutil.copyfile(profile,prefix/'drive_c/orbis/padmaps'/profile.name)
+    shutil.copyfile(profile,prefix/'drive_c/orbis/padmaps-default'/profile.name)
 # W174 (phase 8): networking as a Windows program sees it (fixtures/win32/nettest.c), 64-bit (guest)
 # and 32-bit; each run appends its steps to C:\orbis\net-result.txt.
 for compiler,name in (('x86_64-w64-mingw32-gcc','nettest64.exe'),('i686-w64-mingw32-gcc','nettest32.exe')):
@@ -1370,13 +1379,33 @@ for name in ('src/cpu_win32.cpp','src/hud_elements.cpp','src/orbis_metrics.h','s
     if name not in overlay_proof['sources']:raise SystemExit('W303 native metrics source missing from build proof: '+name)
 if overlay_proof['sources']['src/orbis_telemetry.h']!=sha(ROOT/'platform/ps4/pw_telemetry.h'):
     raise SystemExit('MangoHud/native telemetry schemas differ')
+# 04.20: both MangoHud builds show frame generation's frames on screen in their FPS row (patch-mangohud-orbis-framegen.py),
+# from the version 2 telemetry this native side answers; a HUD built before it would keep showing the game's 30
+for label,proof,tree in (('x64',overlay_proof,'mangohud-win'),('i386',hud32,'mangohud-win-i386')):
+    for name in ('src/hud_elements.cpp','src/orbis_framegen.h','src/orbis_telemetry.h'):
+        if name not in proof['sources']:raise SystemExit('MangoHud '+label+' frame generation source missing from build proof: '+name)
+    if 'OrbisDesk 04.20: frame generation frames on screen' not in (vk/'src'/tree/'src/hud_elements.cpp').read_text():
+        raise SystemExit('MangoHud '+label+' was built without the frame generation FPS row (build-mangohud.sh)')
+    if proof['sources']['src/orbis_telemetry.h']!=sha(ROOT/'platform/ps4/pw_telemetry.h'):
+        raise SystemExit('MangoHud '+label+'/native telemetry schemas differ')
+    # 04.26 (run-0234): the GPU name without std::regex (patch-mangohud-gpu-name.py)
+    if 'OrbisDesk 04.26: GPU name without std::regex' not in (vk/'src'/tree/'src/file_utils.cpp').read_text():
+        raise SystemExit('MangoHud '+label+' was built with std::regex in the GPU name (build-mangohud.sh)')
+    # 04.26 (04.25: "RAM 859.8 GiB", MiB labelled GiB): patch-mangohud-win-memory.py
+    if 'OrbisDesk 04.26: RAM in GiB' not in (vk/'src'/tree/'src/memory_win32.cpp').read_text():
+        raise SystemExit('MangoHud '+label+' was built with its RAM row in MiB (build-mangohud.sh)')
 manifest['mangohud']={'library_sha256':vulkan_files['libMangoHud.dll'],
     'enabled':mangohud_enabled,'implicit_layer_registry_dword':0 if mangohud_enabled else 1,
     'sampling':'frame','fps_metrics':'frame','config_watcher':False,'config_apply':'restart OrbisDesk',
     'patched_vulkan_source_sha256':sha(overlay_source),
     'fix':'shared UI protected; joins and downstream teardown outside UI lock; service synchronous sent messages while joining',
     'build_proof':overlay_proof,
-    'hardware_validation':'pending','cpu_gpu_telemetry_changed':True,'metric_labels':['CPU','GPU']}
+    'hardware_validation':'pending','cpu_gpu_telemetry_changed':True,'metric_labels':['CPU','GPU'],
+    'excluded_programs':['seamonkey.exe'],  # 04.26: no MangoHud layer (tools/build-guest-hw.py ps4_guest_no_hud)
+    'show_hide':'Shift+F12 held until a Vulkan present (0.25-3 s); in front while the window in front last presented',
+    'framegen_fps_row':{'telemetry_version':2,'value':'frames on screen, real plus generated','superscript':'FG',
+                        'match':'swapchain size equals the followed image','frametime_graph_limiter_logs':'MangoHud own',
+                        'physical_validation':'pending'}}
 for source in (ROOT/'tools/vk-h0/build-mangohud.sh',ROOT/'tools/vk-h0/build-mangohud-i386.sh',ROOT/'tools/vk-h0/build-vulkan-loader-i386.sh',ROOT/'tools/vk-h0/patch-mangohud-shared-process.py',ROOT/'tools/vk-h0/patch-mangohud-teardown.py',ROOT/'tools/vk-h0/patch-mangohud-frame-sampling.py'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
 manifest['shell_diagnostics']={'build':'W303','purpose':'locate Start failure after guest window/thread teardown',
@@ -1393,7 +1422,7 @@ manifest['experiment']={'kind':'DOSBox Pure interpreted PE64 guest with GDI and 
     'not_a_validated_fix':True}
 for source in (ROOT/'tools/build-explorer-hw.py',ROOT/'tools/build-guest-hw.py'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
-manifest['native_telemetry']={'abi_version':1,'query_class':'0x50573454','cpu':'getrusage SELF user + kernel / wall / initial affinity capacity',
+manifest['native_telemetry']={'abi_version':1,'framegen_abi_version':2,'query_class':'0x50573454','cpu':'getrusage SELF user + kernel / wall / initial affinity capacity',
     'gpu':'union of title GFX submission timestamps in Crema queue order','build':telemetry_build,
     'physical_validation':'pending','standard_windows_cpu_classes_modified':['SystemProcessorPerformanceInformation','SystemPerformanceInformation.IdleTime']}
 manifest['task_manager']={'build':taskmgr,'runtime_differences':['taskmgr.exe','ntdll unix system.o'],
@@ -1406,21 +1435,25 @@ manifest['source_hashes']['tools/build-winecfg-hw.py']=sha(ROOT/'tools/build-win
 manifest['source_hashes']['tools/build-dxgi-hw.py']=sha(ROOT/'tools/build-dxgi-hw.py')  # W192
 manifest['source_hashes']['platform/ps4/pw_wine_threads.c']=sha(ROOT/'platform/ps4/pw_wine_threads.c')  # W195
 manifest['source_hashes']['tools/build-nsi-hw.py']=sha(ROOT/'tools/build-nsi-hw.py')  # W174 (phase 8)
+manifest['source_hashes']['tools/stage-wine-mono.py']=sha(ROOT/'tools/stage-wine-mono.py')  # Wine Mono
 for source in ('tools/stage-wine-gecko.py','tools/stage-mshtml-hw.py','fixtures/win32/webview.c','fixtures/web/index.html',
-               'fixtures/browser/seamonkey-user.js'):  # W177 (phase 9); SeaMonkey replaced Pale Moon
+               'fixtures/browser/seamonkey-user.js','fixtures/browser/seamonkey-gpu.js',
+               'fixtures/browser/seamonkey-orbisdesk.cfg'):  # W177 (phase 9); SeaMonkey replaced Pale Moon; 04.19 GPU
     manifest['source_hashes'][source]=sha(ROOT/source)
 manifest['source_hashes']['tools/build-bcrypt-x64.py']=sha(ROOT/'tools/build-bcrypt-x64.py')  # W179 (phase 9)
 for source in ('fixtures/win32/winecfgcpl.c','fixtures/win32/winecfgcpl.rc'):  # W179
     manifest['source_hashes'][source]=sha(ROOT/source)
 for source in (ROOT/'native/telemetry.c',ROOT/'platform/ps4/pw_telemetry.h',ROOT/'tools/build-telemetry-ps4.py',
-               ROOT/'tools/vk-h0/patch-crema-telemetry.py',ROOT/'tools/vk-h0/patch-mangohud-orbis-metrics.py'):
+               ROOT/'tools/vk-h0/patch-crema-telemetry.py',ROOT/'tools/vk-h0/patch-mangohud-orbis-metrics.py',
+               ROOT/'tools/vk-h0/patch-mangohud-orbis-framegen.py',ROOT/'tools/vk-h0/patch-mangohud-gpu-name.py',
+               ROOT/'tools/vk-h0/patch-mangohud-win-memory.py'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
 manifest['file_manager']={'drive_discovery':'real GetFileAttributesW roots in PS4 guest mode',
     'enumeration':'validated find handle; no archive-bit requirement; PWFM errors and counts',
     'wfm_build':json.loads((ROOT/'out/wfm/manifest.json').read_text()),
     'guest_build':json.loads((ROOT/'out/guest-hw/manifest.json').read_text()),
     'open_dispatch':'copied WM_COPYDATA request queued on Explorer desktop thread; ShellExecuteEx NOASYNC',
-    'text_associations':['.txt','.log','.ini','.cfg','.conf','.json','.md','.csv','.xml'],
+    'text_associations':['.txt','.log','.ini','.cfg','.conf','.json','.md','.csv','.xml','.vdf','.acf','.nfo'],
     'association_hive':'HKLM Software Classes (HKCR in pinned Wine)',
     'directory_rename':'real syscall and cached directory/cwd repair; native fs object overridden explicitly',
     'filesystem_object_sha256':sha(fs_override),
@@ -1434,7 +1467,11 @@ manifest['file_manager']={'drive_discovery':'real GetFileAttributesW roots in PS
     'physical_validation':'pending'}
 for source in (ROOT/'platform/ps4/pw_dirent_record.h',ROOT/'native/wine_dirent_record_check.c',ROOT/'tools/build-wfm.py',ROOT/'tools/patch-wfm-files.py',ROOT/'tools/wfm-operations.h',ROOT/'tools/wfm-debug.h',ROOT/'tools/build-wine-delete-server.py',ROOT/'tools/build-wine-directory-ps4.py',ROOT/'tools/build-explorer-hw.py',
                ROOT/'tools/patch-explorer-open.py',ROOT/'platform/ps4/pw_shell_open.h',
-               ROOT/'native/hw_sink_gpu/hw_sink_gpu.c',ROOT/'native/hw_sink_gpu/screen.vert',ROOT/'native/hw_sink_gpu/screen.frag'):
+               ROOT/'native/hw_sink_gpu/hw_sink_gpu.c',ROOT/'native/hw_sink_gpu/screen.vert',ROOT/'native/hw_sink_gpu/screen.frag',
+               ROOT/'native/hw_sink_gpu/framegen.inc.c',ROOT/'native/hw_sink_gpu/fg_common.glsl',
+               ROOT/'native/hw_sink_gpu/fg_capture.comp',ROOT/'native/hw_sink_gpu/fg_coarse.comp',
+               ROOT/'native/hw_sink_gpu/fg_fine.comp',ROOT/'native/hw_sink_gpu/fg_blend.comp',
+               ROOT/'platform/ps4/pw_fps_limit.h',ROOT/'platform/ps4/pw_framegen_sched.h'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
 manifest['dos_runtime']=dos
 for source in ('native/dos_audio.c','native/doshost_win32.c','platform/ps4/pw_dos_audio.h','tools/explorer-dos.h','tools/build-dos-runtime.py','dos.lock.json'):

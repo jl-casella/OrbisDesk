@@ -1,0 +1,60 @@
+#version 450
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Frame generation, stage 3 (docs/FRAME_GENERATION.md): the frame halfway between the previous and the current
+// one. Per pixel, the fine motion field is interpolated bilinearly between cell centres (no blocks); the
+// previous frame is sampled half a motion back and the current one half a motion forward, both bilinearly, and
+// the two are averaged. Where that is not trustworthy the current frame shows unchanged instead:
+// - the match error of the motion is high (occlusions, transparency, new content);
+// - the two warped samples still disagree in luminance (the motion is wrong for this pixel);
+// - the pixel is inside p.keep, the rectangle MangoHud draws its HUD in (stage 5): text and graphs that change
+//   every frame must be neither averaged nor carried along with the motion under them.
+// The output keeps the presented image's byte order, so the compositor shows it with the same layer flags.
+#extension GL_GOOGLE_include_directive : require
+#include "fg_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const vec2 ERROR_FALLBACK = vec2(0.02, 0.08);      // smoothstep edges on the match error
+const vec2 DISAGREE_FALLBACK = vec2(0.10, 0.25);   // and on the warped samples' luminance difference
+
+vec4 color_at(bool previous, ivec2 q) {
+  q = clamp(q, ivec2(0), ivec2(p.size) - 1);
+  uint index = uint(q.y) * p.size.x + uint(q.x);
+  return unpackUnorm4x8(previous ? prev_color[index] : cur_color[index]);
+}
+// pos in pixels, pixel centres at +0.5
+vec4 sample_color(bool previous, vec2 pos) {
+  vec2 f = pos - 0.5;
+  ivec2 i = ivec2(floor(f));
+  vec2 t = f - vec2(i);
+  return mix(mix(color_at(previous, i), color_at(previous, i + ivec2(1, 0)), t.x),
+             mix(color_at(previous, i + ivec2(0, 1)), color_at(previous, i + ivec2(1, 1)), t.x), t.y);
+}
+vec4 field_at(ivec2 cell) {
+  cell = clamp(cell, ivec2(0), ivec2(p.fine) - 1);
+  return fine_field[cell.y * int(p.fine.x) + cell.x];
+}
+float luma_rgba(vec4 c) {
+  vec3 rgb = p.rgba != 0u ? c.rgb : c.bgr;
+  return dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+}
+
+void main() {
+  uvec2 px = gl_GlobalInvocationID.xy;
+  bool inside = all(lessThan(px, p.size));
+  vec2 centre = vec2(min(px, p.size - 1u)) + 0.5;
+  // fine cell centres are 8 pixels apart, the first at 4,4
+  vec2 f = centre / 8.0 - 0.5;
+  ivec2 i = ivec2(floor(f));
+  vec2 t = f - vec2(i);
+  vec4 m = mix(mix(field_at(i), field_at(i + ivec2(1, 0)), t.x),
+               mix(field_at(i + ivec2(0, 1)), field_at(i + ivec2(1, 1)), t.x), t.y);
+  vec2 half_motion = m.xy;              // luminance texels are 2 pixels: half the motion in pixels
+  vec4 before = sample_color(true, centre - half_motion);
+  vec4 after = sample_color(false, centre + half_motion);
+  vec4 current = color_at(false, ivec2(centre));
+  float fallback = max(smoothstep(ERROR_FALLBACK.x, ERROR_FALLBACK.y, m.z),
+                       smoothstep(DISAGREE_FALLBACK.x, DISAGREE_FALLBACK.y, abs(luma_rgba(before) - luma_rgba(after))));
+  if (all(greaterThanEqual(px, p.keep.xy)) && all(lessThan(px, p.keep.zw))) fallback = 1.0;
+  vec4 result = mix(0.5 * (before + after), current, fallback);
+  if (inside) out_color[px.y * p.size.x + px.x] = packUnorm4x8(result);
+}

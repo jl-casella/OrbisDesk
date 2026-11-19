@@ -355,6 +355,67 @@ It is open:
 - the possible double control in games SDL2 with generic HID, untested;
 - the tab Windows. Gaming.Input of joy.cpl, on hold.
 
+## 04.26: controller type per program
+
+PES 2013's settings and the XInput tab of `joy.cpl` listed no XInput controller. Since W213 the pad is a generic HID gamepad (1209:5057) unless `C:\orbis\padhid-xinput.txt` exists. Without the `&IG_` HID child, programs that classify devices by their path find no XInput controller, although the XInput API serves controller 0.
+
+The overlay's CONTROL entry is now per program, like LIMITE FPS and GENERAR CUADROS:
+
+- Choices: GENERIC, XBOX 360, XBOX ONE, DUALSENSE. X saves the choice for the last program opened that is still open, in `C:\orbis\overlay.ini`: `pad.<exe>=generic`, `x360`, `xone` or `dualsense`. With no program open, X only shows a toast.
+- A program without a line gets the generic gamepad, so W213's reason holds by default: Unity games keep the pad's key emulation and profiles. While `C:\orbis\padhid-xinput.txt` exists, a program without a line gets Xbox 360 instead. The file stays as that global default; it no longer forces every program.
+- The overlay writes the type of the last program opened (with none, the default) to `C:\orbis\padtype.txt`: at its start, whenever that program changes and on X. Log: `PWOVERLAY control type=<type> program=<exe> saved=1 errno=0 why=boot|start|exit|menu`.
+- winebus reads `padtype.txt` about 4 times a second. On a change it removes the device and adds the new one, as W236: `PWHID pad type change generic-hid -> xinput: removing the device`. `x360` and `xone` are the Xbox devices with `&IG_`; `generic` is 1209:5057. It reads `padhid-xinput.txt` only when `padtype.txt` is missing (an ELF without the overlay).
+- xinput and dinput do not change: they read `padtype.txt` once a second; `xone` makes them Xbox One, any other value Xbox 360. XInput controller 0 and the DirectInput device stay in every mode, as in W213.
+- The global choice of 04.25 (`padtype.txt` with `x360`, `xone` or `dualsense`) is not carried over: the overlay rewrites the file at its start.
+
+Unverified:
+
+- A game reads its devices when it starts. The overlay changes the type when the program starts, and winebus replaces the device within a fraction of a second; a game that enumerates earlier still sees the previous type. If so, restart the game.
+- hw_pad.c's game mode is still global: a program in Xbox mode that polls XInput turns it on while it runs.
+
+Console test:
+
+1. PES 2013: open the overlay (L3+R3), CONTROL, XBOX 360, X. The log has `PWOVERLAY control pad.pes2013.exe=x360 saved=1` and `PWHID pad type change generic-hid -> xinput`. Restart the game: its controller settings list the XInput controller.
+2. `joy.cpl`: with a program set to XBOX 360 in front, the XInput tab shows controller 0. With the desktop in front, the generic gamepad.
+3. A Unity game with no line (The Lost Forest): `PWHID pad bus init ... mode=generic-hid`, and the profile keys still move the character.
+4. Close PES 2013: the type returns to the previous program's or to generic (`why=exit`).
+
+## 04.28: a type change lost the new device
+
+On the 04.27 console run (W303 run-0246), PES 2013's `settings.exe` set to XBOX 360 still listed only the DirectInput "Orbis Pad", and its XInput page was empty. The overlay saved and applied the choice correctly. At the next start of `settings.exe` the log has `PWOVERLAY control type=x360 program=settings.exe ... why=start`; `PWPAD guest profile=settings.exe none` is the pad's key profile (`C:\orbis\padmaps`), not the controller type. The type went back to generic when `settings.exe` closed (`why=exit`), as intended.
+
+The fault was in winebus, after `PWHID pad bus init vid=045e pid=028e mode=xinput`: the new device was never started (no `PWHID pad device started`, no winexinput, no `&IG_` device). That happened on every change away from a device that had started, whatever the new type: 7 of 7 such changes in run-0246, and W238's change to DualSense. Changes away from a device that never started worked, which is why Xbox One and DualSense seemed to work after a lost Xbox 360.
+
+Cause: winebus unlinks a removed device twice, once for the bus's removal event and again on `IRP_MN_REMOVE_DEVICE`. `list_remove` does not reset the entry, so the second unlink wrote back the old neighbours. With the pad as the only device, that emptied the list again and dropped the device added in between. ntoskrnl never saw it. A device that never started gets no `IRP_MN_REMOVE_DEVICE`, so the second unlink does not happen.
+
+Fix: `tools/build-hidstack-hw.py` overlays winebus's `main.c`. `bus_unlink_hid_device` re-initialises the entry, so a second unlink changes nothing, and logs `PWHID winebus unlink again ignored device=... vid=... pid=...` when it happens. The bug is in Wine's own winebus. Only the type change exposes it here, because the console pad is never unplugged otherwise.
+
+The XInput API was not involved: `xinput1_3` in the 32-bit `settings.exe` serves controller 0 from the console pad (`PWPAD game_mode=1` right after it loads). The XInput page classifies DirectInput devices by their HID path. Without a started Xbox device there was no `&IG_` path to find.
+
+Console test:
+
+1. With `settings.exe` set to XBOX 360, start it. The log has `why=start` with `type=x360`, then `PWHID pad type change generic-hid -> xinput`, `PWHID winebus unlink again ignored ... pid=5057`, `PWHID pad device started` and winexinput's `open_driver ... Services\xinput`. The Controller tab's XInput page lists the controller. If it does not, close and reopen `settings.exe` (it may have listed its devices before the change).
+2. In the overlay, change XBOX 360, XBOX ONE, DUALSENSE and GENERIC several times. Every change logs `PWHID pad device started`.
+3. Close `settings.exe`: `why=exit`, the type goes back to generic and the generic device starts.
+
+## 04.30: the type is in place before the program starts
+
+In the 04.29 console test (W303 run-0255), PES 2013's `settings.exe` with XBOX 360 saved still showed an empty XInput page when it started. Switching to XBOX 360 in the overlay while it was open moved the pad to the XInput list. So XInput, DirectInput's `&ig_` classification and the switch itself worked. The start was too late: the overlay writes the type when the program starts (`why=start`), but winebus reads `padtype.txt` only about 4 times a second, and then PnP installs and starts the device. `settings.exe` had already listed its devices.
+
+A program's start now waits for the device. kernelbase reports the start before the program's entry point. The overlay applies the type, asks winebus to read it at its next poll (8 ms), and waits until winebus has the device of that type started: at most 2 s, then 0.3 s more for winexinput's `&IG_` HID devices.
+
+- Log: `PWOVERLAY control wait program=<exe> kind=<n> ready=1 ms=<wait> settle_ms=300`.
+- Without a type change there is no wait and no line.
+- `ready=0` means the 2 s passed; the program starts anyway.
+- An ELF without winebus logs `PWOVERLAY control wait unavailable` once and does not wait.
+
+Limits:
+
+- The thread that starts the program waits: on a type change, the desktop's launch pauses for up to 2.3 s.
+- xinput and dinput reread `padtype.txt` at most once a second. An Xbox One choice can reach DirectInput's product id up to 1 s after winebus.
+
+Console test: with XBOX 360 saved for `settings.exe`, start it. The log has `why=start`, the type change, `PWHID pad device started`, then `PWOVERLAY control wait ... ready=1`. The XInput page lists the controller without switching in the overlay.
+
 <a id="riesgos"></a>
 
 

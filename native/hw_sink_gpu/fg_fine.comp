@@ -1,0 +1,76 @@
+#version 450
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Frame generation, stage 3 (docs/FRAME_GENERATION.md): fine motion. One invocation per fine cell (4x4
+// luminance texels, 8x8 pixels) matches an 8x8 texel window centred on the cell (it overlaps the neighbours,
+// which steadies small cells) against the previous frame:
+// 1. candidates: zero motion and the motion of the 3x3 coarse cells around it;
+// 2. one step to the best of the 8 neighbouring whole-texel offsets, if any is better;
+// 3. a sub-texel correction on each axis from a parabola through the costs at -1, 0 and +1.
+// Zero motion wins unless something else is clearly better. The stored error is the window's mean absolute
+// luminance difference at the chosen whole offset: the blend pass falls back to the real frame where it is high.
+#extension GL_GOOGLE_include_directive : require
+#include "fg_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const float ZERO_MARGIN = 0.002;      // zero motion is kept unless beaten by more than this
+const float EXACT_MATCH = 0.001;      // below this mean difference the whole-texel offset is taken as exact
+
+// the window is read again for every candidate (no per-invocation array: indexed arrays may go to scratch
+// memory on GFX7); the texels stay in the GPU's caches
+float cost_at(ivec2 origin, ivec2 d) {
+  float sum = 0.0;
+  for (int k = 0; k < 64; ++k) {
+    ivec2 q = origin + ivec2(k & 7, k >> 3);
+    sum += abs(luma_cur(q) - luma_prev(q - d));
+  }
+  return sum / 64.0;
+}
+
+float parabola(float minus, float centre, float plus) {
+  float curve = minus - 2.0 * centre + plus;
+  return curve > 1e-6 ? clamp(0.5 * (minus - plus) / curve, -0.5, 0.5) : 0.0;
+}
+
+void main() {
+  uvec2 c = gl_GlobalInvocationID.xy;
+  bool inside = all(lessThan(c, p.fine));
+  uvec2 cc = min(c, p.fine - 1u);
+  ivec2 origin = ivec2(cc) * 4 - 2;
+
+  float zero = cost_at(origin, ivec2(0));
+  float best = zero;
+  ivec2 d = ivec2(0);
+  ivec2 coarse_cell = ivec2(cc / 2u);
+  for (int j = -1; j <= 1; ++j)
+    for (int i = -1; i <= 1; ++i) {
+      ivec2 n = clamp(coarse_cell + ivec2(i, j), ivec2(0), ivec2(p.coarse) - 1);
+      ivec2 candidate = ivec2(round(coarse_field[n.y * int(p.coarse.x) + n.x].xy));
+      float cost = cost_at(origin, candidate);
+      bool better = cost < best;
+      best = better ? cost : best;
+      d = better ? candidate : d;
+    }
+  bool keep_zero = zero <= best + ZERO_MARGIN;
+  d = keep_zero ? ivec2(0) : d;
+  best = keep_zero ? zero : best;
+
+  ivec2 step_to = d;
+  float step_best = best;
+  for (int j = -1; j <= 1; ++j)
+    for (int i = -1; i <= 1; ++i) {
+      float cost = cost_at(origin, d + ivec2(i, j));
+      bool better = (i != 0 || j != 0) && cost < step_best;
+      step_best = better ? cost : step_best;
+      step_to = better ? d + ivec2(i, j) : step_to;
+    }
+  d = step_to;
+  best = step_best;
+
+  // an exact whole-texel match keeps its offset: on static text or HUD the parabola only adds a shimmer
+  // (the host check measured 0.05 texel of drift on a perfectly static background without this)
+  bool exact = best < EXACT_MATCH;
+  vec2 sub = vec2(parabola(cost_at(origin, d - ivec2(1, 0)), best, cost_at(origin, d + ivec2(1, 0))),
+                  parabola(cost_at(origin, d - ivec2(0, 1)), best, cost_at(origin, d + ivec2(0, 1))));
+  sub = exact ? vec2(0.0) : sub;
+  if (inside) fine_field[c.y * p.fine.x + c.x] = vec4(vec2(d) + sub, best, 0.0);
+}

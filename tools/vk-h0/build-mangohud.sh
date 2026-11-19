@@ -29,8 +29,14 @@ python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-shared-process.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-teardown.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-frame-sampling.py "$W"
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-orbis-metrics.py "$W"
+# 04.20: MangoHud's FPS row shows the frames on screen while frame generation shows frames (after orbis-metrics)
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-orbis-framegen.py "$W"
 # 2026-11-16: hotkeys named in MangoHud.conf no longer empty their key lists (the overlay's show/hide)
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-win-hotkeys.py "$W"
+# 04.26 (run-0234: SeaMonkey's second start ended in an uncaught std::regex_error from the GPU name): no std::regex
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-gpu-name.py "$W"
+# 04.26 (04.25 on the console: "RAM 859.8 GiB"): the RAM and swap rows in GiB, as labelled
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mangohud-win-memory.py "$W"
 cross=$build-cross.ini
 old_cross=$(cat $cross 2>/dev/null || true)
 cat > $build-cross.ini <<INI
@@ -73,8 +79,8 @@ record={'dll_sha256':sha(build/'src/libMangoHud.dll'),
         'sources':{name:sha(source/name) for name in
                    ('src/vulkan.cpp','src/notify.h','src/notify_win32.cpp','src/win/main.cpp',
                     'src/overlay.cpp','src/fps_metrics.h','src/cpu_win32.cpp',
-                    'src/hud_elements.cpp','src/orbis_metrics.h','src/orbis_telemetry.h',
-                    'src/overlay_params.cpp')}}
+                    'src/hud_elements.cpp','src/orbis_metrics.h','src/orbis_telemetry.h','src/orbis_framegen.h',
+                    'src/overlay_params.cpp','src/file_utils.cpp','src/memory_win32.cpp')}}
 (build/'orbis-build.json').write_text(json.dumps(record,indent=2)+'\n')
 print(json.dumps(record))
 PY

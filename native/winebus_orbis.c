@@ -23,7 +23,12 @@
  * W236: the controller type of the overlay (native/hw_overlay.c, C:\orbis\padtype.txt). With
  * padhid-xinput.txt, Xbox One makes it 045e:02ea. DualSense makes it a raw HID DualSense (054c:0ce6)
  * with that controller's USB reports, whatever padhid-xinput.txt says. A change while running
- * removes the device and adds the new one, as an unplug and a plug. */
+ * removes the device and adds the new one, as an unplug and a plug.
+ * 04.26: the overlay's type is per program (pad.<exe> in C:\orbis\overlay.ini) and padtype.txt alone
+ * says the device: generic, x360, xone or dualsense. The overlay reads padhid-xinput.txt itself (Xbox 360
+ * for a program with no choice); here it is read only when padtype.txt is missing (an ELF without the
+ * overlay), as in W213.
+ * 04.30: a guest's start waits for the device of its type (pw_winebus_pad_ready, native/hw_overlay.c pad_wait). */
 
 #if 0
 #pragma makedep unix
@@ -92,6 +97,9 @@ static BYTE sent_report[256];  /* the last report queued: only changes are sent 
 static USHORT sent_len;
 static BYTE dualsense_sequence;
 static volatile LONG quit;
+/* 04.30: a guest's start waits for its type's device (native/hw_overlay.c pad_wait) */
+static BOOL bus_active;
+static int check_now;
 
 static void orbis_device_destroy(struct unix_device *iface)
 {
@@ -313,28 +321,34 @@ static NTSTATUS build_report_descriptor(struct unix_device *iface)
     return STATUS_SUCCESS;
 }
 
-/* W236: which device the pad is now: the overlay's type, and padhid-xinput.txt for the Xbox ones */
+/* W236: which device the pad is now. 04.26: the overlay's type for the program in front, as padtype.txt
+ * says it; padhid-xinput.txt only without padtype.txt (W213) */
 static int current_kind(void)
 {
+    static BOOL dualsense_logged;
     char text[16] = {0};
     FILE *file;
-    int dualsense = 0, xone = 0;
+    int kind;
 
-    if ((file = fopen(TYPE_FILE, "r")))
+    if (!(file = fopen(TYPE_FILE, "r")))
     {
-        if (!fgets(text, sizeof(text), file)) text[0] = 0;
+        if (!(file = fopen(XINPUT_SWITCH, "r"))) return KIND_GENERIC;
         fclose(file);
-        dualsense = !strncmp(text, "dualsense", 9);
-        xone = !strncmp(text, "xone", 4);
+        return KIND_X360;
     }
-    if (dualsense)
-    {
-        if (pw_wine_pad_dualsense) return KIND_DUALSENSE;
-        fprintf(stderr, "PWHID dualsense unavailable in this ELF: the pad stays as before\n");
-    }
-    if (!(file = fopen(XINPUT_SWITCH, "r"))) return KIND_GENERIC;
+    if (!fgets(text, sizeof(text), file)) text[0] = 0;
     fclose(file);
-    return xone ? KIND_XONE : KIND_X360;
+    if (!strncmp(text, "dualsense", 9)) kind = KIND_DUALSENSE;
+    else if (!strncmp(text, "xone", 4)) kind = KIND_XONE;
+    else if (!strncmp(text, "x360", 4)) kind = KIND_X360;
+    else kind = KIND_GENERIC;  /* "generic", or a word this ELF does not know */
+    if (kind == KIND_DUALSENSE && !pw_wine_pad_dualsense)
+    {
+        if (!dualsense_logged) fprintf(stderr, "PWHID dualsense unavailable in this ELF: a generic gamepad instead\n");
+        dualsense_logged = TRUE;
+        kind = KIND_GENERIC;
+    }
+    return kind;
 }
 
 /* a new device of that kind, queued as created; orbis_cs held */
@@ -356,7 +370,8 @@ static NTSTATUS add_device(int kind)
     NTSTATUS status;
     const char *product = "Controller (XBOX 360 For Windows)", *manufacturer = "OrbisDesk";
 
-    /* W213: a generic HID gamepad (not an Xbox controller) unless C:\orbis\padhid-xinput.txt exists.
+    /* W213: a generic HID gamepad (not an Xbox controller) unless C:\orbis\padhid-xinput.txt exists
+     * (04.26: unless the overlay's type for the program in front is x360 or xone).
      * As an Xbox controller, winexinput's "&IG_" device makes Unity 2020's legacy input poll XInput
      * every frame; that turns hw_pad.c's game mode on (no pointer or key emulation) while Unity's
      * InputManager still ignored the pad (W208). As a generic gamepad Unity does not use XInput, so
@@ -430,6 +445,7 @@ NTSTATUS sdl_bus_init(void *args)
 
     pthread_mutex_lock(&orbis_cs);
     status = add_device(current_kind());
+    if (!status) bus_active = TRUE;
     pthread_mutex_unlock(&orbis_cs);
     return status;
 }
@@ -444,6 +460,31 @@ static void replace_device(int kind)
     pad_device = NULL;
     started_device = NULL;
     if (add_device(kind)) fprintf(stderr, "PWHID pad type change: no new device\n");
+}
+
+/* 04.30 (run-0255: PES 2013's settings.exe, set to Xbox 360, listed its devices before the pad was replaced: winebus
+ * reads padtype.txt about 4 times a second, then PnP installs and starts the device). At a guest's start
+ * native/hw_overlay.c asks whether the device of the type padtype.txt says has started (always yes without a bus),
+ * and has the type read at the next poll. Called from other threads; visible to the ELF (the unit is hidden). */
+/* 04.32 (run-0257: no start waited; reading padtype.txt back here gave the old type): want is the type the overlay just
+ * wrote (TYPE_ there, the same numbers as KIND_ here), not read from the file. state, for its log: 1 the bus runs,
+ * 2 the device is started, and the device's kind times 16. */
+__attribute__((visibility("default"))) int pw_winebus_pad_ready_kind(int want, int *state)
+{
+    int ready, started;
+
+    if (want == KIND_DUALSENSE && !pw_wine_pad_dualsense) want = KIND_GENERIC;  /* current_kind's fallback */
+    pthread_mutex_lock(&orbis_cs);
+    started = started_device && pad_device == started_device;
+    ready = !bus_active || (started && pad_kind == want);
+    if (state) *state = (bus_active ? 1 : 0) | (started ? 2 : 0) | pad_kind << 4;
+    pthread_mutex_unlock(&orbis_cs);
+    return ready;
+}
+
+__attribute__((visibility("default"))) void pw_winebus_pad_check_now(void)
+{
+    __atomic_store_n(&check_now, 1, __ATOMIC_RELEASE);
 }
 
 NTSTATUS sdl_bus_wait(void *args)
@@ -461,7 +502,7 @@ NTSTATUS sdl_bus_wait(void *args)
         BOOL queued = FALSE;
         int kind = -1;
 
-        if (!(++polls % KIND_CHECK_POLLS)) kind = current_kind();
+        if (!(++polls % KIND_CHECK_POLLS) || __atomic_exchange_n(&check_now, 0, __ATOMIC_ACQ_REL)) kind = current_kind();
         pthread_mutex_lock(&orbis_cs);
         if (bus_event_queue_pop(&event_queue, result))
         {

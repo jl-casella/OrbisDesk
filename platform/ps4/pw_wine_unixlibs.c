@@ -53,6 +53,13 @@ __attribute__((weak)) void pw_wine_pad_profile(const char *exe,int load)
 {
     (void)exe;(void)load;
 }
+/* 04.31: the world (64 or 32) a guest starts in, for the overlay's RENDERER (native/hw_overlay.c, through xinput's Unix
+ * library, tools/build-xinput-hw.py); create-fself refuses an undefined weak reference, so an ELF without the overlay
+ * (bootstrap.elf) gets this, and no overlay to tell */
+__attribute__((weak)) void pw_wine_pad_program_bits(const char *exe,int bits)
+{
+    (void)exe;(void)bits;
+}
 /* HID stack: winebus's Unix side with the console's pad as an Xbox 360 HID gamepad
  * (tools/build-hidstack-hw.py, native/winebus_orbis.c). Without hw_pad.c its bus init fails. */
 extern const void *pw_winebus_unix_call_funcs[];
@@ -95,7 +102,8 @@ int pw_wine_static_unixlib(const char *path,int wow,const void **funcs,PwUnixLib
         {"xinput1_3.so",pw_xinput_unix_call_funcs,pw_xinput_unix_call_wow64_funcs,NULL},
         {"crypt32.so",pw_crypt32_unix_call_funcs,pw_crypt32_unix_call_wow64_funcs,NULL},
         {"dwrite.so",pw_dwrite_unix_call_funcs,pw_dwrite_unix_call_wow64_funcs,NULL},
-        {"winebus.so",pw_winebus_unix_call_funcs,NULL,NULL}};
+        {"winebus.so",pw_winebus_unix_call_funcs,NULL,NULL},
+        {"pwguest.so",pw_guest_unix_call_funcs,pw_guest_unix_call_wow64_funcs,NULL}};
     const char *base=path?strrchr(path,'/'):NULL;
     base=base?base+1:path;
     if(!base) return 0;

@@ -18,4 +18,11 @@ CONSOLE_OWNED=('software\\wine\\appdefaults','control panel\\colors','control pa
 # installer through install.txt's P lines, native/hw_install.h) copies one only when it is missing.
 # MangoHud.conf: the user's HUD choices, made with MangoJuice (docs/MANGOJUICE.md) or Notepad;
 # the build's copy is the clean-install default.
-CONSOLE_OWNED_FILES=('wine-prefix/drive_c/users/orbis/AppData/Roaming/MangoHud/MangoHud.conf',)
+# 04.36: the pad key profiles OrbisDesk ships (fixtures/padmaps): the overlay's KEY MAPPING edits them on the console.
+# The build's copies also go to C:\orbis\padmaps-default, always updated, which its DEFAULT action restores. The
+# launcher's installer keeps at most 16 such paths (native/hw_install.h HW_INSTALL_MAX_ROOTS).
+import pathlib as _pathlib
+_PADMAPS=tuple('wine-prefix/drive_c/orbis/padmaps/'+p.name
+               for p in sorted((_pathlib.Path(__file__).resolve().parent.parent/'fixtures/padmaps').glob('*.ini')))
+CONSOLE_OWNED_FILES=('wine-prefix/drive_c/users/orbis/AppData/Roaming/MangoHud/MangoHud.conf',)+_PADMAPS
+if len(CONSOLE_OWNED_FILES)>16:raise SystemExit('console_state: more than 16 console-owned files (hw_install.h keeps 16)')

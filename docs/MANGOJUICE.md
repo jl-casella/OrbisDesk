@@ -120,6 +120,30 @@ Once MangoHud read MangoJuice's file, the overlay's show/hide stopped working in
 
 Hardware, app version 04.08 (run-0158): d3d9test32 ran as a 32-bit guest with MangoHud loaded (`loaded32=1`). The overlay sent `Shift+F12 held 250 ms` twice, and the user saw the HUD hide and come back. The GPU row disappearing after unticking it was seen on vkcube with 04.06. The other combinations were not checked on 04.08: the toggle on a 64-bit program, the GPU row on a 32-bit program, and Estadisticas reading the file.
 
+### Programs that never show MangoHud (04.26)
+
+The user decided on 2026-11-18 that MangoHud is never shown for `seamonkey.exe`. Every other program keeps it, with MangoJuice's settings and the overlay's show/hide.
+- [build-guest-hw.py](../tools/build-guest-hw.py) keeps the list (`ps4_guest_no_hud`), by the guest EXE's file name.
+- The Vulkan loader reads MangoHud's `disable_environment`, `DISABLE_MANGOHUD`, at each `vkCreateInstance`. Every guest shares explorer's environment, so kernelbase's `GetEnvironmentVariableW` answers `1` to a thread of a listed guest, and only to it. The loader then leaves the layer out of that program's chain. `libMangoHud.dll` may already be loaded for another program, but it hooks and draws nothing for this one. The first time, the log has `PWGUEST mangohud excluded module=…`.
+- The closer reports no MangoHud in front for a listed program (`PWOVERLAY mangohud in_front=0 … excluded=1`). So the overlay's ESTADISTICAS turns on its own readout there and sends no Shift+F12.
+- [build-wine-hardware.py](../tools/build-wine-hardware.py) records the list in the package manifest (`mangohud.excluded_programs`).
+
+### Show/hide on a program that stops presenting (04.26)
+
+Run-0234 (SeaMonkey, OpenGL on) shows why the user could not hide MangoHud there. This is not specific to SeaMonkey: it affects every MangoHud program that stops presenting, such as a static page or a paused program that does not redraw.
+- The closer counted MangoHud in front only while a Vulkan swapchain had presented to the window in front in the last 2 s. A page that does not change presents nothing. With SeaMonkey's window in front the report went 0 and 1 (`in_front=0 window=0x900ba presented=0`). The overlay also needed a present in the last 2 s. While either was 0, ESTADISTICAS toggled the overlay's own readout, not MangoHud.
+- MangoHud reads its key in its present hook, at most every 100 ms. The overlay held Shift+F12 for 250 ms, so with no present in that time the key was not read.
+- Now the closer keeps the state the window in front had while it presented, until another window comes in front. The overlay's ESTADISTICAS acts on MangoHud whenever the closer reports it in front.
+- The overlay holds Shift+F12 at least 250 ms and until the first Vulkan present after it (a counter in [wine_vk_runtime.c](../native/wine_vk_runtime.c), increased after MangoHud's hook has run), at most 3 s. MangoHud toggles again only after 400 ms held, so the key goes up at the first present past 250 ms. The log has `PWOVERLAY mangohud key up: … ms, … presents`. `0 presents` means the program drew nothing in 3 s, and MangoHud did not read the key.
+- [hw_overlay.c](../native/hw_overlay.c), kernelbase and `wine_vk_runtime.c` compile without new warnings: the overlay and the runtime for the console target with `-Wall`, and kernelbase for x86_64 and i386 with the builder's recorded commands.
+
+### The RAM row in GiB (04.26)
+
+On 04.25, MangoHud's RAM row read "859.8 GiB" on the console. The MangoHud-Windows fork's `src/memory_win32.cpp` divides `GlobalMemoryStatusEx`'s bytes by 1024 * 1024, so it keeps the used and total memory and the swap in MiB. `src/hud_elements.cpp` labels them GiB, as Linux MangoHud keeps them, and its log and RAM graph use them as GiB too. So the row showed 859.8 MiB, and every HUD with the RAM row had it, 32-bit and 64-bit.
+- [patch-mangohud-win-memory.py](../tools/vk-h0/patch-mangohud-win-memory.py) keeps the three values in GiB.
+- [build-mangohud.sh](../tools/vk-h0/build-mangohud.sh) applies it and records `src/memory_win32.cpp`. [build-mangohud-i386.sh](../tools/vk-h0/build-mangohud-i386.sh) checks its marker, and [build-wine-hardware.py](../tools/build-wine-hardware.py) refuses a tree without it.
+- The patched file compiles with llvm-mingw for x86_64 and i686 with `-Wall -Wextra`, without warnings. MangoJuice's settings and the overlay's show/hide are not touched.
+
 ## What was checked, and what was not
 
 - The builder ran start to finish.
