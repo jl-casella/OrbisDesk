@@ -39,7 +39,15 @@ static int failure(void) {errno=*sceNetErrnoLoc();if(!errno) errno=EIO;return -1
  * waited with the kernel's own poll() since P017 (native/pop_wine_child.c); the title now does the same, and
  * keeps the per-call sceNetEpoll below only if the kernel refuses poll(). Not proven: which libnet state the
  * per-call epolls leave behind. */
+#ifdef PW_WINE_POLL_NET_ONLY
+/* The CI service probes (tools/ci/build-services.py) run on the shadPS4 fork, which has no libkernel poll (its
+ * import is an emulator stub that returns 0, run 44632875991: "Stub: poll (nid: ku7D4q1Y9PI)"). That build
+ * waits through the sceNetEpoll path below from the start, the path this file takes when the kernel refuses
+ * poll(); the kernel's poll is checked on hardware only. */
+static int kernel_poll_state=-1;
+#else
 static int kernel_poll_state;   /* 0 untried, 1 works, -1 refused */
+#endif
 int pw_wine_poll(struct pollfd *fds,nfds_t count,int timeout)
 {
     if(count>PW_POLL_MAX) {

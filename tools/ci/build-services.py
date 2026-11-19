@@ -17,7 +17,11 @@ def main():
     sources += [ROOT / 'platform/ps4' / name for name in (
         'pw_wine_net.c', 'pw_wine_fs.c', 'pw_wine_platform.c',
         'pw_wine_signals.c', 'pw_vm_ps4_kernel.c')]
-    flags = ['clang-19', '--target=x86_64-pc-freebsd12-elf', '-D__ORBIS__',
+    # The fork emulator has no libkernel poll (an emulator stub, run 44632875991). pw_wine_poll then uses
+    # sceNetEpoll from the start, the title's path when the kernel refuses poll(); the kernel's poll is
+    # covered on hardware only (docs/CI.md).
+    poll_path = 'sceNetEpoll (the fork emulator has no libkernel poll)'
+    flags = ['clang-19', '--target=x86_64-pc-freebsd12-elf', '-D__ORBIS__', '-DPW_WINE_POLL_NET_ONLY',
              '-fPIC', '-O2', '-g', '-march=btver2', '-ffunction-sections', '-fdata-sections',
              '-isysroot', str(sdk), '-isystem', str(sdk / 'include'), '-I' + str(ROOT / 'platform/ps4')]
     objects = []
@@ -40,6 +44,7 @@ def main():
             'scope': 'Standalone existing native service probes; no Wine boot',
             'elf_sha256': sha(work / 'eboot.bin'),
             'libc': libc,
+            'poll_path': poll_path,
             'sources': {p.relative_to(ROOT).as_posix(): sha(p) for p in sources}})
 
 

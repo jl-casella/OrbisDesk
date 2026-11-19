@@ -63,6 +63,8 @@ El perfil `platform-core` ejecuta los 27 casos base sin los cuatro de servicios.
 
 La comparación con el emulador oficial espera un resultado **blocked** con una firma exacta de aserción, marcadores satisfactorios del invitado y salida coincidente con la referencia. Un crash arbitrario, un marcador ausente o un timeout no satisfacen ese contrato. Los resultados del fork se informan por separado. Hardware queda pendiente y `Wine_booted` sigue falso: estas sondas no arrancan Wine.
 
+Las sondas de servicios esperan mediante el epoll de libSceNet, no mediante el `poll()` del núcleo. Desde el trabajo de procesos separados (#38), `pw_wine_poll` prueba primero el `poll()` del núcleo y usa un `sceNetEpoll` por llamada solo cuando el núcleo lo rechaza. El fork de shadPS4 no tiene `poll` de libkernel: su importación es un stub del emulador que devuelve 0. La ejecución 44632875991 falló en `ipc` y `pipes` con `Stub: poll (nid: ku7D4q1Y9PI)`. Por eso `tools/ci/build-services.py` compila las sondas con `PW_WINE_POLL_NET_ONLY`, de modo que toman la ruta de `sceNetEpoll` desde el inicio, y registra `poll_path` en `build/ci-services/manifest.json`. La ruta del `poll()` del núcleo se comprueba solo en hardware. Cualquier otro stub sigue haciendo fallar la matriz.
+
 La evidencia en el directorio ignorado `reports/ci/` incluye:
 
 - `matrix-report.json`: casos reales, resultados, hashes, procedencia del emulador y errores de preparación.
