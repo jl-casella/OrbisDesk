@@ -226,4 +226,5 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [RELEASES-es.md](RELEASES-es.md) — Construcción del producto, releases y rama de desarrollo
 - [RELEASE_LICENSES-es.md](RELEASE_LICENSES-es.md) — Licencias del release (alpha-1)
 - [RELEASE_TRACES-es.md](RELEASE_TRACES-es.md) — Trazas en release: un solo interruptor para el alpha-1
+- [SHADER_CACHE-es.md](SHADER_CACHE-es.md) — Compilación de shaders, tiempo de cuadro y la caché de shaders en disco
 - [WINE_MONO-es.md](WINE_MONO-es.md) — Wine Mono: programas .NET

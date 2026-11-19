@@ -47,6 +47,49 @@ staged=subprocess.run([sys.executable,str(UP/'tools/stage_vk_batch.py'),'--sourc
                       check=True,capture_output=True,text=True)
 for folder in (work,out):folder.mkdir(parents=True,exist_ok=True)
 src=tree/'dlls/winevulkan'
+# 04.33 (docs/SHADER_CACHE.md): in explorer's 32-bit world every program reaches winevulkan through the Khronos loader
+# with MangoHud's implicit layer, and the loader hands the ICD the program's create info with its own
+# VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO links still in pNext (Vulkan-Loader loader.c terminator_CreateInstance
+# copies pCreateInfo). The batch's guard treated any instance pNext as unsafe and turned the batching off for the whole
+# process: run-0253 (vk_batch=1) kept Zink's thread at ~225,000 crossings a second, as without it. The W167 relaunch had
+# no loader or layer in the 32-bit process. The loader's links carry no callback winevulkan calls; every other
+# structure (debug messengers, validation features) still turns it off.
+guard=src/'pw_vk_disable_guard.h'
+guard_text=guard.read_text()
+for old,new in (
+    ('static BOOL pw_vk_stream_call_unsafe(unsigned int code, const void *args)\n',
+     '/* OrbisDesk 04.33: an instance chain made only of the Khronos loader\'s own links is safe. */\n'
+     'static BOOL pw_vk_instance_chain_unsafe(const void *next)\n{\n'
+     '    const VkBaseInStructure *s;\n'
+     '    for (s = next; s; s = s->pNext)\n'
+     '        if (s->sType != VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO) return TRUE;\n'
+     '    return FALSE;\n}\n'
+     'static BOOL pw_vk_stream_call_unsafe(unsigned int code, const void *args)\n'),
+    ('            return !c || c->enabledLayerCount || c->pNext || p->pAllocator;\n',
+     '            return !c || c->enabledLayerCount || pw_vk_instance_chain_unsafe(c->pNext) || p->pAllocator;\n')):
+    if guard_text.count(old)!=1:raise SystemExit('Unexpected context in pw_vk_disable_guard.h: '+old[:60])
+    guard_text=guard_text.replace(old,new)
+guard.write_text(guard_text)
+# 04.34: run-0253 and run-0275 had no line saying whether the batching was on; only the per-thread profile's Unix-call
+# rate told (run-0275: Zink's thread 193,000 -> 81,000 a second in gameplay). One err line when a process starts it,
+# when PW_VK_BATCH=1 was asked for and it stays off from the start, and when a call turns it off for the rest of the
+# process (naming the call). Each happens at most once per process; nothing per call or per frame.
+batch_pe=src/'pw_vk_batch_pe.c'
+batch_text=batch_pe.read_text()
+for old,new in (
+    (' if(!enabled)return TRUE;\n',
+     ' if(!enabled){\n'
+     '  if(GetEnvironmentVariableA("PW_VK_BATCH",env,sizeof(env))==1&&env[0]==\'1\')ERR("PW_VK_BATCH off from the start: layer environment or opcode mask\\n");\n'
+     '  return TRUE;\n }\n'),
+    (' /* Diagnostics are independently opt-in; FPS confirmation leaves them off. */\n',
+     ' ERR("PW_VK_BATCH on=%u stats=%u (OrbisDesk 04.34)\\n",enabled,stats_enabled);\n'
+     ' /* Diagnostics are independently opt-in; FPS confirmation leaves them off. */\n'),
+    ('  InterlockedExchange(&sticky_disabled,1);leave();',
+     '  ERR("PW_VK_BATCH off for the rest of the process: unix call %u (%s)\\n",code,code<unix_count?pw_vk_function_names[code]:"?");\n'
+     '  InterlockedExchange(&sticky_disabled,1);leave();')):
+    if batch_text.count(old)!=1:raise SystemExit('Unexpected context in pw_vk_batch_pe.c: '+old[:60])
+    batch_text=batch_text.replace(old,new)
+batch_pe.write_text(batch_text)
 PE_UNITS=('loader','loader_thunks','pw_vk_batch_pe','pw_vk_present_pe','pw_vk_retire','pw_vk_wire',
           'pw_vk_template_cache','pw_vk_command_stream','pw_vk_spsc','pw_vk_codec','pw_vk_generated')
 dry=subprocess.run(['make','-n','-W../../source/dlls/winevulkan/loader.c','dlls/winevulkan/i386-windows/winevulkan.dll'],

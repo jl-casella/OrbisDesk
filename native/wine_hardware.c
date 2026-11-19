@@ -510,6 +510,8 @@ static void draw_screen(int percent,const char *state,const char *detail)
         snprintf(label,sizeof(label),"%d%%",percent);
         hw_text(pixels,WIDTH,HEIGHT,BAR_X+BAR_W+16,BAR_Y-1,label,0xffb0b0b0,2);
         centred_text(484,state,0xff8a8a8a,2);
+        /* the visible version, on the start screen since the NORMAL/ROOT screen is gone (04.10) */
+        hw_text(pixels,WIDTH,HEIGHT,24,HEIGHT-30,"VERSION " HW_VERSION " (" HW_BUILD ")",0xff404040,2);
     } else {
         centred_text(450,state,0xffff6a6a,3);
         centred_text(500,detail,0xffffffff,2);
@@ -531,39 +533,14 @@ static void panel(const char *state,const char *detail)
     draw_screen(-1,state,detail);
     pthread_mutex_unlock(&screen_lock);
 }
-/* Phase 10: NORMAL (the sandbox, left, chosen) or ROOT (the GoldHEN jailbreak, USB disks as
- * D:..K:) under the logo, on the loading screen before Wine starts */
+/* Phase 10: the mode is remembered here for the relaunches of programs started from the desktop (W043).
+ * 2026-11-16 (04.10): the NORMAL/ROOT screen is gone and every start is ROOT. Separate processes need the
+ * GoldHEN jailbreak (the loader spawn and its watcher start only once jailbroken), so a NORMAL start only took
+ * features away. Without GoldHEN the jailbreak fails and the start goes on as NORMAL (main, after
+ * pw_hw_jailbreak). The Start menu's "Reset as Sandbox" / "Reset as Root" (pw_hw_reset_mode) still forces one start. */
 #define HW_BOOT_MODE "/data/orbisdesk/boot-mode.txt"
-static void draw_choice(int root,int tenths)
-{
-    static const char *const names[2]={"NORMAL","ROOT"};
-    enum {BOX_W=220,BOX_H=56,BOX_Y=440,GAP=40,SCALE=3};
-    char hint[64];
-    pthread_mutex_lock(&screen_lock);
-    if(!pixels)pixels=malloc(WIDTH*HEIGHT*4);
-    if(pixels){
-        for(int i=0;i<WIDTH*HEIGHT;i++)pixels[i]=0xff000000;
-        draw_logo(WIDTH/2-81,110,0.6f);
-        centred_text(370,"ORBISDESK",0xffffffff,4);
-        for(int i=0;i<2;i++){
-            int x0=WIDTH/2-BOX_W-GAP/2+i*(BOX_W+GAP),selected=i==root;
-            uint32_t edge=selected?0xff5be36a:0xff404040,fill=selected?0xff1e3a22:0xff141414;
-            for(int y=0;y<BOX_H;y++)for(int x=0;x<BOX_W;x++)
-                pixels[(BOX_Y+y)*WIDTH+x0+x]=(y<3||y>=BOX_H-3||x<3||x>=BOX_W-3)?edge:fill;
-            int text_w=((int)strlen(names[i])*6-1)*SCALE;
-            hw_text(pixels,WIDTH,HEIGHT,x0+(BOX_W-text_w)/2,BOX_Y+(BOX_H-7*SCALE)/2,names[i],selected?0xffffffff:0xff8a8a8a,SCALE);
-        }
-        snprintf(hint,sizeof(hint),"LEFT - RIGHT: CHOOSE    X: START    %d.%d",tenths/10,tenths%10);
-        centred_text(520,hint,0xff8a8a8a,2);
-        centred_text(550,root?"ROOT: GOLDHEN JAILBREAK - USB DISKS AS D: TO K:":"NORMAL: THE APP SANDBOX - NO USB DISKS",0xff8a8a8a,2);
-        hw_text(pixels,WIDTH,HEIGHT,24,HEIGHT-30,"VERSION " HW_VERSION " (" HW_BUILD ")",0xff404040,2);
-        pw_wine_present(pixels,WIDTH,HEIGHT,WIDTH*4);
-    }
-    pthread_mutex_unlock(&screen_lock);
-}
 static void boot_choose(void)
 {
-    extern int pw_hw_pad_handle(void);  /* native/hw_pad.c: opened once, shared with its input thread */
     struct stat st;
     /* W292: "Reset as Root" / "Reset as Sandbox" (pw_hw_reset_mode): that mode once, without the screen */
     if(!stat(HW_FORCE_MODE,&st)) {
@@ -588,29 +565,10 @@ static void boot_choose(void)
         note(HW_BUILD " PWJB mode=%s source=relaunch\n",boot_root?"root":"normal");
         return;
     }
-    enum {WINDOW_US=2500000,POLL_US=16000};
-    int handle=pw_hw_pad_handle(),root=0,confirmed=0,changes=0,first=1,shown=-1,shown_tenths=-1;
-    uint64_t start=sceKernelGetProcessTime(),deadline=start+WINDOW_US,now=start;uint32_t held=0;
-    while(handle>=0 && (now=sceKernelGetProcessTime())<deadline) {
-        OrbisPadData data;memset(&data,0,sizeof(data));
-        if(!scePadReadState(handle,&data) && data.connected) {
-            /* the first read only records what is held: the X that opened the app does not count */
-            uint32_t pressed=first?0:data.buttons&~held;held=data.buttons;first=0;
-            int want=root;
-            if((data.buttons&ORBIS_PAD_BUTTON_RIGHT) || data.leftStick.x>200) want=1;
-            if((data.buttons&ORBIS_PAD_BUTTON_LEFT) || data.leftStick.x<56) want=0;
-            if(want!=root) {root=want;++changes;deadline=now+WINDOW_US;}
-            if(pressed&ORBIS_PAD_BUTTON_CROSS) {confirmed=1;break;}
-        }
-        int tenths=(int)((deadline-now+99999)/100000);
-        if(root!=shown || tenths!=shown_tenths) {draw_choice(root,tenths);shown=root;shown_tenths=tenths;}
-        sceKernelUsleep(POLL_US);
-    }
-    boot_root=root;
+    boot_root=1;
     FILE *file=fopen(HW_BOOT_MODE,"w");
-    if(file){fputs(root?"root\n":"normal\n",file);fclose(file);}
-    note(HW_BUILD " PWJB mode=%s source=screen pad=0x%08x confirmed=%d changes=%d waited_ms=%llu\n",root?"root":"normal",
-         (unsigned)handle,confirmed,changes,(unsigned long long)((sceKernelGetProcessTime()-start)/1000));
+    if(file){fputs("root\n",file);fclose(file);}
+    note(HW_BUILD " PWJB mode=root source=default\n");
     pthread_mutex_lock(&screen_lock);
     if(!screen_handed) draw_screen(boot_percent,"PREPARING WINE",NULL);
     pthread_mutex_unlock(&screen_lock);
@@ -720,19 +678,49 @@ static void install_crash_handler(void)
 }
 
 /* Alpha-1 trace switch (platform/ps4/pw_trace.h): the build's default, then /data/orbisdesk/trace.txt.
- * Present and empty or "1": traces on; "0": off. The answer reaches Wine as PW_TRACE (main). */
+ * Present and empty or "1": traces on; "0": off. The answer reaches Wine as PW_TRACE (main).
+ * 04.15 (run-0207): the file was there (empty, rwx, owner 0) and libc's open still failed, so the run kept
+ * the build's level; the kernel's own open first, as for framegen.txt (fg_read_config) and winedebug.txt (W271). */
 static void trace_setup(void)
 {
     const char *source="build";
+    char text[8]={0};
+    ssize_t n=-1;
     pw_trace_level=!ORBIS_RELEASE;
-    int fd=open(PW_TRACE_FILE,O_RDONLY);
-    if(fd>=0) {
-        char text[8]={0};ssize_t n=read(fd,text,sizeof(text)-1);close(fd);
-        pw_trace_level=n>0&&text[0]>='0'&&text[0]<='9'?text[0]-'0':1;
+    int kernel_fd=sceKernelOpen(PW_TRACE_FILE,0 /* O_RDONLY */,0),fd=-1,open_errno=0;
+    if(kernel_fd>=0) {
+        n=sceKernelRead(kernel_fd,text,sizeof(text)-1);
+        sceKernelClose(kernel_fd);
         source="trace.txt";
-    }
+    } else if((fd=open(PW_TRACE_FILE,O_RDONLY))>=0) {
+        n=read(fd,text,sizeof(text)-1);
+        close(fd);
+        source="trace.txt";
+    } else open_errno=errno;
+    if(kernel_fd>=0 || fd>=0) pw_trace_level=n>0&&text[0]>='0'&&text[0]<='9'?text[0]-'0':1;
     setenv("PW_TRACE",pw_trace_level?"1":"0",1);
-    note(HW_BUILD " trace level=%d source=%s release=%d\n",pw_trace_level,source,ORBIS_RELEASE);
+    note(HW_BUILD " trace level=%d source=%s release=%d kernel_open=%#x libc_errno=%d\n",pw_trace_level,source,
+         ORBIS_RELEASE,(unsigned)kernel_fd,open_errno);
+}
+/* 04.27 (docs/SHADER_CACHE.md): RADV's disk shader cache, for this process's Vulkan, DXVK and Zink pipelines.
+ * Mesa reads these from this process's environment when the first Vulkan instance creates RADV's device. The
+ * database type keeps its own size limit (256 MB, compiled into Mesa) and evicts what was used longest ago; 8 parts
+ * keep it to 16 open files. A value already in the environment wins; /data/orbisdesk/shader-cache.off turns it off.
+ * The kernel's own open, as for trace.txt (trace_setup). */
+#define PW_SHADER_CACHE_DIR "/data/orbisdesk/shader-cache"
+static void shader_cache_setup(void)
+{
+    int off_fd=sceKernelOpen(PW_SHADER_CACHE_DIR ".off",0 /* O_RDONLY */,0),dir_rc=0;
+    if(off_fd>=0) {sceKernelClose(off_fd);setenv("MESA_SHADER_CACHE_DISABLE","1",0);}
+    else {
+        dir_rc=mkdir(PW_SHADER_CACHE_DIR,0777)?errno:0;
+        if(dir_rc==EEXIST) dir_rc=0;
+        setenv("MESA_SHADER_CACHE_DIR",PW_SHADER_CACHE_DIR,0);
+        setenv("MESA_DISK_CACHE_DATABASE","1",0);
+        setenv("MESA_DISK_CACHE_DATABASE_NUM_PARTS","8",0);
+    }
+    const char *dir=getenv("MESA_SHADER_CACHE_DIR"),*disable=getenv("MESA_SHADER_CACHE_DISABLE");
+    note(HW_BUILD " shader_cache dir=%s disable=%s mkdir_errno=%d\n",dir?dir:"-",disable?disable:"-",dir_rc);
 }
 /* Platform facts the Wine path layer relies on, each with its own error code. */
 static void platform_probes(void)
@@ -1074,8 +1062,9 @@ int main(void)
     {pthread_t sync_thread;int sync_rc=pthread_create(&sync_thread,NULL,log_sync,NULL);note(HW_BUILD " log_sync rc=%d\n",sync_rc);}
     install_crash_handler();
     trace_setup();
+    shader_cache_setup();
     loading(5,"PREPARING WINE");
-    boot_choose();  /* phase 10: Normal or Root */
+    boot_choose();  /* phase 10: Root, a forced mode, or the relaunch's mode */
     int net=(int)sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
     note(HW_BUILD " sysmodule_net rc=0x%08x\n",(unsigned)net);
     if(pw_trace_on()) platform_probes();  /* diagnostics of W001-W030; the paths they checked are in use since */
@@ -1113,6 +1102,13 @@ int main(void)
         if(hw_install_runtime(detail,sizeof(detail))) {panel("INSTALL FAILED",detail);for(;;)sceKernelUsleep(1000000);}
     }
     if(boot_root) pw_hw_jailbreak();  /* phase 10: Root on the loading screen */
+    if(boot_root && !jailbroken) {
+        /* 04.10: no GoldHEN (or its jailbreak refused): the start goes on in the sandbox instead of failing */
+        boot_root=0;
+        FILE *mode=fopen(HW_BOOT_MODE,"w");
+        if(mode){fputs("normal\n",mode);fclose(mode);}
+        note(HW_BUILD " PWJB root_unavailable: continuing as normal\n");
+    }
     guard_registry();
     merge_system_reg();
     /* W015: first GUI program on hardware, the PE64 window fixture of increment 24. */
@@ -1327,6 +1323,32 @@ int main(void)
             args[argc++]=native_signals;
             args[argc++]=wow64_cpu;
             note(HW_BUILD " wow64world native_signals=1 cpu=wow64native.dll\n");
+            /* 04.28 (docs/SHADER_CACHE.md): Alan Wake (32-bit, Zink) runs in this world at 11-17 fps with the GPU
+             * 15-23% busy, and the world has never had W167's 32-bit Vulkan call batching: every Zink Vulkan call
+             * is its own 32->64-bit crossing. Two opt-in markers for an A/B run, both read once here:
+             * C:\orbis\vkbatch32.txt turns the batching on for the world's 32-bit programs (tested only in the
+             * relaunch, W167-W169, never next to explorer's 64-bit guests); C:\orbis\nativeprofile.txt turns on
+             * wow64native's per-thread profile (PW_NATIVE_PROFILE lines every ~2 s per 32-bit thread: time in
+             * Unix calls, syscalls and FS switches; W165), which names the thread that limits the frame rate. */
+            static char world_vk_batch[]="--env=PW_VK_BATCH=1",world_profile[]="--env=PW_NATIVE_PROFILE=1";
+            OrbisKernelStat world_marker;
+            /* 04.35: batching is on by default in the world (04.33 run-0275: zink's calls -58%, no PW_VK_BATCH
+             * fatal in Alan Wake or GTA SA); C:\orbiskbatch32.off turns it off. vkbatch32.txt is no longer needed. */
+            const int world_batch=sceKernelStat("/data/wine-prefix/drive_c/orbis/vkbatch32.off",&world_marker)!=0;
+            const int world_prof=sceKernelStat("/data/wine-prefix/drive_c/orbis/nativeprofile.txt",&world_marker)==0;
+            if(world_batch) args[argc++]=world_vk_batch;
+            if(world_prof) args[argc++]=world_profile;
+            /* 04.30: without PW_QPC_TSC_HZ wow64native times its profile against a 20 ms measurement, which said
+             * 3.43 GHz on the console (run-0252) where the TSC runs at ~1.6 GHz (W160): the shares were right, the
+             * per-second rates and seconds about 2x off. The kernel's TSC frequency, as W160-W177 passed it. */
+            static char world_tsc[48];
+            if(world_prof) {
+                snprintf(world_tsc,sizeof(world_tsc),"--env=PW_QPC_TSC_HZ=%llu",
+                         (unsigned long long)sceKernelGetTscFrequency());
+                args[argc++]=world_tsc;
+            }
+            note(HW_BUILD " wow64world vk_batch=%d native_profile=%d tsc_hz=%s\n",world_batch,world_prof,
+                 world_prof?world_tsc+20:"-");
         } else note(HW_BUILD " wow64world off: pe32relaunch.txt\n");
     }
     /* W256: C:\orbis\winedebug.txt adds Wine debug channels to this run (W254: Vice City's second filter

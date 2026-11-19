@@ -57,8 +57,21 @@ if [ "${VARIANT:-}" = wine ]; then
   python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-crema-telemetry.py "$MESA/src/amd/common/ac_ps4_drm.c"
   # alpha-1: the winsys log follows OrbisDesk's trace switch, each line once (W299)
   python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-crema-traces.py "$MESA/src/amd/common/ac_ps4_drm.c"
+  # alpha-1 (run-0215): a Crema device gives back its buffers and quarantine when its winsys ends
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-crema-release.py "$MESA/src/amd/common/ac_ps4_drm.c"
   # W126: VK_EXT_map_memory_placed for Wine's 32-bit programs (DXVK x86)
   python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-placed.py "$MESA"
+  # 04.27 (docs/SHADER_CACHE.md): each pipeline create's time and cache hit, for the sink's PWPERF line
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-pipeline-trace.py "$MESA"
+  # 04.27: Mesa's disk shader cache (zlib from the sysroot), its index allowed in memory on the PS4
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-disk-cache-ps4.py "$MESA"
+  # 04.28: the cache directory honoured (secure_getenv), and VK_EXT_shader_object shaders (Zink's) cached too
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-shader-object-cache.py "$MESA"
+  # 04.32: the cache UUID includes the device's 32-bit GPU window (Crema picks one per device; shaders hold it)
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-cache-va32.py "$MESA"
+  # 04.35: an empty submission (no command buffers) that waits on semaphores waits on the CPU (Crema has no sync files)
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-empty-submit.py "$MESA"
+  shader_cache="-Dshader-cache=enabled -Dshader-cache-max-size=256M"
 fi
 pc=$H/mesa-pkgconfig; mkdir -p $pc
 cat > $pc/libdrm_amdgpu.pc <<PC
@@ -102,7 +115,17 @@ cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'
 INI
-if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ] || [ "$old_cross" != "$(cat $cross)" ]; then
+# 04.27 (docs/SHADER_CACHE.md): with a disk cache, RADV's cache key must change whenever its code does, or a newer
+# build would load shaders an older Mesa or port compiled. The build id is a hash of the patched sources RADV is
+# built from and of the cross file (compiler and flags), set again whenever it changes.
+if [ -n "${shader_cache:-}" ]; then
+  build_id=$( (cd $MESA && find meson.build meson.options include src/amd src/compiler src/vulkan src/util src/c11 \
+      -type f ! -name '*.orig' ! -name '*.rej' -print0 | LC_ALL=C sort -z | xargs -0 sha1sum; cat $cross) | sha1sum | cut -c1-40)
+else
+  build_id=mesa-26.0.8-ps4-h0  # no disk cache: the id as before
+fi
+if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ] || [ "$old_cross" != "$(cat $cross)" ] ||
+   [ "$(cat $build/.pw-shader-cache 2>/dev/null || echo off)" != "${shader_cache:-off}" ]; then
   rm -rf $build
   PKG_CONFIG_LIBDIR=$pc meson setup $build $MESA --cross-file $cross \
     -Dbuildtype=release -Db_ndebug=true -Ddefault_library=static \
@@ -110,9 +133,16 @@ if [ "${1:-}" = setup ] || [ ! -f $build/build.ninja ] || [ "$old_cross" != "$(c
     -Damd-use-llvm=false -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dglx=disabled \
     -Degl=disabled -Dgbm=disabled -Dzstd=disabled -Dexpat=disabled -Dxmlconfig=disabled \
     -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false \
-    -Dshader-cache=disabled -Dvulkan-layers= -Dtools= -Dvideo-codecs= -Dspirv-tools=disabled \
-    -Dperfetto=false -Dselinux=false -Dradv-build-id=mesa-26.0.8-ps4-h0 2>&1 | tail -25
+    ${shader_cache:--Dshader-cache=disabled} -Dvulkan-layers= -Dtools= -Dvideo-codecs= -Dspirv-tools=disabled \
+    -Dperfetto=false -Dselinux=false -Dradv-build-id=$build_id 2>&1 | tail -25
+  echo "${shader_cache:-off}" > $build/.pw-shader-cache
+  echo $build_id > $build/.pw-build-id
 fi
+if [ "$(cat $build/.pw-build-id 2>/dev/null || echo mesa-26.0.8-ps4-h0)" != "$build_id" ]; then
+  meson configure $build -Dradv-build-id=$build_id >/dev/null
+  echo $build_id > $build/.pw-build-id
+fi
+echo "radv-build-id $build_id"
 libs=(src/amd/vulkan/libvulkan_radeon.a src/amd/addrlib/libaddrlib.a
     src/amd/common/libamd_common.a src/amd/compiler/libaco.a src/c11/impl/libmesa_util_c11.a
     src/compiler/libcompiler.a src/compiler/nir/libnir.a src/compiler/spirv/libvtn.a
