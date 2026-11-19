@@ -221,6 +221,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 ## Otras notas públicas
 
 - [CI-es.md](CI-es.md) — Ejecutar CI y medir la matriz de plataforma
+- [DESKTOP_BACKGROUND-es.md](DESKTOP_BACKGROUND-es.md) — Diálogo de fondo de escritorio: tus propias imágenes como fondo (borrador)
 - [MANGOJUICE-es.md](MANGOJUICE-es.md) — MangoJuice: el programa de ajustes de MangoHud
 - [POP_SEPARATE_PROCESS-es.md](POP_SEPARATE_PROCESS-es.md) — Procesos de Windows separados (fases B–D de PoP)
 - [PROCESS_FAMILY_PROBES-es.md](PROCESS_FAMILY_PROBES-es.md) — Sondas de familias de procesos para launchers de base fija
@@ -233,4 +234,5 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [SEAMONKEY_GPU-es.md](SEAMONKEY_GPU-es.md) — Composición por GPU en SeaMonkey
 - [SEAMONKEY_RESPONSIVENESS-es.md](SEAMONKEY_RESPONSIVENESS-es.md) — La respuesta de SeaMonkey en la consola
 - [SHADER_CACHE-es.md](SHADER_CACHE-es.md) — Compilación de shaders, tiempo de cuadro y la caché de shaders en disco
+- [WARCRAFT3-es.md](WARCRAFT3-es.md) — Warcraft III 1.07: las importaciones estáticas de Storm y los videos AVI de introducción
 - [WINE_MONO-es.md](WINE_MONO-es.md) — Wine Mono: programas .NET

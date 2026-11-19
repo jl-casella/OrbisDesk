@@ -37,8 +37,9 @@ extern int sceNetEpollWait(int,PopNetEvent *,int,int);
 extern int sceNetEpollDestroy(int);
 extern int *sceNetErrnoLoc(void);
 
-static int pop_net_error(void){int e=*sceNetErrnoLoc();return e?-e:-5;}
-static int pop_wait_socket(int fd,int events,int milliseconds){
+/* 04.15: unused since the loader connection uses the kernel's sockets (pop_loader_socket) */
+__attribute__((unused)) static int pop_net_error(void){int e=*sceNetErrnoLoc();return e?-e:-5;}
+__attribute__((unused)) static int pop_wait_socket(int fd,int events,int milliseconds){
     int epoll=sceNetEpollCreate("p014-wait",0);if(epoll<0)return pop_net_error();
     PopNetEvent item={events==4?2u:1u,0,(uint64_t)fd,0};
     int result=sceNetEpollControl(epoll,1,fd,&item);
@@ -60,46 +61,71 @@ static const char *pop_pick_child_elf(FILE *log){
     pop_sep_log(log,"child_elf_not_found",-1);return NULL;
 }
 
+/* 04.15 (W303 run-0198, run-0199: Prince of Persia's launcher, moved to a separate process from a 32-bit guest that held
+ * a Vulkan device and MangoHud, ended the whole title twice with no crash line, no coredump; title.jsonl stops at
+ * child_elf_path both times, so inside the loader connect below, which then used libSceNet: sceNetSocket,
+ * sceNetSetsockopt, sceNetConnect and a sceNetEpoll per wait). libSceNet's epoll already aborted the title once (PoP
+ * D.7, platform/ps4/pw_wine_net.c), and Wine's own sockets and waits in this process use the kernel's socket() and
+ * poll(). The loader connection now does the same: a loopback TCP socket of the kernel, a blocking connect (loopback
+ * answers at once, or refuses), send and receive timeouts, and poll() for the stream. Each step is logged, so a
+ * death that remains names its call. The address is BSD's (len, family), as pop_bsd_unix_addr's. */
+#include <poll.h>
+#include <sys/time.h>
+static int pop_loader_socket(int port,FILE *log,const char *who){
+    pop_sep_log(log,who,0);   /* step 0: about to create the socket */
+    int fd=socket(AF_INET,SOCK_STREAM,0);
+    if(fd<0){pop_sep_log(log,"loader_socket_errno",errno);return -1;}
+    const struct timeval timeout={.tv_sec=2};
+    int one=1;setsockopt(fd,SOL_SOCKET,0x1022 /* SO_NOSIGPIPE */,&one,sizeof(one));
+    if(setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout)))pop_sep_log(log,"loader_sndtimeo_errno",errno);
+    if(setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)))pop_sep_log(log,"loader_rcvtimeo_errno",errno);
+    struct {uint8_t len,family;uint16_t port;uint8_t ip[4],zero[8];} address={16,AF_INET,0,{127,0,0,1},{0}};
+    address.port=(uint16_t)((port>>8)|((port&255)<<8));
+    pop_sep_log(log,"loader_connecting",port);
+    if(connect(fd,(struct sockaddr *)&address,sizeof(address))){
+        int e=errno;close(fd);errno=e;return -1;
+    }
+    return fd;
+}
+static int pop_loader_send_all(int fd,const unsigned char *buf,size_t n){
+    for(size_t off=0;off<n;){
+        ssize_t sent=send(fd,buf+off,n-off,0);
+        if(sent<0&&errno==EINTR)continue;
+        if(sent<=0)return sent<0?-errno:-EPIPE;
+        off+=(size_t)sent;
+    }
+    return 0;
+}
+
 /* send the bundled child ELF to the loader's socksrv (raw ELF bytes -> elfldr_spawn). Returns bytes sent, or <0 */
 static long pop_loader_spawn_elf(const char *elf_path,FILE *log){
-    long sock=sceNetSocket("p014-loader",2,1,0);if(sock<0){pop_sep_log(log,"loader_socket_failed",sock);return sock;}
-    long result=-1;FILE *elf=NULL;
-    int one=1;if(sceNetSetsockopt((int)sock,0xffff,0x1200,&one,sizeof(one))<0){pop_sep_log(log,"loader_nonblock_failed",pop_net_error());goto done;}
-    struct {uint8_t len,family;uint16_t port;uint8_t ip[4],zero[8];} address={16,2,0,{127,0,0,1},{0}};
-    address.port=(uint16_t)((9021>>8)|((9021&255)<<8));
-    long rc=sceNetConnect((int)sock,&address,sizeof(address));if(rc<0)rc=pop_net_error();
-    if(rc<0 && rc!=-36){pop_sep_log(log,"loader_connect_failed",rc);goto done;}
-    if(rc<0){
-        rc=pop_wait_socket((int)sock,4,2000);int error=0;unsigned bytes=sizeof(error);
-        if(!rc)rc=sceNetGetsockopt((int)sock,0xffff,0x1007,&error,&bytes);
-        if(rc || error){pop_sep_log(log,"loader_unavailable",rc?rc:-error);goto done;}
-    }
+    int sock=pop_loader_socket(9021,log,"loader_socket_begin");
+    if(sock<0){long e=-(long)errno;pop_sep_log(log,"loader_unavailable",e);return e?e:-1;}
+    long result=-1;FILE *elf=NULL;long rc;
     pop_sep_log(log,"loader_connected",9021);
     elf=fopen(elf_path,"rb");if(!elf){pop_sep_log(log,"child_elf_open_failed",errno);goto done;}
     unsigned char buf[4096];size_t n;unsigned total=0;
     while((n=fread(buf,1,sizeof(buf),elf))){
         if(total+n>1048576){pop_sep_log(log,"child_elf_too_large",total+n);goto done;}
-        for(size_t off=0;off<n;){
-            rc=pop_wait_socket((int)sock,4,1000);if(rc){pop_sep_log(log,"loader_send_wait_failed",rc);goto done;}
-            long sent=sceNetSend((int)sock,buf+off,n-off,0x20000);
-            if(sent<=0){pop_sep_log(log,"loader_send_failed",sent);goto done;}off+=(size_t)sent;
-        }
+        if((rc=pop_loader_send_all(sock,buf,n))){pop_sep_log(log,"loader_send_failed",rc);goto done;}
         total+=(unsigned)n;
     }
-    pop_sep_log(log,"child_elf_bytes_sent",total);sceNetShutdown((int)sock,1);
+    pop_sep_log(log,"child_elf_bytes_sent",total);shutdown(sock,SHUT_WR);
     result=(long)total;
     /* drain the child's stdout stream for a short while (evidence of the loader actually running it) */
     char path[224];snprintf(path,sizeof(path),POP_SEP_DIR "/loader-stream.log");FILE *stream=fopen(path,"wb");
     for(unsigned k=0;k<40;k++){
-        rc=pop_wait_socket((int)sock,1,200);if(rc)continue;
-        rc=sceNetRecv((int)sock,buf,sizeof(buf),0);if(rc<0)rc=pop_net_error();
+        struct pollfd pfd={sock,POLLIN,0};
+        rc=poll(&pfd,1,200);if(rc==0||(rc<0&&errno==EINTR))continue;
+        if(rc<0){pop_sep_log(log,"loader_stream_poll_errno",errno);break;}
+        rc=recv(sock,buf,sizeof(buf),0);
         if(!rc){pop_sep_log(log,"loader_stream_eof",0);break;}
-        if(rc<0){if(rc==-35)continue;pop_sep_log(log,"loader_stream_error",rc);break;}
+        if(rc<0){if(errno==EINTR||errno==EAGAIN)continue;pop_sep_log(log,"loader_stream_error",-(long)errno);break;}
         if(stream){fwrite(buf,1,(size_t)rc,stream);fflush(stream);}
     }
     if(stream){fsync(fileno(stream));fclose(stream);}
 done:
-    if(elf)fclose(elf);sceNetSocketClose((int)sock);
+    if(elf)fclose(elf);close(sock);
     return result;
 }
 
@@ -114,23 +140,17 @@ static long pop_loader_bootstrap(FILE *log){
     for(unsigned i=0;i<sizeof(candidates)/sizeof(candidates[0])&&!elf;i++)
         if((elf=fopen(candidates[i],"rb")))pop_sep_log(log,"loader_bootstrap_path",(long)i);
     if(!elf){pop_sep_log(log,"loader_bootstrap_missing",-1);return -1;}
-    long sock=sceNetSocket("p014-binloader",2,1,0);if(sock<0){pop_sep_log(log,"loader_bootstrap_socket",sock);fclose(elf);return sock;}
-    struct {uint8_t len,family;uint16_t port;uint8_t ip[4],zero[8];} address={16,2,0,{127,0,0,1},{0}};
-    address.port=(uint16_t)((9090>>8)|((9090&255)<<8));
-    long rc=sceNetConnect((int)sock,&address,sizeof(address));if(rc<0)rc=pop_net_error();
-    if(rc<0){pop_sep_log(log,"loader_bootstrap_connect",rc);goto done;}
-    unsigned char buf[4096];size_t n;unsigned total=0;
+    /* 04.15: the kernel's socket, as pop_loader_spawn_elf */
+    int sock=pop_loader_socket(9090,log,"loader_bootstrap_begin");
+    if(sock<0){pop_sep_log(log,"loader_bootstrap_connect",-(long)errno);fclose(elf);return -1;}
+    unsigned char buf[4096];size_t n;unsigned total=0;long rc;
     while((n=fread(buf,1,sizeof(buf),elf))){
-        for(size_t off=0;off<n;){
-            long sent=sceNetSend((int)sock,buf+off,n-off,0);
-            if(sent<=0){pop_sep_log(log,"loader_bootstrap_send",sent<0?pop_net_error():0);goto done;}
-            off+=(size_t)sent;
-        }
+        if((rc=pop_loader_send_all(sock,buf,n))){pop_sep_log(log,"loader_bootstrap_send",rc);goto done;}
         total+=(unsigned)n;
     }
     pop_sep_log(log,"loader_bootstrap_sent",total);result=(long)total;
 done:
-    fclose(elf);sceNetSocketClose((int)sock);
+    fclose(elf);close(sock);
     return result;
 }
 

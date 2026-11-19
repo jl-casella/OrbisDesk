@@ -24,7 +24,7 @@ Explorer hosts multiple Windows guests inside one PS4 title/process. Later code 
 - Do not make an unsupported capability appear successful through a stub, fabricated event or rewritten report. Keep the real failure and a minimal reproduction.
 - A shadPS4 patch must implement general platform behavior, with an independent reproduction when possible. Emulator changes do not change the real PS4 kernel.
 - Distinguish host reference, official emulator, fork emulator and physical hardware results. Never relabel fork success as official compatibility.
-- The visible product is **OrbisDesk**. The distributed main package is `OrbisDesk.pkg`; the visible version belongs only on the NORMAL/ROOT boot selector. Preserve technical update identities, migration keys, old evidence names and compatibility paths. See [branding](docs/REBRANDING_ORBISDESK.md), [brand constants](tools/project_brand.py) and [package builder](tools/orbis_package.py).
+- The visible product is **OrbisDesk**. The distributed main package is `OrbisDesk.pkg`; the visible version belongs only on the start (loading) screen; the NORMAL/ROOT boot selector was removed in app version 04.10 and every start is ROOT, falling back to NORMAL without GoldHEN. Preserve technical update identities, migration keys, old evidence names and compatibility paths. See [branding](docs/REBRANDING_ORBISDESK.md), [brand constants](tools/project_brand.py) and [package builder](tools/orbis_package.py).
 - Keep public documentation in English with a complete `-es.md` counterpart. Follow [documentation policy](docs/DOCUMENTATION_POLICY.md). Do not copy private research/comparisons into the public documentation.
 
 ## 3. Directory map and what belongs in Git
@@ -207,7 +207,7 @@ The available test console was reported as a PS4 Pro Baikal, firmware 12.50 with
 
 1. Build and inspect the actual package manifest under `out/wine-hardware-wNNN/manifest.json`; it identifies package, ELF, runtime root and source hashes. Check that upload/fetch tools recognize the chosen build ID. They maintain explicit build lists.
 2. With transfer authorization, upload the package **and required runtime**, not just the PKG. Console paths normally include `/data/pkg/OrbisDesk.pkg`, `/data/wine-prefix`, `/data/wine-home` and `/data/wine`. Do not guess a new mount/layout from a historical screenshot.
-3. The user closes the current app, installs through the console and launches it manually/through their remote-play workflow. FTP upload is not installation or execution. Let the user select NORMAL/ROOT.
+3. The user closes the current app, installs through the console and launches it manually/through their remote-play workflow. FTP upload is not installation or execution. Every start is ROOT since 04.10 (no selector).
 4. Give a short test sequence and, when supported by the chat, a “Ya la probé” reply button. Collect logs when the user reports finishing; do not repeatedly poll a running title instead of respecting that feedback loop.
 5. Confirm log build marker and run identity before interpreting results. If it is the old build, report that and help resolve installation; never attribute it to the new one.
 

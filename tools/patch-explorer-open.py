@@ -98,11 +98,27 @@ replacement=r'''    {
             struct pw_shell_launch_request *launch = (void *)lp;
             STARTUPINFOW si = {sizeof(si)};
             PROCESS_INFORMATION pi = {0};
-            BOOL ok = CreateProcessW(launch->image, launch->command, NULL, NULL, FALSE, 0, NULL,
-                                     launch->directory[0] ? launch->directory : NULL, &si, &pi);
-            DWORD error = ok ? 0 : GetLastError();
-            ERR("PWLAUNCH image=%s command=%s ok=%d error=%lu pid=%04lx\n", debugstr_w(launch->image),
-                debugstr_w(launch->command), ok, error, pi.dwProcessId);
+            BOOL ok;
+            DWORD error;
+            /* Hardware 2026-11-16 (run-0174): Warcraft III's war3.exe, handed over by its launcher in the separate
+             * process, came with no directory and started in explorer's, so it found none of its .mpq files and
+             * said "Warcraft III was unable to initialize". With none, the program's own folder, where a launcher
+             * started from the desktop runs. */
+            if (!launch->directory[0])
+            {
+                WCHAR *slash = wcsrchr(launch->image, '\\');
+                if (slash && slash - launch->image < MAX_PATH - 1)
+                {
+                    memcpy(launch->directory, launch->image, (slash - launch->image) * sizeof(WCHAR));
+                    launch->directory[slash - launch->image] = 0;
+                    if (slash - launch->image == 2) lstrcatW(launch->directory, L"\\");   /* "E:" is not a root */
+                }
+            }
+            ok = CreateProcessW(launch->image, launch->command, NULL, NULL, FALSE, 0, NULL,
+                                launch->directory[0] ? launch->directory : NULL, &si, &pi);
+            error = ok ? 0 : GetLastError();
+            ERR("PWLAUNCH image=%s command=%s dir=%s ok=%d error=%lu pid=%04lx\n", debugstr_w(launch->image),
+                debugstr_w(launch->command), debugstr_w(launch->directory), ok, error, pi.dwProcessId);
             if (ok)
             {
                 struct pw_title_launch_wait *wait = HeapAlloc(GetProcessHeap(), 0, sizeof(*wait));

@@ -1733,6 +1733,626 @@ revise('startmenu.c','''    else if (dis->itemID == MENU_ID_EXIT)
     else if (dis->itemID == MENU_ID_EXIT)
     {''','Reset as Root / Sandbox glyphs (W292).')
 
+# W304 (user: set the wallpaper to their own pictures, in a dialog like Windows' Desktop Background):
+# Wine has no wallpaper UI (desk.cpl is display settings only), so the dialog is ours. The empty-desktop
+# menu's W292 Wallpaper submenu becomes "Desktop background..."; WIC decodes the picture, which is drawn
+# on a screen-sized canvas and, unless it is a screen-sized built-in BMP, written as a BMP to the
+# user's profile for ps5drv's wallpaper layer. The choice stays in HKCU\Software\OrbisDesk\Desktop.
+revise('desktop.c','''static HMENU orbis_wallpaper_menu(void)
+{
+    WCHAR folder[MAX_PATH], glob[MAX_PATH], current[MAX_PATH] = L"", name[64];
+    WIN32_FIND_DATAW data;
+    HANDLE handle;
+    HMENU menu;
+    unsigned int i;
+
+    orbis_wallpaper_count = 0;
+    if (!GetWindowsDirectoryW( folder, ARRAY_SIZE(folder) ) || !(menu = CreatePopupMenu())) return NULL;
+    SystemParametersInfoW( SPI_GETDESKWALLPAPER, ARRAY_SIZE(current), current, 0 );
+    if (swprintf( glob, ARRAY_SIZE(glob), L"%s\\\\*.bmp", folder ) > 0 &&
+        (handle = FindFirstFileW( glob, &data )) != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (swprintf( orbis_wallpapers[orbis_wallpaper_count], MAX_PATH, L"%s\\\\%s", folder, data.cFileName ) > 0)
+                orbis_wallpaper_count++;
+        } while (orbis_wallpaper_count < ORBIS_MAX_WALLPAPERS && FindNextFileW( handle, &data ));
+        FindClose( handle );
+    }
+    qsort( orbis_wallpapers, orbis_wallpaper_count, sizeof(orbis_wallpapers[0]), orbis_wallpaper_compare );
+    for (i = 0; i < orbis_wallpaper_count; i++)
+    {
+        orbis_wallpaper_name( orbis_wallpapers[i], name, ARRAY_SIZE(name) );
+        AppendMenuW( menu, MF_STRING | (wcsicmp( orbis_wallpapers[i], current ) ? 0 : MF_CHECKED),
+                     ORBIS_MENU_WALLPAPER + i, name );
+    }
+    if (!orbis_wallpaper_count) AppendMenuW( menu, MF_STRING | MF_GRAYED, 0, L"(no wallpapers)" );
+    ERR( "PWDESK wallpaper menu count=%u current=%s\\n", orbis_wallpaper_count, debugstr_w(current) );
+    return menu;
+}''','''/* W304: the built-in pictures, the BMPs in the Windows folder, sorted (the Desktop background dialog) */
+static void orbis_scan_wallpapers(void)
+{
+    WCHAR folder[MAX_PATH], glob[MAX_PATH];
+    WIN32_FIND_DATAW data;
+    HANDLE handle;
+
+    orbis_wallpaper_count = 0;
+    if (!GetWindowsDirectoryW( folder, ARRAY_SIZE(folder) )) return;
+    if (swprintf( glob, ARRAY_SIZE(glob), L"%s\\\\*.bmp", folder ) > 0 &&
+        (handle = FindFirstFileW( glob, &data )) != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (swprintf( orbis_wallpapers[orbis_wallpaper_count], MAX_PATH, L"%s\\\\%s", folder, data.cFileName ) > 0)
+                orbis_wallpaper_count++;
+        } while (orbis_wallpaper_count < ORBIS_MAX_WALLPAPERS && FindNextFileW( handle, &data ));
+        FindClose( handle );
+    }
+    qsort( orbis_wallpapers, orbis_wallpaper_count, sizeof(orbis_wallpapers[0]), orbis_wallpaper_compare );
+}''','The built-in wallpapers are listed for the Desktop background dialog, not a submenu (W304).')
+revise('desktop.c','''/* point in the launcher window's client coordinates; outside a launcher, the desktop items */''','''/* W304: the Desktop background dialog */
+#include <commdlg.h>
+#include <wincodec.h>
+#define ORBIS_MENU_BACKGROUND 12
+#define ORBIS_MAX_SOURCE_PIXELS (16u * 1024 * 1024)
+#define ORBIS_ERR_TOO_LARGE HRESULT_FROM_WIN32( ERROR_FILE_TOO_LARGE )
+enum { ORBIS_BG_LIST = 201, ORBIS_BG_PREVIEW, ORBIS_BG_POSITION, ORBIS_BG_BROWSE, ORBIS_BG_STATUS, ORBIS_BG_APPLY };
+enum { ORBIS_FIT_FILL, ORBIS_FIT_FIT, ORBIS_FIT_STRETCH, ORBIS_FIT_CENTER };
+static const WCHAR *const orbis_fit_names[] = { L"Fill", L"Fit", L"Stretch", L"Center" };
+/* wincodec.idl; local, as explorer does not link libuuid */
+static const GUID orbis_clsid_wic = { 0xcacaf262, 0x9370, 0x4615, { 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
+static const GUID orbis_iid_wic_factory = { 0xec5ec8a9, 0xc395, 0x4314, { 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
+static const GUID orbis_wic_bgr32 = { 0x6fddc324, 0x4e03, 0x4bfe, { 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x0e } };
+
+struct orbis_background
+{
+    WCHAR custom[MAX_PATH];         /* the user's own picture: chosen with Browse, or the current one */
+    WCHAR rendered_for[MAX_PATH];   /* the picture the canvas holds */
+    int rendered_mode;
+    UINT32 *canvas;                 /* screen-sized, top-down, 0x00RRGGBB */
+    UINT32 *work;                   /* twice the screen size at most, for the 2x2 average */
+    int width, height;              /* the screen */
+    UINT source_width, source_height;
+    HBITMAP preview;
+    BOOL dirty;                     /* the picture or the position changed since the last Apply */
+};
+
+/* the picture at path on the width x height canvas as the position says (Fill crops, Fit letterboxes,
+ * Center does not scale), black elsewhere. Wine's scaler is nearest neighbour: a picture larger than
+ * twice the target is scaled to twice it and averaged 2x2. */
+static HRESULT orbis_render_picture( struct orbis_background *bg, const WCHAR *path, int mode )
+{
+    IWICImagingFactory *factory = NULL;
+    IWICBitmapDecoder *decoder = NULL;
+    IWICBitmapFrameDecode *frame = NULL;
+    IWICFormatConverter *converter = NULL;
+    IWICBitmapClipper *clipper = NULL;
+    IWICBitmapScaler *scaler = NULL;
+    IWICBitmapSource *source = NULL;
+    UINT w = 0, h = 0, dst_w = 0, dst_h = 0, step = 1, x, y;
+    int width = bg->width, height = bg->height;
+    WICRect crop = { 0, 0, 0, 0 };
+    HRESULT hr;
+
+    memset( bg->canvas, 0, (size_t)width * height * 4 );
+    bg->source_width = bg->source_height = 0;
+    hr = CoCreateInstance( &orbis_clsid_wic, NULL, CLSCTX_INPROC_SERVER, &orbis_iid_wic_factory, (void **)&factory );
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateDecoderFromFilename( factory, path, NULL, GENERIC_READ,
+                                                                          WICDecodeMetadataCacheOnDemand, &decoder );
+    if (SUCCEEDED(hr)) hr = IWICBitmapDecoder_GetFrame( decoder, 0, &frame );
+    if (SUCCEEDED(hr)) hr = IWICBitmapFrameDecode_GetSize( frame, &w, &h );
+    if (SUCCEEDED(hr))
+    {
+        bg->source_width = w;
+        bg->source_height = h;
+        if (!w || !h || (ULONG64)w * h > ORBIS_MAX_SOURCE_PIXELS) hr = ORBIS_ERR_TOO_LARGE;
+    }
+    if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateFormatConverter( factory, &converter );
+    if (SUCCEEDED(hr)) hr = IWICFormatConverter_Initialize( converter, (IWICBitmapSource *)frame, &orbis_wic_bgr32,
+                                                            WICBitmapDitherTypeNone, NULL, 0.0, WICBitmapPaletteTypeCustom );
+    if (SUCCEEDED(hr))
+    {
+        double sx = (double)width / w, sy = (double)height / h, scale;
+
+        crop.Width = w;
+        crop.Height = h;
+        switch (mode)
+        {
+        case ORBIS_FIT_STRETCH:
+            dst_w = width;
+            dst_h = height;
+            break;
+        case ORBIS_FIT_FIT:
+            scale = sx < sy ? sx : sy;
+            dst_w = max( 1, (int)(w * scale + 0.5) );
+            dst_h = max( 1, (int)(h * scale + 0.5) );
+            break;
+        case ORBIS_FIT_CENTER:
+            crop.Width = min( (int)w, width );
+            crop.Height = min( (int)h, height );
+            dst_w = crop.Width;
+            dst_h = crop.Height;
+            break;
+        default:  /* Fill: cover the screen, the middle of the picture */
+            scale = sx > sy ? sx : sy;
+            crop.Width = min( (int)w, max( 1, (int)(width / scale + 0.5) ));
+            crop.Height = min( (int)h, max( 1, (int)(height / scale + 0.5) ));
+            dst_w = width;
+            dst_h = height;
+            break;
+        }
+        crop.X = ((int)w - crop.Width) / 2;
+        crop.Y = ((int)h - crop.Height) / 2;
+        dst_w = min( dst_w, (UINT)width );
+        dst_h = min( dst_h, (UINT)height );
+        source = (IWICBitmapSource *)converter;
+        if (crop.Width != (int)w || crop.Height != (int)h)
+        {
+            hr = IWICImagingFactory_CreateBitmapClipper( factory, &clipper );
+            if (SUCCEEDED(hr)) hr = IWICBitmapClipper_Initialize( clipper, source, &crop );
+            if (SUCCEEDED(hr)) source = (IWICBitmapSource *)clipper;
+        }
+        if (SUCCEEDED(hr) && ((UINT)crop.Width >= 2 * dst_w && (UINT)crop.Height >= 2 * dst_h)) step = 2;
+        if (SUCCEEDED(hr) && (dst_w * step != (UINT)crop.Width || dst_h * step != (UINT)crop.Height))
+        {
+            hr = IWICImagingFactory_CreateBitmapScaler( factory, &scaler );
+            if (SUCCEEDED(hr)) hr = IWICBitmapScaler_Initialize( scaler, source, dst_w * step, dst_h * step,
+                                                                 WICBitmapInterpolationModeNearestNeighbor );
+            if (SUCCEEDED(hr)) source = (IWICBitmapSource *)scaler;
+        }
+    }
+    if (SUCCEEDED(hr))
+    {
+        UINT32 *target = bg->canvas + (size_t)((height - dst_h) / 2) * width + (width - dst_w) / 2;
+
+        if (step == 1)
+            hr = IWICBitmapSource_CopyPixels( source, NULL, width * 4, width * 4 * (dst_h - 1) + dst_w * 4, (BYTE *)target );
+        else if (!bg->work && !(bg->work = malloc( (size_t)width * height * 16 )))
+            hr = E_OUTOFMEMORY;
+        else if (SUCCEEDED(hr = IWICBitmapSource_CopyPixels( source, NULL, dst_w * 8, dst_w * 8 * dst_h * 2, (BYTE *)bg->work )))
+        {
+            for (y = 0; y < dst_h; y++)
+            {
+                const UINT32 *a = bg->work + (size_t)y * 2 * (dst_w * 2), *b = a + dst_w * 2;
+                for (x = 0; x < dst_w; x++)
+                {
+                    UINT32 p = a[2 * x], q = a[2 * x + 1], r = b[2 * x], s = b[2 * x + 1];
+                    target[(size_t)y * width + x] =
+                        (((p & 0xff) + (q & 0xff) + (r & 0xff) + (s & 0xff) + 2) / 4) |
+                        ((((p >> 8 & 0xff) + (q >> 8 & 0xff) + (r >> 8 & 0xff) + (s >> 8 & 0xff) + 2) / 4) << 8) |
+                        ((((p >> 16 & 0xff) + (q >> 16 & 0xff) + (r >> 16 & 0xff) + (s >> 16 & 0xff) + 2) / 4) << 16);
+                }
+            }
+        }
+    }
+    if (scaler) IWICBitmapScaler_Release( scaler );
+    if (clipper) IWICBitmapClipper_Release( clipper );
+    if (converter) IWICFormatConverter_Release( converter );
+    if (frame) IWICBitmapFrameDecode_Release( frame );
+    if (decoder) IWICBitmapDecoder_Release( decoder );
+    if (factory) IWICImagingFactory_Release( factory );
+    return hr;
+}
+
+/* the canvas as a 24-bit bottom-up BMP, the format ps5drv's wallpaper layer and user32 read */
+static BOOL orbis_write_bmp( const WCHAR *path, const UINT32 *canvas, int width, int height )
+{
+    BITMAPFILEHEADER file = {0};
+    BITMAPINFOHEADER info = {0};
+    DWORD stride = (width * 3 + 3) & ~3, written;
+    BYTE *row = calloc( 1, stride );
+    HANDLE handle;
+    BOOL ok;
+    int x, y;
+
+    if (!row) return FALSE;
+    handle = CreateFileW( path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL );
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        free( row );
+        return FALSE;
+    }
+    file.bfType = 0x4d42;
+    file.bfOffBits = sizeof(file) + sizeof(info);
+    file.bfSize = file.bfOffBits + stride * height;
+    info.biSize = sizeof(info);
+    info.biWidth = width;
+    info.biHeight = height;
+    info.biPlanes = 1;
+    info.biBitCount = 24;
+    info.biCompression = BI_RGB;
+    info.biSizeImage = stride * height;
+    ok = WriteFile( handle, &file, sizeof(file), &written, NULL ) && written == sizeof(file) &&
+         WriteFile( handle, &info, sizeof(info), &written, NULL ) && written == sizeof(info);
+    for (y = height - 1; ok && y >= 0; y--)
+    {
+        const UINT32 *pixel = canvas + (size_t)y * width;
+        for (x = 0; x < width; x++)
+        {
+            row[3 * x] = pixel[x] & 0xff;
+            row[3 * x + 1] = (pixel[x] >> 8) & 0xff;
+            row[3 * x + 2] = (pixel[x] >> 16) & 0xff;
+        }
+        ok = WriteFile( handle, row, stride, &written, NULL ) && written == stride;
+    }
+    if (!CloseHandle( handle )) ok = FALSE;
+    if (!ok) DeleteFileW( path );
+    free( row );
+    return ok;
+}
+
+static void orbis_background_status( HWND dialog, const WCHAR *text )
+{
+    SetDlgItemTextW( dialog, ORBIS_BG_STATUS, text );
+}
+
+/* the picture the list has selected: a built-in one, or the user's own (the last item) */
+static BOOL orbis_background_selected( HWND dialog, struct orbis_background *bg, WCHAR *path )
+{
+    LRESULT index = SendDlgItemMessageW( dialog, ORBIS_BG_LIST, LB_GETCURSEL, 0, 0 );
+
+    if (index >= 0 && index < (LRESULT)orbis_wallpaper_count) lstrcpynW( path, orbis_wallpapers[index], MAX_PATH );
+    else if (index == (LRESULT)orbis_wallpaper_count && bg->custom[0]) lstrcpynW( path, bg->custom, MAX_PATH );
+    else return FALSE;
+    return TRUE;
+}
+
+static int orbis_background_mode( HWND dialog )
+{
+    LRESULT mode = SendDlgItemMessageW( dialog, ORBIS_BG_POSITION, CB_GETCURSEL, 0, 0 );
+    return mode >= 0 && mode < (LRESULT)ARRAY_SIZE(orbis_fit_names) ? (int)mode : ORBIS_FIT_FILL;
+}
+
+/* the canvas holds path as mode says, or the status line says why not */
+static BOOL orbis_background_render( HWND dialog, struct orbis_background *bg, const WCHAR *path, int mode )
+{
+    WCHAR text[160];
+    DWORD start = GetTickCount();
+    HCURSOR cursor;
+    HRESULT hr;
+
+    if (!wcsicmp( bg->rendered_for, path ) && bg->rendered_mode == mode) return TRUE;
+    bg->rendered_for[0] = 0;
+    if (!bg->canvas && !(bg->canvas = malloc( (size_t)bg->width * bg->height * 4 )))
+    {
+        orbis_background_status( dialog, L"Not enough memory for the picture." );
+        return FALSE;
+    }
+    cursor = SetCursor( LoadCursorW( NULL, (LPCWSTR)IDC_WAIT ));
+    hr = orbis_render_picture( bg, path, mode );
+    SetCursor( cursor );
+    ERR( "PWDESK background render path=%s mode=%d source=%ux%u hr=%#lx ms=%lu\\n", debugstr_w(path), mode,
+         bg->source_width, bg->source_height, hr, GetTickCount() - start );
+    if (hr == ORBIS_ERR_TOO_LARGE)
+        swprintf( text, ARRAY_SIZE(text), L"The picture is too large (%u x %u); up to 16 megapixels.",
+                  bg->source_width, bg->source_height );
+    else if (FAILED(hr))
+        swprintf( text, ARRAY_SIZE(text), L"The picture could not be read (error 0x%08lx).", hr );
+    else
+    {
+        swprintf( text, ARRAY_SIZE(text), L"%u x %u, %s", bg->source_width, bg->source_height, orbis_fit_names[mode] );
+        lstrcpynW( bg->rendered_for, path, MAX_PATH );
+        bg->rendered_mode = mode;
+    }
+    orbis_background_status( dialog, text );
+    return SUCCEEDED(hr);
+}
+
+/* the preview: the canvas scaled into the preview control */
+static void orbis_background_preview( HWND dialog, struct orbis_background *bg )
+{
+    HWND control = GetDlgItem( dialog, ORBIS_BG_PREVIEW );
+    WCHAR path[MAX_PATH];
+    BITMAPINFO info = {{ sizeof(BITMAPINFOHEADER) }};
+    RECT rect;
+    HDC screen, dc;
+    void *bits;
+
+    if (bg->preview) DeleteObject( bg->preview );
+    bg->preview = NULL;
+    if (orbis_background_selected( dialog, bg, path ) && orbis_background_render( dialog, bg, path, orbis_background_mode( dialog )) &&
+        GetClientRect( control, &rect ) && rect.right > 0 && rect.bottom > 0)
+    {
+        screen = GetDC( control );
+        dc = CreateCompatibleDC( screen );
+        bg->preview = CreateCompatibleBitmap( screen, rect.right, rect.bottom );
+        if (dc && bg->preview)
+        {
+            HGDIOBJ old = SelectObject( dc, bg->preview );
+            info.bmiHeader.biWidth = bg->width;
+            info.bmiHeader.biHeight = -bg->height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            bits = bg->canvas;
+            SetStretchBltMode( dc, HALFTONE );
+            StretchDIBits( dc, 0, 0, rect.right, rect.bottom, 0, 0, bg->width, bg->height, bits, &info, DIB_RGB_COLORS, SRCCOPY );
+            SelectObject( dc, old );
+        }
+        if (dc) DeleteDC( dc );
+        ReleaseDC( control, screen );
+    }
+    InvalidateRect( control, NULL, TRUE );
+}
+
+static void orbis_background_fill_list( HWND dialog, struct orbis_background *bg, LRESULT select )
+{
+    WCHAR name[MAX_PATH + 16];
+    const WCHAR *file;
+    unsigned int i;
+
+    SendDlgItemMessageW( dialog, ORBIS_BG_LIST, LB_RESETCONTENT, 0, 0 );
+    for (i = 0; i < orbis_wallpaper_count; i++)
+    {
+        orbis_wallpaper_name( orbis_wallpapers[i], name, 64 );
+        SendDlgItemMessageW( dialog, ORBIS_BG_LIST, LB_ADDSTRING, 0, (LPARAM)name );
+    }
+    if (bg->custom[0])
+    {
+        file = wcsrchr( bg->custom, '\\\\' );
+        swprintf( name, ARRAY_SIZE(name), L"My picture: %s", file ? file + 1 : bg->custom );
+        SendDlgItemMessageW( dialog, ORBIS_BG_LIST, LB_ADDSTRING, 0, (LPARAM)name );
+    }
+    SendDlgItemMessageW( dialog, ORBIS_BG_LIST, LB_SETCURSEL, select, 0 );
+}
+
+static void orbis_background_browse( HWND dialog, struct orbis_background *bg )
+{
+    typedef BOOL (WINAPI *open_fn)( OPENFILENAMEW * );
+    typedef DWORD (WINAPI *error_fn)( void );
+    HMODULE comdlg = LoadLibraryW( L"comdlg32.dll" );
+    open_fn open = comdlg ? (open_fn)GetProcAddress( comdlg, "GetOpenFileNameW" ) : NULL;
+    error_fn error = comdlg ? (error_fn)GetProcAddress( comdlg, "CommDlgExtendedError" ) : NULL;
+    WCHAR file[MAX_PATH] = L"", folder[MAX_PATH] = L"", text[96];
+    OPENFILENAMEW ofn = { sizeof(ofn) };
+    DWORD failure = 0;
+
+    if (!open)
+    {
+        orbis_background_status( dialog, L"The file dialog is not available (comdlg32)." );
+        ERR( "PWDESK background browse comdlg32=%p\\n", comdlg );
+        return;
+    }
+    if (FAILED( SHGetFolderPathW( NULL, CSIDL_MYPICTURES, NULL, SHGFP_TYPE_CURRENT, folder )))
+        SHGetFolderPathW( NULL, CSIDL_PERSONAL, NULL, SHGFP_TYPE_CURRENT, folder );
+    ofn.hwndOwner = dialog;
+    ofn.lpstrFilter = L"Pictures (*.bmp;*.jpg;*.jpeg;*.png;*.gif;*.tif;*.tiff)\\0*.bmp;*.jpg;*.jpeg;*.png;*.gif;*.tif;*.tiff\\0"
+                      L"All files (*.*)\\0*.*\\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = ARRAY_SIZE(file);
+    ofn.lpstrInitialDir = folder[0] ? folder : NULL;
+    ofn.lpstrTitle = L"Browse for a picture";
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (open( &ofn ))
+    {
+        lstrcpynW( bg->custom, file, MAX_PATH );
+        orbis_background_fill_list( dialog, bg, orbis_wallpaper_count );
+        bg->dirty = TRUE;
+        orbis_background_preview( dialog, bg );
+    }
+    else if (error && (failure = error()))
+    {
+        swprintf( text, ARRAY_SIZE(text), L"The file dialog failed (error 0x%lx).", failure );
+        orbis_background_status( dialog, text );
+    }
+    ERR( "PWDESK background browse file=%s error=%#lx\\n", debugstr_w(file), failure );
+}
+
+/* the selected picture as the wallpaper: a screen-sized built-in BMP as it is, anything else drawn as
+ * the position says and written to the user's profile, alternating two names (ps5drv reloads only a
+ * new path) */
+static BOOL orbis_background_apply( HWND dialog, struct orbis_background *bg )
+{
+    WCHAR path[MAX_PATH], target[MAX_PATH], folder[MAX_PATH], current[MAX_PATH] = L"", text[MAX_PATH + 64];
+    int mode = orbis_background_mode( dialog );
+    BOOL builtin = SendDlgItemMessageW( dialog, ORBIS_BG_LIST, LB_GETCURSEL, 0, 0 ) < (LRESULT)orbis_wallpaper_count;
+    DWORD style = mode;
+    HKEY key;
+
+    if (!orbis_background_selected( dialog, bg, path ))
+    {
+        orbis_background_status( dialog, L"Choose a picture first." );
+        return FALSE;
+    }
+    if (!orbis_background_render( dialog, bg, path, mode )) return FALSE;
+    SystemParametersInfoW( SPI_GETDESKWALLPAPER, ARRAY_SIZE(current), current, 0 );
+    if (builtin && bg->source_width == (UINT)bg->width && bg->source_height == (UINT)bg->height)
+        lstrcpynW( target, path, MAX_PATH );
+    else
+    {
+        if (FAILED( SHGetFolderPathW( NULL, CSIDL_APPDATA | CSIDL_FLAG_CREATE, NULL, SHGFP_TYPE_CURRENT, folder )) ||
+            swprintf( folder + lstrlenW( folder ), MAX_PATH - lstrlenW( folder ), L"\\\\OrbisDesk" ) < 0 ||
+            (!CreateDirectoryW( folder, NULL ) && GetLastError() != ERROR_ALREADY_EXISTS))
+        {
+            swprintf( text, ARRAY_SIZE(text), L"The folder for the wallpaper could not be made (error %lu).", GetLastError() );
+            orbis_background_status( dialog, text );
+            ERR( "PWDESK background apply folder=%s error=%lu\\n", debugstr_w(folder), GetLastError() );
+            return FALSE;
+        }
+        swprintf( target, ARRAY_SIZE(target), L"%s\\\\wallpaper-1.bmp", folder );
+        if (!wcsicmp( target, current )) swprintf( target, ARRAY_SIZE(target), L"%s\\\\wallpaper-2.bmp", folder );
+        if (!orbis_write_bmp( target, bg->canvas, bg->width, bg->height ))
+        {
+            swprintf( text, ARRAY_SIZE(text), L"The wallpaper could not be saved (error %lu).", GetLastError() );
+            orbis_background_status( dialog, text );
+            ERR( "PWDESK background apply write=%s error=%lu\\n", debugstr_w(target), GetLastError() );
+            return FALSE;
+        }
+    }
+    orbis_set_wallpaper( orbis_desktop_panel, target );
+    current[0] = 0;
+    SystemParametersInfoW( SPI_GETDESKWALLPAPER, ARRAY_SIZE(current), current, 0 );
+    if (wcsicmp( current, target ))
+    {
+        orbis_background_status( dialog, L"Windows did not take the wallpaper; see the log (PWDESK)." );
+        ERR( "PWDESK background apply refused target=%s current=%s\\n", debugstr_w(target), debugstr_w(current) );
+        return FALSE;
+    }
+    if (!RegCreateKeyExW( HKEY_CURRENT_USER, ORBIS_DESKTOP_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL ))
+    {
+        RegSetValueExW( key, L"Source", 0, REG_SZ, (const BYTE *)path, (lstrlenW( path ) + 1) * sizeof(WCHAR) );
+        RegSetValueExW( key, L"Style", 0, REG_DWORD, (const BYTE *)&style, sizeof(style) );
+        RegCloseKey( key );
+    }
+    bg->dirty = FALSE;
+    swprintf( text, ARRAY_SIZE(text), L"Applied: %u x %u, %s.", bg->source_width, bg->source_height, orbis_fit_names[mode] );
+    orbis_background_status( dialog, text );
+    ERR( "PWDESK background apply source=%s mode=%d target=%s\\n", debugstr_w(path), mode, debugstr_w(target) );
+    return TRUE;
+}
+
+static void orbis_background_init( HWND dialog, struct orbis_background *bg )
+{
+    WCHAR current[MAX_PATH] = L"", source[MAX_PATH] = L"";
+    DWORD size = sizeof(source), style = ORBIS_FIT_FILL, style_size = sizeof(style);
+    LRESULT select = -1;
+    unsigned int i;
+
+    orbis_scan_wallpapers();
+    SystemParametersInfoW( SPI_GETDESKWALLPAPER, ARRAY_SIZE(current), current, 0 );
+    if (RegGetValueW( HKEY_CURRENT_USER, ORBIS_DESKTOP_KEY, L"Source", RRF_RT_REG_SZ, NULL, source, &size )) source[0] = 0;
+    if (RegGetValueW( HKEY_CURRENT_USER, ORBIS_DESKTOP_KEY, L"Style", RRF_RT_REG_DWORD, NULL, &style, &style_size ) ||
+        style >= ARRAY_SIZE(orbis_fit_names)) style = ORBIS_FIT_FILL;
+    for (i = 0; i < orbis_wallpaper_count; i++) if (!wcsicmp( orbis_wallpapers[i], current )) select = i;
+    if (select < 0)
+    {
+        /* the user's own picture: the one chosen here when it is still there, else the wallpaper itself */
+        if (source[0] && GetFileAttributesW( source ) != INVALID_FILE_ATTRIBUTES) lstrcpynW( bg->custom, source, MAX_PATH );
+        else if (current[0] && GetFileAttributesW( current ) != INVALID_FILE_ATTRIBUTES) lstrcpynW( bg->custom, current, MAX_PATH );
+        if (bg->custom[0]) select = orbis_wallpaper_count;
+    }
+    for (i = 0; i < ARRAY_SIZE(orbis_fit_names); i++)
+        SendDlgItemMessageW( dialog, ORBIS_BG_POSITION, CB_ADDSTRING, 0, (LPARAM)orbis_fit_names[i] );
+    SendDlgItemMessageW( dialog, ORBIS_BG_POSITION, CB_SETCURSEL, style, 0 );
+    orbis_background_fill_list( dialog, bg, select );
+    ERR( "PWDESK background open builtin=%u current=%s source=%s style=%lu select=%ld\\n", orbis_wallpaper_count,
+         debugstr_w(current), debugstr_w(source), style, (long)select );
+    orbis_background_preview( dialog, bg );
+}
+
+static INT_PTR CALLBACK orbis_background_proc( HWND dialog, UINT message, WPARAM wp, LPARAM lp )
+{
+    struct orbis_background *bg = (struct orbis_background *)GetWindowLongPtrW( dialog, DWLP_USER );
+
+    switch (message)
+    {
+    case WM_INITDIALOG:
+        SetWindowLongPtrW( dialog, DWLP_USER, lp );
+        orbis_background_init( dialog, (struct orbis_background *)lp );
+        SetForegroundWindow( dialog );
+        SetFocus( GetDlgItem( dialog, ORBIS_BG_LIST ));
+        return FALSE;
+    case WM_DRAWITEM:
+        if (wp == ORBIS_BG_PREVIEW && bg)
+        {
+            const DRAWITEMSTRUCT *draw = (const DRAWITEMSTRUCT *)lp;
+            HDC dc;
+
+            if (bg->preview && (dc = CreateCompatibleDC( draw->hDC )))
+            {
+                HGDIOBJ old = SelectObject( dc, bg->preview );
+                BitBlt( draw->hDC, 0, 0, draw->rcItem.right, draw->rcItem.bottom, dc, 0, 0, SRCCOPY );
+                SelectObject( dc, old );
+                DeleteDC( dc );
+            }
+            else FillRect( draw->hDC, &draw->rcItem, GetStockObject( GRAY_BRUSH ));
+            return TRUE;
+        }
+        break;
+    case WM_COMMAND:
+        if (!bg) break;
+        switch (LOWORD(wp))
+        {
+        case ORBIS_BG_LIST:
+        case ORBIS_BG_POSITION:
+            if (HIWORD(wp) == LBN_SELCHANGE)  /* CBN_SELCHANGE has the same value */
+            {
+                bg->dirty = TRUE;
+                orbis_background_preview( dialog, bg );
+            }
+            return TRUE;
+        case ORBIS_BG_BROWSE:
+            orbis_background_browse( dialog, bg );
+            return TRUE;
+        case ORBIS_BG_APPLY:
+            orbis_background_apply( dialog, bg );
+            return TRUE;
+        case IDOK:
+            if (!bg->dirty || orbis_background_apply( dialog, bg )) EndDialog( dialog, IDOK );
+            return TRUE;
+        case IDCANCEL:
+            EndDialog( dialog, IDCANCEL );
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+static void orbis_background_dialog( HWND panel )
+{
+    DWORD buffer[1024] = {0};
+    DLGTEMPLATE *dialog = (DLGTEMPLATE *)buffer;
+    struct orbis_background *bg = calloc( 1, sizeof(*bg) );
+    HRESULT init;
+    WORD *p;
+
+    if (!bg) return;
+    bg->width = GetSystemMetrics( SM_CXSCREEN );
+    bg->height = GetSystemMetrics( SM_CYSCREEN );
+    bg->rendered_mode = -1;
+    dialog->style = DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dialog->dwExtendedStyle = WS_EX_TOPMOST;
+    dialog->cdit = 11;
+    dialog->cx = 300;
+    dialog->cy = 186;
+    p = (WORD *)(dialog + 1);
+    *p++ = 0;  /* no menu */
+    *p++ = 0;  /* standard class */
+    p = orbis_dialog_text( p, L"Desktop background" );
+    *p++ = 8;
+    p = orbis_dialog_text( p, L"MS Shell Dlg" );
+    p = orbis_dialog_item( p, SS_LEFT, 7, 7, 120, 9, 0xffff, 0x82, L"&Picture:" );
+    p = orbis_dialog_item( p, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 7, 18, 120, 126,
+                           ORBIS_BG_LIST, 0x83, L"" );
+    p = orbis_dialog_item( p, SS_OWNERDRAW | WS_BORDER, 135, 18, 158, 89, ORBIS_BG_PREVIEW, 0x82, L"" );
+    p = orbis_dialog_item( p, SS_LEFT, 135, 115, 38, 9, 0xffff, 0x82, L"P&osition:" );
+    p = orbis_dialog_item( p, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 175, 113, 118, 80, ORBIS_BG_POSITION, 0x85, L"" );
+    p = orbis_dialog_item( p, BS_PUSHBUTTON | WS_TABSTOP, 135, 130, 70, 14, ORBIS_BG_BROWSE, 0x80, L"&Browse..." );
+    p = orbis_dialog_item( p, SS_LEFT | SS_NOPREFIX, 7, 150, 286, 9, ORBIS_BG_STATUS, 0x82, L"" );
+    p = orbis_dialog_item( p, SS_ETCHEDHORZ, 7, 162, 286, 1, 0xffff, 0x82, L"" );
+    p = orbis_dialog_item( p, BS_DEFPUSHBUTTON | WS_TABSTOP, 133, 167, 50, 14, IDOK, 0x80, L"OK" );
+    p = orbis_dialog_item( p, BS_PUSHBUTTON | WS_TABSTOP, 188, 167, 50, 14, IDCANCEL, 0x80, L"Cancel" );
+    orbis_dialog_item( p, BS_PUSHBUTTON | WS_TABSTOP, 243, 167, 50, 14, ORBIS_BG_APPLY, 0x80, L"&Apply" );
+    init = CoInitialize( NULL );
+    DialogBoxIndirectParamW( GetModuleHandleW( NULL ), dialog, NULL, orbis_background_proc, (LPARAM)bg );
+    if (SUCCEEDED( init )) CoUninitialize();
+    if (bg->preview) DeleteObject( bg->preview );
+    free( bg->canvas );
+    free( bg->work );
+    free( bg );
+    if (panel) InvalidateRect( panel, NULL, TRUE );
+}
+
+/* point in the launcher window's client coordinates; outside a launcher, the desktop items */''','Desktop background dialog: built-in and own pictures, preview, position, Browse, Apply (W304).')
+revise('desktop.c','''        {
+            HMENU wallpapers = orbis_wallpaper_menu();  /* W292 */
+            if (wallpapers)
+            {
+                AppendMenuW( menu, MF_SEPARATOR, 0, NULL );
+                AppendMenuW( menu, MF_POPUP, (UINT_PTR)wallpapers, L"&Wallpaper" );
+            }
+        }''','''        AppendMenuW( menu, MF_SEPARATOR, 0, NULL );  /* W304: the pictures are in the dialog */
+        AppendMenuW( menu, MF_STRING, ORBIS_MENU_BACKGROUND, L"Desktop &background..." );''','Empty-desktop menu: Desktop background... instead of the Wallpaper submenu (W304).')
+revise('desktop.c','''    default:  /* W292 */
+        if (command >= ORBIS_MENU_WALLPAPER && command < ORBIS_MENU_WALLPAPER + orbis_wallpaper_count)
+            orbis_set_wallpaper( panel, orbis_wallpapers[command - ORBIS_MENU_WALLPAPER] );
+        break;''','''    case ORBIS_MENU_BACKGROUND:  /* W304 */
+        orbis_background_dialog( panel );
+        break;''','The menu item opens the Desktop background dialog (W304).')
+
 # W179: the taskbar, Start and the window buttons from the visual style when it has XP's shell
 # classes (tools/build-msstyles-hw.py: Luna's blue taskbar and green Start, Noir's black and orange);
 # Aero has none, and then, as with no style, the classic drawing stays. uxtheme is resolved at run

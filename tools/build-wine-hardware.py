@@ -802,12 +802,13 @@ system_text+=('\n[Software\\\\Wow6432Node\\\\Khronos\\\\Vulkan\\\\Drivers] 17933
               '"C:\\\\windows\\\\syswow64\\\\winevulkan.json"=dword:00000000\n'
               '\n[Software\\\\Wow6432Node\\\\Khronos\\\\Vulkan\\\\ImplicitLayers] 1793390636\n#time=1dd68a9cb52bf36\n'
               '"C:\\\\windows\\\\syswow64\\\\MangoHud.x86.json"=dword:%08x\n' % (0 if mangohud_enabled else 1))
+# 04.26: also Valve's text files (.vdf, .acf) and .nfo, which games ship (GTA IV's installscript.vdf).
 # W112: the pinned Wine maps HKCR to Machine\\Software\\Classes, without
 # merging the user's Classes key. ShellExecute must see these real associations.
 for key,value in [('Software\\Classes\\OrbisDesk.Text\\shell\\open\\command',
                    '"C:\\windows\\system32\\notepad.exe" "%1"')]+[
         ('Software\\Classes\\'+ext,'OrbisDesk.Text')
-        for ext in ('.txt','.log','.ini','.cfg','.conf','.json','.md','.csv','.xml')]:
+        for ext in ('.txt','.log','.ini','.cfg','.conf','.json','.md','.csv','.xml','.vdf','.acf','.nfo')]:
     escaped=key.replace('\\','\\\\')
     if '['+escaped+']' in system_text:
         # Preserve existing Wine associations, e.g. .ini -> inifile -> Notepad.

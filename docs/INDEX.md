@@ -221,6 +221,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 ## Other public notes
 
 - [CI.md](CI.md) — Running CI and measuring the platform matrix
+- [DESKTOP_BACKGROUND.md](DESKTOP_BACKGROUND.md) — Desktop background dialog: your own pictures as wallpaper (draft)
 - [MANGOJUICE.md](MANGOJUICE.md) — MangoJuice: the MangoHud settings program
 - [POP_SEPARATE_PROCESS.md](POP_SEPARATE_PROCESS.md) — Separate Windows processes (PoP phases B–D)
 - [PROCESS_FAMILY_PROBES.md](PROCESS_FAMILY_PROBES.md) — Process-family probes for fixed-base launchers
@@ -233,4 +234,5 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [SEAMONKEY_GPU.md](SEAMONKEY_GPU.md) — SeaMonkey GPU compositing
 - [SEAMONKEY_RESPONSIVENESS.md](SEAMONKEY_RESPONSIVENESS.md) — SeaMonkey responsiveness on the console
 - [SHADER_CACHE.md](SHADER_CACHE.md) — Shader compiles, frame time and the disk shader cache
+- [WARCRAFT3.md](WARCRAFT3.md) — Warcraft III 1.07: Storm's static imports and the AVI intro movies
 - [WINE_MONO.md](WINE_MONO.md) — Wine Mono: .NET programs

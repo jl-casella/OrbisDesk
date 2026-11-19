@@ -119,6 +119,33 @@ revise('ntdll','loader','''    if (wm->ldr.TlsIndex == -1) call_tls_callbacks( w
     if (!entry) return STATUS_SUCCESS;
     if (!(wm->ldr.Flags & LDR_IMAGE_IS_DLL)) return STATUS_SUCCESS;  /* PS4 guest EXE (W053) */''',
        "A guest EXE's entry point is not a DllMain.")
+# alpha-1 (run-0183, Warcraft III 1.07 "was unable to initialize"): the DLLs a guest EXE imports
+# are its process's static imports, and Windows calls their DllMain(DLL_PROCESS_ATTACH) with a
+# non-NULL lpReserved; LoadLibrary passes NULL. The guest EXE loads through LoadLibraryEx, so its
+# imports got NULL. Storm.dll (Warcraft III) takes NULL to mean "loaded by another program" and
+# builds its MPQ crypt table from another seed: every file in the game's archives was then not
+# found. Only the guest EXE's own load (not a DLL a DllMain loads meanwhile) passes a CONTEXT, as
+# loader_init does for a process.
+revise('ntdll','loader','''    if (nts == STATUS_SUCCESS)
+    {
+        nts = process_attach( wm->ldr.DdagNode, NULL );''','''    if (nts == STATUS_SUCCESS)
+    {
+        nts = process_attach( wm->ldr.DdagNode,
+                              (NtCurrentTeb()->UserReserved[2] == 0x47345350 /* PS4 guest image load (W052) */ &&
+                               !(wm->ldr.Flags & LDR_IMAGE_IS_DLL)) ? &ps4_guest_static_context : NULL );''',
+       "A guest EXE's imports are static imports: DllMain gets a non-NULL lpReserved.")
+# alpha-1 (run-0203, 2026-11-17, 04.15: Alan Wake ended, and none of the 48 system modules it had loaded was unloaded;
+# 04.12's run-0185 unloaded 13 of them, msvcr100 among them): ntdll's process_attach pins each module it attaches with
+# a non-NULL lpReserved ("pin it if imported by the main exe"), and run-0183's context went down the guest EXE's whole
+# import tree. Its own modules were unpinned again at its end (d13, "was pinned by the program": no line in run-0185,
+# 15 in run-0203); the system ones stayed for the life of the title, with their C runtime heaps and state, and the next
+# start reused them. DllMain still gets the context; the pin is skipped for it.
+revise('ntdll','loader','''static NTSTATUS process_attach( LDR_DDAG_NODE *node, LPVOID lpReserved );''','''static NTSTATUS process_attach( LDR_DDAG_NODE *node, LPVOID lpReserved );
+static CONTEXT ps4_guest_static_context;  /* alpha-1 (run-0183): DllMain's lpReserved for a guest EXE's imports */''',
+       "The static-import context of a guest EXE (alpha-1, run-0183).")
+revise('ntdll','loader','''    if (lpReserved) wm->ldr.LoadCount = -1;  /* pin it if imported by the main exe */''','''    /* alpha-1 (run-0203): not a guest EXE's imports, which end with the guest */
+    if (lpReserved && lpReserved != &ps4_guest_static_context) wm->ldr.LoadCount = -1;  /* pin it if imported by the main exe */''',
+       "A guest EXE's imports are not pinned (alpha-1, run-0203).")
 revise('ntdll','loader','''void WINAPI RtlExitUserProcess( DWORD status )
 {''','''void WINAPI RtlExitUserProcess( DWORD status )
 {
@@ -1152,16 +1179,29 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
          * Application" from %TEMP% at its own base 0x400000; D.6 moved the game to a separate process, where Direct3D
          * has no GPU). The games that launchers start import a graphics library (POP.EXE d3d9, Worms3D.exe d3d8,
          * d3d9 and opengl32); a started program that imports none runs in a separate process itself, and the
-         * starter keeps the base and the GPU here. A file that cannot be read keeps D.6. */
+         * starter keeps the base and the GPU here. A file that cannot be read keeps D.6.
+         * Hardware 2026-11-16 (run-0164): Warcraft III's war3.exe imports no graphics library itself; it loads
+         * Game.dll at run time, and Game.dll imports d3d8. Sent to the separate process, it found no Direct3D 8 and
+         * said DirectX 8 was missing. The same run sent Vampire's vampire.exe there, whose renderer is in Bin\\*.dll.
+         * The DLLs in the started program's folder and in its bin folder count as its own, up to 64 of them. */
         {
             static const char *const graphics[] = {"d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d11.dll",
                                                    "d3d12.dll", "dxgi.dll", "ddraw.dll", "opengl32.dll", "d3dim.dll",
                                                    "d3drm.dll", "glu32.dll"};
-            HANDLE file = CreateFileW( app_name, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                       NULL, OPEN_EXISTING, 0, NULL );
-            BOOL parsed = FALSE, draws = FALSE;
-            DWORD read;
+            WCHAR scan[MAX_PATH];
+            WIN32_FIND_DATAW found;
+            HANDLE listing = INVALID_HANDLE_VALUE;
+            BOOL parsed = FALSE, draws = FALSE, image_parsed = FALSE;
+            DWORD read, dir_length = 0, base_length = 0, dlls = 0, pattern = 0;
+            static const WCHAR *const patterns[] = {L"", L"bin\\\\"};
 
+            lstrcpynW( scan, app_name, MAX_PATH );
+            for (;;)
+            {
+            HANDLE file = CreateFileW( scan, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                       NULL, OPEN_EXISTING, 0, NULL );
+
+            parsed = FALSE;
             if (file != INVALID_HANDLE_VALUE)
             {
                 IMAGE_DOS_HEADER dos;
@@ -1219,7 +1259,46 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
                 }
                 CloseHandle( file );
             }
-            ERR( "PWSEP base_taken started=%s parsed=%d draws=%d\\n", debugstr_w(app_name), parsed, draws );
+            if (!base_length) image_parsed = parsed;   /* the image itself */
+            if (draws || !image_parsed) break;
+            if (!base_length)
+            {
+                WCHAR *slash = wcsrchr( scan, '\\\\' );
+
+                if (!slash || slash - scan + 16 >= MAX_PATH) break;
+                base_length = slash - scan + 1;
+            }
+            /* the next DLL: in the folder, then in its bin folder */
+            for (;;)
+            {
+                BOOL next;
+
+                if (listing == INVALID_HANDLE_VALUE)
+                {
+                    if (pattern >= ARRAY_SIZE(patterns)) break;
+                    lstrcpyW( scan + base_length, patterns[pattern] );
+                    dir_length = base_length + lstrlenW( patterns[pattern++] );
+                    lstrcpyW( scan + dir_length, L"*.dll" );
+                    if ((listing = FindFirstFileW( scan, &found )) == INVALID_HANDLE_VALUE) continue;
+                    next = TRUE;
+                }
+                else next = FindNextFileW( listing, &found );
+                if (!next)
+                {
+                    FindClose( listing );
+                    listing = INVALID_HANDLE_VALUE;
+                    continue;
+                }
+                if (!(found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && dir_length + lstrlenW( found.cFileName ) < MAX_PATH)
+                    break;
+            }
+            if (listing == INVALID_HANDLE_VALUE || ++dlls > 64) break;
+            lstrcpyW( scan + dir_length, found.cFileName );
+            }
+            if (listing != INVALID_HANDLE_VALUE) FindClose( listing );
+            parsed = image_parsed;
+            ERR( "PWSEP base_taken started=%s parsed=%d draws=%d folder_dlls=%lu last=%s\\n", debugstr_w(app_name), parsed,
+                 draws, dlls, debugstr_w(scan) );
             if (parsed && !draws && ps4_execution_mode( app_name ) == PW_EXEC_AUTO)
             {
                 BOOL started;
@@ -1274,10 +1353,19 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
                     BOOL moved;
 
                     RegSetValueExW( hkey, L"OrbisExecutionMode", 0, REG_SZ, (const BYTE *)L"separate", sizeof(L"separate") );
+                    /* 04.15 (W303 run-0198, run-0199: Prince of Persia's launcher, moved from here, ended the title
+                     * within 2 s of separate_request, before the server's periodic save (5 s, W190); the value was
+                     * lost, so every start repeated this move instead of opening the launcher separately at once, as
+                     * run-0115 did): the choice is on disk before the separate start (flush_key, W190) */
+                    RegFlushKey( hkey );
                     moved = CreateProcessW( starter_path, starter_cmd, NULL, NULL, FALSE, 0, NULL, starter_dir, &si, &pi );
                     ERR( "PWSEP base_taken starter=%s to_separate=%d error=%lu image=%s\\n", debugstr_w(starter_path), moved,
                          moved ? 0 : GetLastError(), debugstr_w(app_name) );
-                    if (!moved) RegDeleteValueW( hkey, L"OrbisExecutionMode" );
+                    if (!moved)
+                    {
+                        RegDeleteValueW( hkey, L"OrbisExecutionMode" );
+                        RegFlushKey( hkey );
+                    }
                     RegCloseKey( hkey );
                     if (moved)
                     {
@@ -3978,6 +4066,7 @@ revise('kernelbase','process','''static void ps4_guest_unload( struct ps4_guest 
  * changed the mode is not known here (win32u logs the thread): the newest live guest, or the last one, sets it
  * back; an older one ending (a helper the game started before, or a program opened earlier) leaves it. */
 #define PS4_ENUM_CURRENT_SETTINGS ((DWORD)-1)
+#define PS4_ENUM_REGISTRY_SETTINGS ((DWORD)-2)
 static LONG ps4_guest_serial;
 static void ps4_guest_note_mode( struct ps4_guest *guest )
 {
@@ -3999,7 +4088,7 @@ static void ps4_guest_restore_mode( struct ps4_guest *guest )
         user32 ? (void *)GetProcAddress( user32, "EnumDisplaySettingsW" ) : NULL;
     LONG (WINAPI *change)( const WCHAR *, DEVMODEW *, HWND, DWORD, void * ) =
         user32 ? (void *)GetProcAddress( user32, "ChangeDisplaySettingsExW" ) : NULL;
-    DEVMODEW now = {.dmSize = sizeof(now)}, back = {.dmSize = sizeof(back)};
+    DEVMODEW now = {.dmSize = sizeof(now)}, back = {.dmSize = sizeof(back)}, desktop = {.dmSize = sizeof(desktop)};
     WCHAR path[MAX_PATH];
     struct ps4_guest *newer = NULL;
     LONG ret;
@@ -4008,6 +4097,17 @@ static void ps4_guest_restore_mode( struct ps4_guest *guest )
     if (!guest->mode_width || !settings || !change || !settings( NULL, PS4_ENUM_CURRENT_SETTINGS, &now )) return;
     if (now.dmPelsWidth == guest->mode_width && now.dmPelsHeight == guest->mode_height) return;
     if (!GetModuleFileNameW( guest->module, path, ARRAY_SIZE(path) )) path[0] = 0;
+    /* W303 run-0206: WFM started while Prince of Persia had 800x600 set and, ending after it, set 800x600 back on
+     * the desktop. Only a guest that started at the desktop's mode sets one back; the 64-bit and 32-bit worlds keep
+     * separate guest lists, so the newer-guest check below cannot see the other world's game. */
+    if (settings( NULL, PS4_ENUM_REGISTRY_SETTINGS, &desktop ) &&
+        (desktop.dmPelsWidth != guest->mode_width || desktop.dmPelsHeight != guest->mode_height))
+    {
+        ERR( "PWSINK mode kept guest=%s %lux%lu: it started at %lux%lu, not the desktop's %lux%lu\\n", debugstr_w(path),
+             now.dmPelsWidth, now.dmPelsHeight, guest->mode_width, guest->mode_height, desktop.dmPelsWidth,
+             desktop.dmPelsHeight );
+        return;
+    }
     RtlAcquireSRWLockShared( &ps4_live_lock );
     for (i = 0; i < ps4_live_count && !newer; i++)
         if (ps4_live_guests[i] != guest && ps4_live_guests[i]->serial > guest->serial) newer = ps4_live_guests[i];
