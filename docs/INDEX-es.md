@@ -227,5 +227,10 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [RELEASES-es.md](RELEASES-es.md) — Construcción del producto, releases y rama de desarrollo
 - [RELEASE_LICENSES-es.md](RELEASE_LICENSES-es.md) — Licencias del release (alpha-1)
 - [RELEASE_TRACES-es.md](RELEASE_TRACES-es.md) — Trazas en release: un solo interruptor para el alpha-1
+- [SEAMONKEY_DESCRIPTORS-es.md](SEAMONKEY_DESCRIPTORS-es.md) — SeaMonkey y los descriptores de archivo del título
+- [SEAMONKEY_FILE_LOCKS-es.md](SEAMONKEY_FILE_LOCKS-es.md) — SeaMonkey, SQLite y los bloqueos de rangos de bytes
+- [SEAMONKEY_FLEXIBLE_MEMORY-es.md](SEAMONKEY_FLEXIBLE_MEMORY-es.md) — SeaMonkey y la memoria flexible
+- [SEAMONKEY_GPU-es.md](SEAMONKEY_GPU-es.md) — Composición por GPU en SeaMonkey
+- [SEAMONKEY_RESPONSIVENESS-es.md](SEAMONKEY_RESPONSIVENESS-es.md) — La respuesta de SeaMonkey en la consola
 - [SHADER_CACHE-es.md](SHADER_CACHE-es.md) — Compilación de shaders, tiempo de cuadro y la caché de shaders en disco
 - [WINE_MONO-es.md](WINE_MONO-es.md) — Wine Mono: programas .NET

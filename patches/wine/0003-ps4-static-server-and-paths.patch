@@ -70,7 +70,27 @@
          if ((unix_fd = get_unix_fd( mapping->fd )) == -1) goto error;
 --- a/server/request.c
 +++ b/server/request.c
-@@ -581,6 +581,31 @@
+@@ -218,7 +218,8 @@
+             thread->reply_data = NULL;
+             /* sent everything, can go back to waiting for requests */
+             set_fd_events( thread->request_fd, POLLIN );
+-            set_fd_events( thread->reply_fd, 0 );
++            if (thread->reply_fd != thread->request_fd)  /* OrbisDesk 04.25: one socket */
++                set_fd_events( thread->reply_fd, 0 );
+         }
+         return;
+     }
+@@ -253,7 +254,8 @@
+         {
+             /* couldn't write it all, wait for POLLOUT */
+             set_fd_events( current->reply_fd, POLLOUT );
+-            set_fd_events( current->request_fd, 0 );
++            if (current->reply_fd != current->request_fd)  /* OrbisDesk 04.25: one socket */
++                set_fd_events( current->request_fd, 0 );
+             return;
+         }
+     }
+@@ -581,6 +583,31 @@
      close( pair[0] );
      return pair[1];
  }
@@ -102,7 +122,7 @@
  #endif
  
  /* handle a socket event */
-@@ -686,8 +711,10 @@
+@@ -686,8 +713,10 @@
          fatal_error( "open %s: %s\n", config_dir, strerror( errno ));
      if (fstat( config_dir_fd, &st ) == -1)
          fatal_error( "stat %s: %s\n", config_dir, strerror( errno ));
@@ -258,6 +278,28 @@
  }
  
  
+@@ -1651,6 +1662,21 @@
+     ss.ss_flags = 0;
+     sigaltstack( &ss, NULL );
+ 
++#ifdef __ORBIS__
++    {
++        /* OrbisDesk 04.25: a request socket (thread.c pw_thread_request_socket) also carries the replies; reply_fd -2
++         * tells the server (server/thread.c init_thread) */
++        struct stat st;
++
++        if (!fstat( data->request_fd, &st ) && S_ISSOCK( st.st_mode ))
++        {
++            if (server_pipe( data->wait_fd ) == -1) server_protocol_perror( "pipe" );
++            wine_server_send_fd( data->wait_fd[1] );
++            data->reply_fd = data->request_fd;
++            return -2;
++        }
++    }
++#endif
+     if (server_pipe( reply_pipe ) == -1) server_protocol_perror( "pipe" );
+     if (server_pipe( data->wait_fd ) == -1) server_protocol_perror( "pipe" );
+     wine_server_send_fd( reply_pipe[1] );
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
 @@ -2860,9 +2860,29 @@
@@ -788,3 +830,62 @@
      }
      if (ret == -1 && errno == ESRCH) /* thread got killed */
      {
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1110,6 +1110,35 @@
+ }
+ 
+ 
++#ifdef __ORBIS__
++#include <sys/socket.h>
++extern int pw_wine_socket_nonblock( int fd );
++/* OrbisDesk 04.25: a new thread's requests and replies on one socket pair (tools/prepare-wine-boot.py) */
++static int pw_thread_request_socket( int fd[2] )
++{
++    static int disabled;
++
++    if (disabled) return -1;
++    if (socketpair( AF_UNIX, SOCK_STREAM, 0, fd ) == -1)
++    {
++        fprintf( stderr, "PWTHREAD request_socket off: socketpair errno=%d\n", errno );
++        disabled = 1;
++        return -1;
++    }
++    if (pw_wine_socket_nonblock( fd[0] ) == -1)
++    {
++        fprintf( stderr, "PWTHREAD request_socket off: nonblock errno=%d\n", errno );
++        close( fd[0] );
++        close( fd[1] );
++        disabled = 1;
++        return -1;
++    }
++    fcntl( fd[0], F_SETFD, FD_CLOEXEC );
++    fcntl( fd[1], F_SETFD, FD_CLOEXEC );
++    return 0;
++}
++#endif
++
+ /***********************************************************************
+  *           pthread_exit_wrapper
+  */
+@@ -1119,7 +1148,7 @@
+     close( data->alert_fd );
+     close( data->wait_fd[0] );
+     close( data->wait_fd[1] );
+-    close( data->reply_fd );
++    if (data->reply_fd != data->request_fd) close( data->reply_fd );  /* OrbisDesk 04.25: one socket */
+     close( data->request_fd );
+     pthread_exit( UIntToPtr(status) );
+ }
+@@ -1272,7 +1301,11 @@
+ 
+     if ((status = wine_server_alloc_object_attributes( attr, &objattr, &len ))) return status;
+ 
++#ifdef __ORBIS__
++    if (pw_thread_request_socket( request_pipe ) == -1 && server_pipe( request_pipe ) == -1)
++#else
+     if (server_pipe( request_pipe ) == -1)
++#endif
+     {
+         free( objattr );
+         return STATUS_TOO_MANY_OPENED_FILES;

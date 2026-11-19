@@ -4273,6 +4273,458 @@ revise('kernelbase','process','''    if ((rec->ExceptionCode != EXCEPTION_ACCESS
 ''','''    if (rec->ExceptionCode == 0xe06d7363 && ps4_guest_current()) ps4_guest_cxx_trace( rec, ptrs->ContextRecord );  /* W269 */
     if ((rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION && !fp) || !ps4_guest_current()) return EXCEPTION_CONTINUE_SEARCH;
 ''','The C++ exceptions of guests are traced (W269).')
+# 04.19 (run-0218: SeaMonkey's second start ended in Gecko's crash reporter 4 s in, with no PWFAULT, no MozCrashReason
+# and a 0-byte minidump; so not an access violation): the fatal codes a program's own handler takes are traced too.
+revise('kernelbase','process','''    if ((rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION && !fp) || !ps4_guest_current()) return EXCEPTION_CONTINUE_SEARCH;
+''','''    /* 04.19: fast fail (abort, /GS, ucrt's invalid parameter), illegal or privileged instruction, stack overflow,
+     * heap corruption, assertion failure, breakpoint; for a fast fail access= is its FAST_FAIL code */
+    BOOL fatal = rec->ExceptionCode == 0xc0000409 || rec->ExceptionCode == 0xc000001d || rec->ExceptionCode == 0xc0000096 ||
+                 rec->ExceptionCode == 0xc00000fd || rec->ExceptionCode == 0xc0000374 || rec->ExceptionCode == 0xc0000420 ||
+                 rec->ExceptionCode == 0x80000003 || rec->ExceptionCode == 0xc0000417;  /* 04.20: ucrt, no handler */
+    if ((rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION && !fp && !fatal) || !ps4_guest_current())
+        return EXCEPTION_CONTINUE_SEARCH;
+''','The fatal codes a program\'s own handler takes are traced (04.19).')
+# 04.30 (run-0243, run-0255: when PES 2013's settings.exe ended, 2-3 of its threads kept running, because the title
+# cannot signal a thread ("thread_signal unavailable"). TerminateThread ended them in the server only. Each later ran
+# into its unloaded EXE, faulted at 0x43f510 eight times (the whole PWFAULT budget) until its stack overflowed, and in
+# both runs the title then ended with no line, when joy.cpl was opened). A thread the server already ended stops at its
+# next server call (W064). So an access violation outside every module and in memory that is not committed, on a
+# thread whose guest is no longer live, makes one server call: a thread the server ended goes there, a live one returns
+# and its handlers run as before. The guest's pointer is only compared with the live ones, never read: it is freed.
+revise('kernelbase','process','''/* at the end of a guest's unload */
+static void ps4_guest_live_remove( struct ps4_guest *guest )
+{''','''/* 04.30: has this guest ended? Its pointer is compared, never read (an ended guest's memory is freed) */
+static BOOL ps4_guest_gone( const struct ps4_guest *guest )
+{
+    BOOL live = FALSE, full;
+    UINT i;
+
+    RtlAcquireSRWLockShared( &ps4_live_lock );
+    for (i = 0; i < ps4_live_count && !live; i++) live = ps4_live_guests[i] == guest;
+    full = ps4_live_count >= ARRAY_SIZE(ps4_live_guests);  /* a full list does not say who ended */
+    RtlReleaseSRWLockShared( &ps4_live_lock );
+    return guest && !live && !full;
+}
+
+/* at the end of a guest's unload */
+static void ps4_guest_live_remove( struct ps4_guest *guest )
+{''','04.30: whether a guest has ended.')
+revise('kernelbase','process','''static LONG CALLBACK ps4_guest_fault_trace( EXCEPTION_POINTERS *ptrs )
+{''','''static BOOL ps4_guest_gone( const struct ps4_guest *guest );  /* 04.30 */
+
+static LONG CALLBACK ps4_guest_fault_trace( EXCEPTION_POINTERS *ptrs )
+{''','04.30: declared before the fault trace.')
+revise('kernelbase','process','''    if ((rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION && !fp && !fatal) || !ps4_guest_current())
+        return EXCEPTION_CONTINUE_SEARCH;
+''','''    if ((rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION && !fp && !fatal) || !ps4_guest_current())
+        return EXCEPTION_CONTINUE_SEARCH;
+    /* 04.30: a thread of an ended guest, running where that guest's code was */
+    if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && ps4_guest_gone( ps4_guest_current() ))
+    {
+        static LONG leftovers;
+        LDR_DATA_TABLE_ENTRY *mod;
+        MEMORY_BASIC_INFORMATION info;
+        THREAD_BASIC_INFORMATION basic = {0};
+        NTSTATUS query;
+        LONG k;
+
+        if (LdrFindEntryForAddress( rec->ExceptionAddress, &mod ) &&
+            (!VirtualQuery( rec->ExceptionAddress, &info, sizeof(info) ) || info.State != MEM_COMMIT))
+        {
+            if ((k = InterlockedIncrement( &leftovers )) <= 16)
+                ERR( "PWGUEST leftover thread %04lx of ended guest %p faults at %p: a server call ends it\\n",
+                     GetCurrentThreadId(), ps4_guest_current(), rec->ExceptionAddress );
+            query = NtQueryInformationThread( GetCurrentThread(), ThreadBasicInformation, &basic, sizeof(basic), NULL );
+            if (k <= 16)
+                ERR( "PWGUEST leftover thread %04lx still runs (query %#lx, exit status %#lx): its handlers run\\n",
+                     GetCurrentThreadId(), query, basic.ExitStatus );
+        }
+    }
+''','04.30: a thread of an ended guest that faults in freed memory makes a server call, which ends it if the server did.')
+
+# 04.20 (run-0222: SeaMonkey's second start, with GPU compositing, again ended in Gecko's crash reporter, from its
+# Compositor thread (0x298) during Mesa's WGL setup, with no PWFAULT for any traced code). Gecko's crash reporter also
+# takes three ucrt paths that raise no exception: the invalid parameter handler, the pure virtual call handler and
+# abort's SIGABRT handler. ucrtbase is shared by every guest, Mesa and MangoHud. Each of these paths is traced on a guest
+# thread with its frames, the first 8 of the title. Read only.
+revise('ucrtbase','errno','''void __cdecl _invalid_parameter(const wchar_t *expr, const wchar_t *func,
+                                       const wchar_t *file, unsigned int line, uintptr_t arg)
+{
+''','''/* 04.20 (run-0222): the frames of a ucrt path that ends in a program's own handler (04.22: on any thread;
+ * TEB.UserReserved[0] is kernelbase's ps4_guest) */
+void pw_crt_fatal_trace( const char *what, const void *handler )
+{
+    static LONG traced;
+    void *frames[12], *start = NULL;
+    LDR_DATA_TABLE_ENTRY *mod;
+    USHORT count, i;
+
+    /* 04.22 (run-0223: no PWCRT line, on any guest thread): these handlers are the process's, so a thread of another
+     * program, of Mesa or MangoHud, or of explorer reaches a program's own handler too. Every thread, where a handler
+     * is set, and abort; with the thread's guest and start. */
+    if ((!handler && what[0] != 'a') || InterlockedIncrement( &traced ) > 8) return;
+    NtQueryInformationThread( GetCurrentThread(), ThreadQuerySetWin32StartAddress, &start, sizeof(start), NULL );
+    count = RtlCaptureStackBackTrace( 1, ARRAY_SIZE(frames), frames, NULL );
+    if (!LdrFindEntryForAddress( start, &mod ) && mod->BaseDllName.Buffer)
+        ERR( "PWCRT %s thread=%04lx guest=%p start=%s+%Ix handler=%p frames=%u\\n", what,
+             HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ), *(void **)NtCurrentTeb()->UserReserved,
+             debugstr_w( mod->BaseDllName.Buffer ), (ULONG_PTR)start - (ULONG_PTR)mod->DllBase, handler, count );
+    else
+        ERR( "PWCRT %s thread=%04lx guest=%p start=%p handler=%p frames=%u\\n", what,
+             HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ), *(void **)NtCurrentTeb()->UserReserved, start, handler, count );
+    for (i = 0; i < count; i++)
+    {
+        if (!LdrFindEntryForAddress( frames[i], &mod ) && mod->BaseDllName.Buffer)
+            ERR( "PWCRT %s frame %u %s+%Ix\\n", what, i, debugstr_w( mod->BaseDllName.Buffer ),
+                 (ULONG_PTR)frames[i] - (ULONG_PTR)mod->DllBase );
+        else
+            ERR( "PWCRT %s frame %u %p\\n", what, i, frames[i] );
+    }
+}
+
+void __cdecl _invalid_parameter(const wchar_t *expr, const wchar_t *func,
+                                       const wchar_t *file, unsigned int line, uintptr_t arg)
+{
+''','The frames of a ucrt path that ends in a program\'s own handler (04.20).','dlls/msvcrt/errno.c')
+revise('ucrtbase','errno','''#if _MSVCR_VER >= 140
+    thread_data_t *data = msvcrt_get_thread_data();
+
+    if (data->invalid_parameter_handler)
+''','''#if _MSVCR_VER >= 140
+    thread_data_t *data = msvcrt_get_thread_data();
+
+    pw_crt_fatal_trace( "invalid_parameter", data->invalid_parameter_handler ?  /* 04.20 */
+                        (const void *)data->invalid_parameter_handler : (const void *)invalid_parameter_handler );
+    if (data->invalid_parameter_handler)
+''','An invalid parameter on a guest thread is traced (04.20).','dlls/msvcrt/errno.c')
+revise('ucrtbase','exit','''void CDECL abort(void)
+{
+  TRACE("()\\n");
+''','''void pw_crt_fatal_trace( const char *what, const void *handler );  /* errno.c, 04.20 */
+
+void CDECL abort(void)
+{
+  TRACE("()\\n");
+  pw_crt_fatal_trace( "abort", NULL );
+''','abort on a guest thread is traced (04.20).','dlls/msvcrt/exit.c')
+revise('ucrtbase','exit','''_purecall_handler CDECL _get_purecall_handler(void)
+{
+    TRACE("\\n");
+''','''_purecall_handler CDECL _get_purecall_handler(void)
+{
+    TRACE("\\n");
+    /* 04.20: vcruntime's _purecall asks for the handler before calling it */
+    pw_crt_fatal_trace( "purecall", purecall_handler );
+''','A pure virtual call on a guest thread is traced (04.20).','dlls/msvcrt/exit.c')
+revise('ucrtbase','exit','''void CDECL _purecall(void)
+{
+  TRACE("(void)\\n");
+''','''void CDECL _purecall(void)
+{
+  TRACE("(void)\\n");
+  pw_crt_fatal_trace( "purecall", purecall_handler );
+''','A pure virtual call on a guest thread is traced (04.20).','dlls/msvcrt/exit.c')
+
+# 04.22 (run-0223: SeaMonkey's second start, GPU compositing on, ended in Gecko's crash reporter 3 s in, before any WGL
+# call, with no PWFAULT and no PWCRT; so no guest thread took a traced exception or a ucrt path).
+# 1. A guest's exit waited for none of its other threads past 64: WaitForMultipleObjects takes at most 64 handles
+#    (MAXIMUM_WAIT_OBJECTS) and failed at once ("other_threads_wait=4294967295", SeaMonkey 103 and 69 threads, every
+#    run of a guest past 64 threads in the archive). The wait goes 64 at a time, within the same 2 s.
+# 2. The start of each of the exiting guest's threads, by id, so that the server's "thread_signal unavailable thread=…"
+#    line (run-0223: 0188, a thread that could not be signalled and so was not ended) names its code. Read only.
+# 3. kernelbase's top-level filter is the process's: the program that set it last takes every thread's unhandled
+#    exception, its own or not. What reaches it is traced, on every thread, before it is called. Read only.
+revise('kernelbase','process','''/* ExitProcess from a guest thread (ntdll RtlExitUserProcess): end the guest's other
+ * threads, then this one; their windows go with them. */''','''/* 04.22 (run-0223): the start of each of a guest's threads but this one, by id, six to a line. Read only. */
+static void ps4_guest_thread_starts( struct ps4_guest *guest, DWORD self )
+{
+    char line[640], where[96];
+    UINT i, len = 0, listed = 0;
+
+    for (i = 0; i < guest->thread_count; i++)
+    {
+        DWORD id = GetThreadId( guest->threads[i] );
+        void *start = NULL;
+
+        if (id == self) continue;
+        NtQueryInformationThread( guest->threads[i], ThreadQuerySetWin32StartAddress, &start, sizeof(start), NULL );
+        len += snprintf( line + len, sizeof(line) - len, " %04lx=%s", id,
+                         ps4_guest_where( (ULONG_PTR)start, where, sizeof(where) ) );
+        if (++listed % 6 == 0)
+        {
+            ERR( "PWGUEST thread_starts module=%p%s\\n", guest->module, line );
+            len = 0;
+        }
+    }
+    if (len) ERR( "PWGUEST thread_starts module=%p%s\\n", guest->module, line );
+}
+
+/* ExitProcess from a guest thread (ntdll RtlExitUserProcess): end the guest's other
+ * threads, then this one; their windows go with them. */''','The start of each thread of an exiting guest is traced (04.22).')
+revise('kernelbase','process','''    RtlEnterCriticalSection( &guest->lock );
+    for (i = 0; i < guest->thread_count; i++)
+        if (GetThreadId( guest->threads[i] ) != self)
+        {
+            TerminateThread( guest->threads[i], status );''','''    RtlEnterCriticalSection( &guest->lock );
+    ps4_guest_thread_starts( guest, self );  /* 04.22 */
+    for (i = 0; i < guest->thread_count; i++)
+        if (GetThreadId( guest->threads[i] ) != self)
+        {
+            TerminateThread( guest->threads[i], status );''','The start of each thread of an exiting guest is traced (04.22).')
+revise('kernelbase','process','''        DWORD wait = WaitForMultipleObjects( other_count, others, TRUE, 2000 );
+''','''        /* 04.22: WaitForMultipleObjects takes at most 64 handles; past them it failed and nothing was waited for */
+        DWORD wait = WAIT_OBJECT_0, begin = GetTickCount(), spent;
+        UINT first;
+
+        for (first = 0; first < other_count && wait == WAIT_OBJECT_0; first += 64)
+        {
+            spent = GetTickCount() - begin;
+            wait = WaitForMultipleObjects( min( other_count - first, 64 ), others + first, TRUE,
+                                           spent < 2000 ? 2000 - spent : 0 );
+        }
+''','A guest\'s exit waits for its other threads 64 at a time (04.22).')
+revise('kernelbase','debug','''LONG WINAPI UnhandledExceptionFilter( EXCEPTION_POINTERS *epointers )
+{''','''/* 04.22 (run-0223): what reaches the process's top-level filter, on any thread, before it is called; the first 8 of
+ * the title. Read only. */
+static void ps4_top_filter_trace( EXCEPTION_POINTERS *epointers )
+{
+    static LONG traced;
+    const EXCEPTION_RECORD *rec = epointers->ExceptionRecord;
+    NT_TIB *tib = &NtCurrentTeb()->Tib;
+    LDR_DATA_TABLE_ENTRY *mod;
+    ULONG_PTR *sp;
+    void *start = NULL, *addrs[3];
+    char where[3][96];
+    unsigned int i, shown = 0;
+    LONG n;
+
+    if ((n = InterlockedIncrement( &traced )) > 8) return;
+    NtQueryInformationThread( GetCurrentThread(), ThreadQuerySetWin32StartAddress, &start, sizeof(start), NULL );
+    addrs[0] = rec->ExceptionAddress;
+    addrs[1] = start;
+    addrs[2] = (void *)top_filter;
+    for (i = 0; i < 3; i++)
+        if (!LdrFindEntryForAddress( addrs[i], &mod ) && mod->BaseDllName.Buffer)
+            snprintf( where[i], sizeof(where[i]), "%s+%Ix", debugstr_w( mod->BaseDllName.Buffer ),
+                      (ULONG_PTR)addrs[i] - (ULONG_PTR)mod->DllBase );
+        else
+            snprintf( where[i], sizeof(where[i]), "%p", addrs[i] );
+    ERR( "PWTOP n=%ld thread=%04lx guest=%p code=%#lx flags=%#lx address=%s info=%Ix,%Ix start=%s filter=%s\\n", n,
+         GetCurrentThreadId(), ps4_guest_current(), rec->ExceptionCode, rec->ExceptionFlags, where[0],
+         rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0,
+         rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0, where[1], where[2] );
+#ifdef __x86_64__
+    sp = (ULONG_PTR *)epointers->ContextRecord->Rsp;
+#else
+    sp = (ULONG_PTR *)epointers->ContextRecord->Esp;
+#endif
+    if ((void *)sp < tib->StackLimit || (void *)sp >= tib->StackBase) return;
+    for (i = 0; i < 160 && sp + i + 1 <= (ULONG_PTR *)tib->StackBase && shown < 12; i++)
+    {
+        if (LdrFindEntryForAddress( (void *)sp[i], &mod ) || !mod->BaseDllName.Buffer) continue;
+        ERR( "PWTOP n=%ld stack[%u] %s+%Ix\\n", n, i, debugstr_w( mod->BaseDllName.Buffer ),
+             sp[i] - (ULONG_PTR)mod->DllBase );
+        shown++;
+    }
+}
+
+LONG WINAPI UnhandledExceptionFilter( EXCEPTION_POINTERS *epointers )
+{''','What reaches the top-level filter is traced (04.22).')
+revise('kernelbase','debug','''        if (top_filter && !nested)
+        {
+            LONG ret = top_filter( epointers );
+''','''        if (top_filter && !nested)
+        {
+            LONG ret;
+
+            ps4_top_filter_trace( epointers );  /* 04.22 */
+            ret = top_filter( epointers );
+''','What reaches the top-level filter is traced (04.22).')
+# 04.28 (04.27 on the console, run-0244 and run-0245: SeaMonkey ended with an access violation in nss3.dll+13c67d both
+# times, reading inside nssckbi.dll's image after it was unloaded). Opening WFM while SeaMonkey ran swept the leftovers
+# of ended guests (W209), and SeaMonkey's own nssckbi.dll went with them ("own L"nssckbi.dll" ... leftovers=1 live=2").
+# NSS loads it by its 8.3 path, C:/PROG~FBU/SEAM~E5Z/nssckbi.dll, so its FullDllName did not start with SeaMonkey's
+# folder, C:/Program Files/SeaMonkey/, and the module counted as nobody's. Any program whose DLLs load by a short path
+# had it, at another program's launch and at another guest's exit. Now a folder or a module path with a "~" is compared
+# by its long form too (GetLongPathNameW: ntdll's directory reads, no loader lock).
+revise('kernelbase','process','''        lstrcpynW( live_dirs[live_dir_count], mod->FullDllName.Buffer, MAX_PATH );
+        if ((slash = wcsrchr( live_dirs[live_dir_count], '\\\\' ))) slash[1] = 0, live_dir_count++;
+''','''        lstrcpynW( live_dirs[live_dir_count], mod->FullDllName.Buffer, MAX_PATH );
+        if (wcschr( live_dirs[live_dir_count], '~' ))  /* 04.28: a guest started by its 8.3 path */
+        {
+            WCHAR long_dir[MAX_PATH];
+            DWORD len = GetLongPathNameW( live_dirs[live_dir_count], long_dir, ARRAY_SIZE(long_dir) );
+
+            if (len && len < ARRAY_SIZE(long_dir)) lstrcpyW( live_dirs[live_dir_count], long_dir );
+        }
+        if ((slash = wcsrchr( live_dirs[live_dir_count], '\\\\' ))) slash[1] = 0, live_dir_count++;
+''','A live guest started by its 8.3 path keeps its folder in long form (04.28).')
+revise('kernelbase','process','''        for (k = 0; k < live_dir_count; k++)
+            if (!wcsnicmp( mod->FullDllName.Buffer, live_dirs[k], wcslen( live_dirs[k] ))) break;
+''','''        for (k = 0; k < live_dir_count; k++)
+            if (!wcsnicmp( mod->FullDllName.Buffer, live_dirs[k], wcslen( live_dirs[k] ))) break;
+        if (k == live_dir_count && live_dir_count && wcschr( mod->FullDllName.Buffer, '~' ))
+        {
+            /* 04.28 (run-0244: NSS loads nssckbi.dll by its 8.3 path): a module loaded by its 8.3 path is in a live
+             * guest's folder by its long path */
+            WCHAR long_name[MAX_PATH];
+            DWORD len = GetLongPathNameW( mod->FullDllName.Buffer, long_name, ARRAY_SIZE(long_name) );
+
+            if (len && len < ARRAY_SIZE(long_name))
+                for (k = 0; k < live_dir_count; k++)
+                    if (!wcsnicmp( long_name, live_dirs[k], wcslen( live_dirs[k] ) )) break;
+            if (k < live_dir_count)
+                ERR( "PWGUEST own %s: by its 8.3 path in a live guest's folder, %s\\n", debugstr_w( mod->FullDllName.Buffer ),
+                     debugstr_w( long_name ) );
+        }
+''','A module loaded by its 8.3 path counts in the folder of a live guest (04.28).')
+
+# 04.26 (2026-11-18, the user's decision after run-0234): MangoHud is never shown for seamonkey.exe. A program on this
+# list gets no MangoHud layer: the Vulkan loader (vulkan-1.dll, tools/vk-h0/build-vulkan-loader.sh) reads the layer's
+# disable_environment, DISABLE_MANGOHUD (MangoHud.x86_64.json), with GetEnvironmentVariableW at each vkCreateInstance,
+# and a thread of such a guest reads "1" there. Every guest shares the process environment, so the answer is the
+# guest's, not a variable set for all. libMangoHud.dll may already be loaded for another program; the loader then
+# leaves it out of this program's chain, so it hooks and draws nothing for it. The closer reports no MangoHud in front
+# for it either ("PWOVERLAY mangohud in_front=0 ... excluded=1"), so ESTADISTICAS turns on the overlay's own readout and
+# Shift+F12 is not sent. Every other program keeps MangoHud, MangoJuice's settings and the show/hide.
+# 04.26 (run-0234, every MangoHud program that stops presenting): the closer counted MangoHud in front only while a
+# Vulkan swapchain had presented to the window in front in the last 2 s. A page that does not change presents nothing,
+# so with SeaMonkey in front the report went 0 and 1 (window=0x900ba presented=0) and ESTADISTICAS toggled the
+# overlay's own readout instead of MangoHud: MangoHud could not be hidden. The window in front keeps the state it had
+# while it presented until another window comes in front.
+revise('kernelbase','process','''#ifdef _WIN64
+/* W242: MangoHud counts for the program in front only (W240: one 64-bit program loaded it, and the''','''/* 04.26: the programs for which MangoHud is never shown (tools/build-guest-hw.py), by the guest EXE's file name */
+static BOOL ps4_guest_no_hud( struct ps4_guest *guest )
+{
+    static const WCHAR *const excluded[] = { L"seamonkey.exe" };
+    LDR_DATA_TABLE_ENTRY *mod;
+    UINT i;
+
+    if (!guest || !guest->module || LdrFindEntryForAddress( guest->module, &mod ) || !mod->BaseDllName.Buffer)
+        return FALSE;
+    for (i = 0; i < ARRAY_SIZE(excluded); i++)
+        if (!wcsicmp( mod->BaseDllName.Buffer, excluded[i] )) return TRUE;
+    return FALSE;
+}
+
+#ifdef _WIN64
+/* W242: MangoHud counts for the program in front only (W240: one 64-bit program loaded it, and the''','MangoHud is never shown for seamonkey.exe (04.26).')
+revise('kernelbase','process','''    HWND hwnd = front ? front() : NULL, presented = NULL;
+    const char *at = reply;
+    int loaded = ps4_overlay_mangohud_loaded(), guest64 = 0, loaded32, hud;
+    static HANDLE hud32;
+''','''    HWND hwnd = front ? front() : NULL, presented = NULL;
+    const char *at = reply;
+    int loaded = ps4_overlay_mangohud_loaded(), guest64 = 0, loaded32, hud, excluded = 0;
+    static HANDLE hud32;
+    static HWND kept;  /* 04.26: the window in front that presented, while it stays in front */
+    struct ps4_guest *guest = NULL;
+''','The window in front keeps its MangoHud state while it does not present (04.26).')
+revise('kernelbase','process','''    if (presented && owner) guest64 = ps4_overlay_guest_of( owner( hwnd, NULL ) ) != NULL;
+    /* W245: a window in front that is not a 64-bit guest's and that Vulkan presents to is a 32-bit guest's:
+     * explorer's own windows do not present */
+    hud = presented && (guest64 ? loaded : loaded32);
+    if (hud == reported) return;
+    reported = hud;
+    ERR( "PWOVERLAY mangohud in_front=%d window=%p presented=%p guest64=%d loaded=%d loaded32=%d\\n", hud, hwnd,
+         presented, guest64, loaded, loaded32 );''','''    /* 04.26 (run-0234): a page that does not change presents nothing; its window keeps the state it had */
+    if (presented) kept = hwnd;
+    else if (hwnd && hwnd == kept) presented = hwnd;
+    else kept = NULL;
+    if (presented && owner) guest64 = (guest = ps4_overlay_guest_of( owner( hwnd, NULL ) )) != NULL;
+    excluded = guest && ps4_guest_no_hud( guest );  /* 04.26: no MangoHud for it */
+    /* W245: a window in front that is not a 64-bit guest's and that Vulkan presents to is a 32-bit guest's:
+     * explorer's own windows do not present */
+    hud = presented && !excluded && (guest64 ? loaded : loaded32);
+    if (hud == reported) return;
+    reported = hud;
+    ERR( "PWOVERLAY mangohud in_front=%d window=%p presented=%p guest64=%d loaded=%d loaded32=%d excluded=%d\\n", hud,
+         hwnd, presented, guest64, loaded, loaded32, excluded );''','The window in front keeps its MangoHud state while it does not present (04.26).')
+revise('kernelbase','process','''    TRACE( "(%s %p %lu)\\n", debugstr_w(name), val, size );
+
+    RtlInitUnicodeString( &us_name, name );
+    us_value.Length = 0;
+    us_value.MaximumLength = (size ? size - 1 : 0) * sizeof(WCHAR);
+    us_value.Buffer = val;
+''','''    TRACE( "(%s %p %lu)\\n", debugstr_w(name), val, size );
+
+    /* 04.26: the Vulkan loader leaves MangoHud's layer out for a guest that never shows it (ps4_guest_no_hud) */
+    if (name && !wcsicmp( name, L"DISABLE_MANGOHUD" ) && ps4_guest_no_hud( ps4_guest_or_loading() ))
+    {
+        static LONG logged;
+
+        if (!InterlockedExchange( &logged, 1 ))
+            ERR( "PWGUEST mangohud excluded module=%p: DISABLE_MANGOHUD=1 for its threads\\n", ps4_guest_or_loading()->module );
+        if (size < 2) return 2;
+        val[0] = '1';
+        val[1] = 0;
+        return 1;
+    }
+    RtlInitUnicodeString( &us_name, name );
+    us_value.Length = 0;
+    us_value.MaximumLength = (size ? size - 1 : 0) * sizeof(WCHAR);
+    us_value.Buffer = val;
+''','MangoHud is never shown for seamonkey.exe (04.26).')
+
+# 04.24 (run-0224: SeaMonkey with GPU compositing ended 10 s in, after the title ran out of descriptors at open=798:
+# pipes=435 of them, a Wine thread's seven pipe ends with the in-process server, about 62 live threads in the title).
+# Who starts each of a guest's threads, and how many of its threads are alive: thread_starts names ucrtbase's
+# _beginthreadex for 80 of SeaMonkey's 89, so the caller outside the C runtime is the one that tells Gecko's pools
+# from Mesa's queues (zink: one flush thread, four compile threads, one per GL context). The first 256 of the title.
+# Read only.
+revise('kernelbase','thread','''/***************************************************************************
+ *           CreateRemoteThread   (kernelbase.@)
+ */''','''/* 04.24 (run-0224): who starts a guest's thread, outside the C runtime, and the guest's live threads. Read only. */
+static void ps4_thread_new_trace( struct ps4_guest *guest, HANDLE handle, LPTHREAD_START_ROUTINE start )
+{
+    /* 04.25 (run-0229: 96 of SeaMonkey's threads by "nss3.dll"+1060f9, NSPR's thread start): past NSPR too */
+    static const WCHAR *const plumbing[] = { L"kernelbase.dll", L"kernel32.dll", L"ntdll.dll", L"ucrtbase.dll",
+                                             L"msvcrt.dll", L"vcruntime140.dll", L"msvcp140.dll", L"nss3.dll" };
+    static LONG traced;
+    LDR_DATA_TABLE_ENTRY *mod;
+    void *frames[16];
+    char by[96] = "?", from[96];
+    USHORT count, i;
+    UINT j, made, live = 0;
+
+    if (InterlockedIncrement( &traced ) > 256) return;
+    count = RtlCaptureStackBackTrace( 1, ARRAY_SIZE(frames), frames, NULL );
+    for (i = 0; i < count; i++)
+    {
+        if (LdrFindEntryForAddress( frames[i], &mod ) || !mod->BaseDllName.Buffer) continue;
+        for (j = 0; j < ARRAY_SIZE(plumbing); j++)
+            if (!wcsicmp( mod->BaseDllName.Buffer, plumbing[j] )) break;
+        if (j < ARRAY_SIZE(plumbing)) continue;
+        snprintf( by, sizeof(by), "%s+%Ix", debugstr_w( mod->BaseDllName.Buffer ),
+                  (ULONG_PTR)frames[i] - (ULONG_PTR)mod->DllBase );
+        break;
+    }
+    if (!LdrFindEntryForAddress( (void *)start, &mod ) && mod->BaseDllName.Buffer)
+        snprintf( from, sizeof(from), "%s+%Ix", debugstr_w( mod->BaseDllName.Buffer ),
+                  (ULONG_PTR)start - (ULONG_PTR)mod->DllBase );
+    else
+        snprintf( from, sizeof(from), "%p", start );
+    RtlEnterCriticalSection( &guest->lock );
+    made = guest->thread_count;
+    for (j = 0; j < guest->thread_count; j++)
+        if (WaitForSingleObject( guest->threads[j], 0 ) == WAIT_TIMEOUT) live++;
+    RtlLeaveCriticalSection( &guest->lock );
+    ERR( "PWGUEST thread_new module=%p id=%04lx made=%u live=%u by=%s start=%s\\n", guest->module,
+         GetThreadId( handle ), made, live, by, from );
+}
+
+/***************************************************************************
+ *           CreateRemoteThread   (kernelbase.@)
+ */''','Who starts a guest thread is traced (04.24).')
+revise('kernelbase','thread','''            else if (DuplicateHandle( GetCurrentProcess(), handle, GetCurrentProcess(), &copy, 0, FALSE, DUPLICATE_SAME_ACCESS ))
+                guest->threads[guest->thread_count++] = copy;
+            RtlLeaveCriticalSection( &guest->lock );
+''','''            else if (DuplicateHandle( GetCurrentProcess(), handle, GetCurrentProcess(), &copy, 0, FALSE, DUPLICATE_SAME_ACCESS ))
+                guest->threads[guest->thread_count++] = copy;
+            RtlLeaveCriticalSection( &guest->lock );
+            ps4_thread_new_trace( guest, handle, start );  /* 04.24 */
+''','Who starts a guest thread is traced (04.24).')
+
 # W269 (W267: Call of Duty ended with status 3 after its GL start, no fault or message): return addresses into the
 # program's own image on the exiting thread's stack. Read only.
 revise('kernelbase','process','''    ps4_guest_exit_note( guest->ended, status, FALSE );  /* W267: for GetExitCodeProcess */

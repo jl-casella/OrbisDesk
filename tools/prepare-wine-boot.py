@@ -746,6 +746,87 @@ revise('server/ptrace.c','''        ret = tkill( thread->unix_pid, thread->unix_
         ret = tkill( thread->unix_pid, thread->unix_tid, sig );
         if (ret == -1 && errno == ENOSYS) ret = kill( thread->unix_pid, sig );
 #endif''')
+# OrbisDesk 04.25 (run-0224, run-0229: SeaMonkey ran the title out of descriptors at open=798 and 837, about 500 of
+# them pipe ends; docs/SEAMONKEY_DESCRIPTORS.md). The in-process server shares the title's one descriptor table, so a
+# Wine thread costs seven: its request, reply and wait pipes, four ends kept by the thread and three by the server.
+# A thread made by NtCreateThreadEx now carries its requests and its replies on one Unix socket pair instead of two
+# pipes: the thread keeps one end, the server the other, five descriptors a thread instead of seven. The server end is
+# made non-blocking here (the console may refuse fcntl on a socket; pw_wine_socket_nonblock falls back to SO_NBIO);
+# when that fails, the thread gets the pipes as before and the socket pair is not tried again. A process's first thread
+# (made by the server) keeps its pipes. The thread tells the server with reply_fd -2 in init_thread
+# (tools/build-wine-delete-server.py), and keeps its wait pipe.
+revise('dlls/ntdll/unix/thread.c','''/***********************************************************************
+ *           pthread_exit_wrapper
+ */''','''#ifdef __ORBIS__
+#include <sys/socket.h>
+extern int pw_wine_socket_nonblock( int fd );
+/* OrbisDesk 04.25: a new thread's requests and replies on one socket pair (tools/prepare-wine-boot.py) */
+static int pw_thread_request_socket( int fd[2] )
+{
+    static int disabled;
+
+    if (disabled) return -1;
+    if (socketpair( AF_UNIX, SOCK_STREAM, 0, fd ) == -1)
+    {
+        fprintf( stderr, "PWTHREAD request_socket off: socketpair errno=%d\\n", errno );
+        disabled = 1;
+        return -1;
+    }
+    if (pw_wine_socket_nonblock( fd[0] ) == -1)
+    {
+        fprintf( stderr, "PWTHREAD request_socket off: nonblock errno=%d\\n", errno );
+        close( fd[0] );
+        close( fd[1] );
+        disabled = 1;
+        return -1;
+    }
+    fcntl( fd[0], F_SETFD, FD_CLOEXEC );
+    fcntl( fd[1], F_SETFD, FD_CLOEXEC );
+    return 0;
+}
+#endif
+
+/***********************************************************************
+ *           pthread_exit_wrapper
+ */''')
+revise('dlls/ntdll/unix/thread.c','''    close( data->reply_fd );
+    close( data->request_fd );''','''    if (data->reply_fd != data->request_fd) close( data->reply_fd );  /* OrbisDesk 04.25: one socket */
+    close( data->request_fd );''')
+revise('dlls/ntdll/unix/thread.c','''    if (server_pipe( request_pipe ) == -1)''','''#ifdef __ORBIS__
+    if (pw_thread_request_socket( request_pipe ) == -1 && server_pipe( request_pipe ) == -1)
+#else
+    if (server_pipe( request_pipe ) == -1)
+#endif''')
+revise('dlls/ntdll/unix/server.c','''    if (server_pipe( reply_pipe ) == -1) server_protocol_perror( "pipe" );
+    if (server_pipe( data->wait_fd ) == -1) server_protocol_perror( "pipe" );
+    wine_server_send_fd( reply_pipe[1] );''','''#ifdef __ORBIS__
+    {
+        /* OrbisDesk 04.25: a request socket (thread.c pw_thread_request_socket) also carries the replies; reply_fd -2
+         * tells the server (server/thread.c init_thread) */
+        struct stat st;
+
+        if (!fstat( data->request_fd, &st ) && S_ISSOCK( st.st_mode ))
+        {
+            if (server_pipe( data->wait_fd ) == -1) server_protocol_perror( "pipe" );
+            wine_server_send_fd( data->wait_fd[1] );
+            data->reply_fd = data->request_fd;
+            return -2;
+        }
+    }
+#endif
+    if (server_pipe( reply_pipe ) == -1) server_protocol_perror( "pipe" );
+    if (server_pipe( data->wait_fd ) == -1) server_protocol_perror( "pipe" );
+    wine_server_send_fd( reply_pipe[1] );''')
+# The server watches one descriptor for both: a request (POLLIN) while no reply is pending, the rest of a reply
+# (POLLOUT) while one is. Setting the other fd's events after its own would undo them when both are one.
+revise('server/request.c','''            set_fd_events( thread->request_fd, POLLIN );
+            set_fd_events( thread->reply_fd, 0 );''','''            set_fd_events( thread->request_fd, POLLIN );
+            if (thread->reply_fd != thread->request_fd)  /* OrbisDesk 04.25: one socket */
+                set_fd_events( thread->reply_fd, 0 );''')
+revise('server/request.c','''            set_fd_events( current->reply_fd, POLLOUT );
+            set_fd_events( current->request_fd, 0 );''','''            set_fd_events( current->reply_fd, POLLOUT );
+            if (current->reply_fd != current->request_fd)  /* OrbisDesk 04.25: one socket */
+                set_fd_events( current->request_fd, 0 );''')
 # W018: stopped inside alloc_virtual_heap; record every placement attempt.
 revise('dlls/ntdll/unix/virtual.c','''        ret = anon_mmap_fixed( (char *)end - size, size, PROT_READ | PROT_WRITE, 0 );
         if (ret == MAP_FAILED) continue;''','''#ifdef __ORBIS__

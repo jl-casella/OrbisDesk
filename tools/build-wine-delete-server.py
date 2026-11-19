@@ -270,7 +270,25 @@ static int get_next_timeout( struct timespec *ts )
     fprintf( stderr, "PWSERVER watch rc=%d\\n", watch_rc );
     if (!watch_rc) pthread_detach( watch );
 #endif
-''')):
+'''),
+    # LockFile/LockFileEx (docs/SEAMONKEY_FILE_LOCKS.md; 04.12: SeaMonkey's NS_ERROR_STORAGE_BUSY on YouTube): the SDK's
+    # struct flock and F_RDLCK/F_WRLCK are Linux's and reached the kernel unchanged, so every byte-range lock failed with
+    # EINVAL (STATUS_INVALID_PARAMETER). The two calls go through pw_wine_fcntl_lock (platform/ps4/pw_wine_fs.c).
+    ('''static int set_unix_lock( struct fd *fd, file_pos_t start, file_pos_t end, int type )
+{''',
+     '''#ifdef __ORBIS__
+#define PW_LOCK_FCNTL pw_wine_fcntl_lock  /* OrbisDesk: the kernel's struct flock (tools/build-wine-delete-server.py) */
+extern int pw_wine_fcntl_lock( int fd, int cmd, struct flock *lock );
+#else
+#define PW_LOCK_FCNTL fcntl
+#endif
+
+static int set_unix_lock( struct fd *fd, file_pos_t start, file_pos_t end, int type )
+{'''),
+    ('''        if (fcntl( fd->unix_fd, F_SETLK, &fl ) != -1) return 1;''',
+     '''        if (PW_LOCK_FCNTL( fd->unix_fd, F_SETLK, &fl ) != -1) return 1;'''),
+    ('''            if (fcntl( fd->unix_fd, F_GETLK, &fl ) != -1)''',
+     '''            if (PW_LOCK_FCNTL( fd->unix_fd, F_GETLK, &fl ) != -1)''')):
     if fd_text.count(old)!=1:raise SystemExit('Unexpected context in server/fd.c: '+old[:60])
     fd_text=fd_text.replace(old,new)
 fd_init = '    fd->poll_index = -1;'
@@ -349,7 +367,43 @@ for old,new in (
         extern int pw_wine_thread_setaffinity( long tid, unsigned long long mask );
         ret = pw_wine_thread_setaffinity( thread->unix_tid, affinity );
     }
-#elif defined(HAVE_SCHED_SETAFFINITY)''')):
+#elif defined(HAVE_SCHED_SETAFFINITY)'''),
+    # 04.25 (run-0224, run-0229: the title ran out of descriptors, most of them threads' pipes; docs/SEAMONKEY_DESCRIPTORS.md):
+    # a thread made by NtCreateThreadEx may send one end of a Unix socket pair as its request fd, already non-blocking
+    # (tools/prepare-wine-boot.py, ntdll thread.c); fcntl may refuse a socket on the console, so it gets the same
+    # fallback as the server's other sockets. Its replies go back on the same descriptor (reply_fd -2).
+    ('''DECL_HANDLER(new_thread)
+{''',
+     '''#ifdef __ORBIS__
+extern int pw_wine_socket_nonblock( int fd );  /* OrbisDesk 04.25 (platform/ps4/pw_wine_net.c) */
+#endif
+DECL_HANDLER(new_thread)
+{'''),
+    ('''    else if (request_fd == -1 || fcntl( request_fd, F_SETFL, O_NONBLOCK ) == -1)''',
+     '''#ifdef __ORBIS__
+    else if (request_fd == -1 || (fcntl( request_fd, F_SETFL, O_NONBLOCK ) == -1 &&
+                                  pw_wine_socket_nonblock( request_fd ) == -1))  /* OrbisDesk 04.25 */
+#else
+    else if (request_fd == -1 || fcntl( request_fd, F_SETFL, O_NONBLOCK ) == -1)
+#endif'''),
+    ('''static int init_thread( struct thread *thread, int reply_fd, int wait_fd )
+{''',
+     '''static int init_thread( struct thread *thread, int reply_fd, int wait_fd )
+{
+#ifdef __ORBIS__
+    /* OrbisDesk 04.25: replies on the thread's request socket (tools/build-wine-delete-server.py) */
+    if (reply_fd == -2 && thread->request_fd && !thread->reply_fd)
+    {
+        if ((wait_fd = thread_get_inflight_fd( thread, wait_fd )) == -1)
+        {
+            set_error( STATUS_TOO_MANY_OPENED_FILES );
+            return 0;
+        }
+        thread->reply_fd = (struct fd *)grab_object( thread->request_fd );
+        thread->wait_fd  = create_anonymous_fd( &thread_fd_ops, wait_fd, &thread->obj, 0 );
+        return thread->wait_fd != NULL;
+    }
+#endif''')):
     if thread_text.count(old)!=1:raise SystemExit('Unexpected context in server/thread.c: '+old[:60])
     thread_text=thread_text.replace(old,new)
 thread_selected=work/'thread.c';thread_selected.write_text(thread_text);thread_obj=work/'thread.o'

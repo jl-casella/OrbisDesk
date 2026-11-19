@@ -430,6 +430,12 @@ shutil.copyfile(work/'fileio32.exe',prefix/'drive_c/orbis/fileio32.exe')
 subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-mwindows','-Wl,--no-insert-timestamp',str(ROOT/'fixtures/win32/wow64probe.c'),
                 '-o',str(work/'wow64probe64.exe')],check=True)
 shutil.copyfile(work/'wow64probe64.exe',prefix/'drive_c/orbis/wow64probe64.exe')
+# SeaMonkey flexible memory: SeaMonkey's allocations without the browser (fixtures/win32/jitmem.c): mozjemalloc's chunks
+# decommitted and committed again, small views and SpiderMonkey's executable memory, results in
+# C:\orbis\jitmem-result.txt (docs/SEAMONKEY_FLEXIBLE_MEMORY.md).
+subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-Wall','-mwindows','-Wl,--no-insert-timestamp',
+                str(ROOT/'fixtures/win32/jitmem.c'),'-o',str(work/'jitmem64.exe')],check=True)
+shutil.copyfile(work/'jitmem64.exe',prefix/'drive_c/orbis/jitmem64.exe')
 # B1 (pe32-en-explorer-plan.md P5): C:\windows\syswow64\orbis32host.exe, the image of the 32-bit
 # world's PEB (fixtures/win32/orbis32host.c: ps4_guest32_start runs a 32-bit program on a WoW64 thread
 # of explorer), and C:\orbis\wow64world64.exe, the 64-bit guest that creates the world and runs
@@ -1088,6 +1094,14 @@ with zipfile.ZipFile(seamonkey_zip) as archive:
         target=seamonkey_dir.joinpath(*parts[1:]);target.parent.mkdir(parents=True,exist_ok=True)
         with archive.open(member) as source,target.open('wb') as out_file:shutil.copyfileobj(source,out_file)
 if not (seamonkey_dir/'seamonkey.exe').is_file():raise SystemExit('SeaMonkey archive has no seamonkey.exe')
+# 04.19 (docs/SEAMONKEY_GPU.md): GPU compositing through OpenGL (Mesa WGL/Zink). layers.prefer-opengl is a default
+# preference in SeaMonkey's own defaults/pref, not in user.js, so turning it off in about:config stays across starts
+# and uploads (prefs.js is the console's); user.js keeps Direct3D 11 blocked.
+(seamonkey_dir/'defaults/pref').mkdir(parents=True,exist_ok=True)
+(seamonkey_dir/'defaults/pref/orbisdesk-gpu.js').write_text((ROOT/'fixtures/browser/seamonkey-gpu.js').read_text())
+# 04.30: the GPU and WebGL switches are defaults in orbisdesk-gpu.js; this autoconfig file (named there) clears, once per
+# profile, the values user.js saved in prefs.js up to 04.29
+(seamonkey_dir/'orbisdesk.cfg').write_text((ROOT/'fixtures/browser/seamonkey-orbisdesk.cfg').read_text())
 # W303: VLC opened without the Start menu's options (from WFM, a file association) asks its first-run privacy
 # question on a clean install; the answer the shortcuts give (--no-qt-privacy-ask, no network metadata), as VLC
 # writes it. (The DVD Player shortcut closing at once without a disc is W246's --play-and-exit, not this.)
