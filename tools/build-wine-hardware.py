@@ -1315,6 +1315,15 @@ obsolete_files+=['wine-prefix/drive_c/windows/mono/mono-2.0/'+relative for relat
 obsolete_files.append('wine-prefix/drive_c/windows/system32/games-source.tar.gz')
 # ...and the lib/wine copies removed above. One left behind would win over the prefix's newer copy.
 obsolete_files+=library_copies_removed
+# The same holds for a lib/wine copy that an older build (alpha 1, W303 before 2026-11-20) shipped under a name
+# this build never puts there: for every module of system32 and syswow64 with no lib/wine copy in this build, its
+# lib/wine path is obsolete too (an absent file is fine). lib/wine holds only what the package ships.
+for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
+    for module in sorted((prefix/'drive_c/windows'/windows).iterdir()):
+        library='wine/lib/wine/%s/%s'%(arch,module.name)
+        if (module.is_file() and module.name.lower() not in KEEP_LIBRARY_COPY
+                and not (data/library).exists() and library not in obsolete_files):
+            obsolete_files.append(library)
 # A runtime folder kept from an earlier local build may still hold what this one no longer ships (a clean CI
 # workspace never does): it goes before the inventory, so it is neither shipped nor both shipped and obsolete.
 stale_removed=0
