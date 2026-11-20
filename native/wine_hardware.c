@@ -446,6 +446,8 @@ int pw_hw_switch_program(const char *image,const char *command_line)
 static pthread_mutex_t screen_lock=PTHREAD_MUTEX_INITIALIZER;
 static volatile int screen_handed;
 static int boot_percent;
+static const char *boot_state="PREPARING WINE";  /* the stage the bar shows, for a redraw */
+static void hw_manage_hint(void);  /* native/hw_manage.h: OPTIONS opens MANAGE INSTALLATION */
 typedef struct {float x,y;} LogoPoint;
 static int logo_inside(const LogoPoint *p,float x,float y)
 {
@@ -512,6 +514,7 @@ static void draw_screen(int percent,const char *state,const char *detail)
         centred_text(484,state,0xff8a8a8a,2);
         /* the visible version, on the start screen since the NORMAL/ROOT screen is gone (04.10) */
         hw_text(pixels,WIDTH,HEIGHT,24,HEIGHT-30,"VERSION " HW_VERSION " (" HW_BUILD ")",0xff404040,2);
+        hw_manage_hint();
     } else {
         centred_text(450,state,0xffff6a6a,3);
         centred_text(500,detail,0xffffffff,2);
@@ -523,7 +526,7 @@ static void draw_screen(int percent,const char *state,const char *detail)
 static void loading(int percent,const char *state)
 {
     pthread_mutex_lock(&screen_lock);
-    if(!screen_handed&&percent>boot_percent){boot_percent=percent;draw_screen(percent,state,NULL);}
+    if(!screen_handed&&percent>boot_percent){boot_percent=percent;boot_state=state;draw_screen(percent,state,NULL);}
     if(percent>=100)screen_handed=1;
     pthread_mutex_unlock(&screen_lock);
 }
@@ -1005,6 +1008,7 @@ static void merge_system_reg(void)
 }
 
 #include "hw_install.h"  /* alpha-1: the first-run installer (uses note, read_whole and the loading screen) */
+#include "hw_manage.h"  /* 2026-11-20: MANAGE INSTALLATION (OPTIONS on the loading screen) */
 /* PoP D.7 (hardware 2026-11-13 and 14: forced restarts left the prefix's registry files at 0 bytes, and Wine's
  * boot stopped with "wine boot stopped"): a registry file that is empty or lost its header comes back from the
  * copy the last good start kept; a good one refreshes that copy */
@@ -1064,6 +1068,8 @@ int main(void)
     trace_setup();
     shader_cache_setup();
     loading(5,"PREPARING WINE");
+    /* not in a relaunch that runs a program from the desktop (W043): a game's OPTIONS is not this menu's */
+    {struct stat next;if(stat(HW_NEXT,&next))hw_manage_start();else manage_accepting=0;}
     boot_choose();  /* phase 10: Root, a forced mode, or the relaunch's mode */
     int net=(int)sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
     note(HW_BUILD " sysmodule_net rc=0x%08x\n",(unsigned)net);
@@ -1109,6 +1115,7 @@ int main(void)
         if(mode){fputs("normal\n",mode);fclose(mode);}
         note(HW_BUILD " PWJB root_unavailable: continuing as normal\n");
     }
+    hw_manage_checkpoint("after_jailbreak");  /* as root, before anything opens the prefix */
     guard_registry();
     merge_system_reg();
     /* W015: first GUI program on hardware, the PE64 window fixture of increment 24. */
@@ -1405,6 +1412,8 @@ int main(void)
     note(HW_BUILD " calling_wine_boot_main cpu=%s machine=0x%x t_ms=%llu\n",cpu,(unsigned)machine,(unsigned long long)(sceKernelGetProcessTime()/1000));
     loading(30,"STARTING WINE");
     sceKernelUsleep(1000000);
+    hw_manage_checkpoint("before_wine");
+    manage_accepting=0;  /* from here the pad is Wine's (native/hw_pad.c) */
     int rc=pw_wine_boot_main(argc,args);
     note(HW_BUILD " boot_main_return rc=%d\n",rc);
     char detail[96];snprintf(detail,sizeof(detail),"BOOT RETURNED CODE 0X%08X - READ THE FTP LOG",(unsigned)rc);
