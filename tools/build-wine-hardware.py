@@ -1267,8 +1267,10 @@ print(json.dumps({'identity_stripped':len(stripped['identity'])}))
 # loader takes a builtin from lib/wine first and, when lib/wine has none, the prefix's copy, which carries the
 # builtin marker: most modules already load that way (find_builtin_dll's "cannot find builtin library" lines).
 # So the lib/wine copy of a module whose prefix copy is identical goes. ntdll stays in lib/wine: the Unix loader
-# maps it from there, and native/pop_wine_child.c opens lib/wine/x86_64-windows/ntdll.dll by path.
-KEEP_LIBRARY_COPY={'ntdll.dll'}
+# maps it from there, and native/pop_wine_child.c opens lib/wine/x86_64-windows/ntdll.dll by path. comctl32_v6
+# stays too: Wine loads it by that name only from the builtin folder (see its staging above), so a prefix copy
+# (a reused local runtime folder had one) must never stand in for it.
+KEEP_LIBRARY_COPY={'ntdll.dll','comctl32_v6.dll'}
 library_copies_removed=[]
 for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
     for module in sorted((data/'wine/lib/wine'/arch).iterdir()):
