@@ -288,3 +288,22 @@ unsigned long long pw_hw_separate_window(int x, int y)
     (void)x; (void)y;
     return 0;
 }
+
+/* 04.20 frame generation: native/telemetry.c reads the hardware sink's shown/real rate through a weak reference,
+ * and create-fself refuses a PRX with an undefined one. This process has no hardware sink: nothing to report. */
+int pw_hw_sink_fg_rate(unsigned *width, unsigned *height, unsigned *shown_tenths, unsigned *real_tenths,
+                       unsigned *generated_tenths, uint64_t *sample_us);
+int pw_hw_sink_fg_rate(unsigned *width, unsigned *height, unsigned *shown_tenths, unsigned *real_tenths,
+                       unsigned *generated_tenths, uint64_t *sample_us)
+{
+    (void)width; (void)height; (void)shown_tenths; (void)real_tenths; (void)generated_tenths; (void)sample_us;
+    return 0;
+}
+
+/* Mesa's pipeline trace (tools/vk-h0/patch-mesa-pipeline-trace.py) calls the sink's PWPERF counter through a weak
+ * reference too; the child's sink keeps no such counter. */
+void pw_vk_pipeline_note(unsigned kind, uint64_t ns, unsigned flags);
+void pw_vk_pipeline_note(unsigned kind, uint64_t ns, unsigned flags)
+{
+    (void)kind; (void)ns; (void)flags;
+}

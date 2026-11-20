@@ -105,6 +105,8 @@ Cada punto se encontró en hardware. El comentario junto al código da la corrid
 
 ## Compilar y desplegar
 
+Desde el 2026-11-20 `tools/build-wine-hardware.py` compila `pop-wine-child.prx` con su propio comando de link y lo lleva en `OrbisDesk.pkg` como `orbisdesk/pop-wine-child.prx`. El launcher lo instala en `/data/orbisdesk` junto con el resto del runtime, y `tools/upload-hardware.py` lo sube con el runtime y lo verifica por un tramo de su texto descifrado. Antes lo subía sólo `tools/upload-pop-separate.py`. Una instalación limpia del paquete (también la del CI) quedaba entonces sin el PRX, y el hijo mostraba su ventana de prueba P015 en lugar del programa. Los comandos de abajo siguen siendo la ruta de desarrollo para la sonda y los programas de prueba.
+
 ```sh
 python3 tools/build-wine-hardware.py --runtime-outside-package   # el título (su comando de enlace alimenta el PRX)
 python3 tools/build-pop-wine-child.py                            # PRX, sonda, hijo, programas de prueba + manifiesto

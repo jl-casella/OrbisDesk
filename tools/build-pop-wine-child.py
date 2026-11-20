@@ -11,7 +11,9 @@ Builds, into build/pop-wine-child/:
   pop-wine-join.elf    the payload-SDK child the loader starts (native/process_p014_child.c)
   separate_d1.exe, separate_d2.exe, separate_launcher.exe, separate_game.exe   test programs (fixtures/win32)
 and manifest.json with every output's sha256 and the inputs' hashes. Run after tools/build-wine-hardware.py (its
-link command and objects are this PRX's input). Upload with tools/upload-pop-separate.py.
+link command and objects are this PRX's input). tools/build-wine-hardware.py also builds pop-wine-child.prx itself and
+ships it in the package (orbisdesk/pop-wine-child.prx, installed like the runtime); tools/upload-pop-separate.py
+uploads these outputs for development and the test programs.
 """
 import hashlib, json, os, pathlib, re, subprocess
 
@@ -37,16 +39,20 @@ def fself_lib(elf, prx):
         stdout=subprocess.DEVNULL)
 
 
-def build_wine_prx():
-    manifest = json.loads((ROOT / 'out/wine-hardware-w303/manifest.json').read_text())
-    command = manifest['link_command']
+def build_wine_prx(command=None, request_writer=None, eboot_sha256=None):
+    """The Wine PRX from the title's link command. tools/build-wine-hardware.py calls this with its own command
+    and request writer while it builds, and ships the PRX in the package (2026-11-20); run alone, this reads both
+    from the last build's manifest."""
+    if command is None:
+        manifest = json.loads((ROOT / 'out/wine-hardware-w303/manifest.json').read_text())
+        command, request_writer, eboot_sha256 = manifest['link_command'], manifest['request_writer'], manifest.get('eboot_sha256')
+    WORK.mkdir(parents=True, exist_ok=True)
     flags = json.loads((ROOT / 'build/wine-boot/link-report.json').read_text())['helper_compile_flags']
     drop = {HW + 'wine_hardware.o', HW + 'hw_pad.o', HW + 'hw_overlay.o', 'build/steam-hosted/steam_client_hosted.o',
             HW + 'wine_boot_entry.o', 'build/wine-boot/wine_boot_services.o', '.deps/sdk/OpenOrbis/PS4Toolchain/lib/crt1.o',
             HW + 'hw_sink_gpu.o'}   # D.4: RADV, its probe and runtime and libc++ stay; the VideoOut sink does not
     title_wraps = {'--wrap=' + n for n in ('exit', '_exit', 'sceKernelDebugOutText', 'write', 'vfprintf', 'fprintf', 'fputs', 'fwrite')}
     # Use exactly the same bounded request writer and redirected Wine object as the title.
-    request_writer = manifest['request_writer']
     for key in ('client_object', 'writer_object'):
         path = ROOT / request_writer[key]
         if command.count(str(path)) != 1 or sha(path) != request_writer[key + '_sha256']:
@@ -97,7 +103,7 @@ def build_wine_prx():
     if result.returncode or missing:
         raise SystemExit('PRX link failed; undefined: %s (build/pop-wine-child/link.log)' % ', '.join(missing))
     fself_lib(WORK / 'pop_wine_child.elf', WORK / 'pop-wine-child.prx')
-    return {'base_link_eboot_sha256': manifest.get('eboot_sha256'), 'wraps': wraps,
+    return {'base_link_eboot_sha256': eboot_sha256, 'wraps': wraps,
             'request_writer': request_writer}
 
 

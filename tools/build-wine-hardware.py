@@ -250,6 +250,18 @@ shutil.copyfile(loader_dir/'upstream-source.tar.gz',app/'elfldr-source.tar.gz')
 # Stage the same sealed prefix without DOS links: PS4 applications cannot use symbolic
 # links, so pw_wine_fs serves c: and z: from a fixed mount table.
 data=work/'runtime';data.mkdir(exist_ok=True)
+# PoP (2026-11-20): Wine for separate processes, the PRX native/process_p014_child.c loads from
+# /data/orbisdesk/pop-wine-child.prx. It used to go up only with tools/upload-pop-separate.py, so no package carried
+# it: after a clean install the child found none and showed its P015 test window instead of the program. It is
+# built here from this link command (tools/build-pop-wine-child.py) and installed with the runtime.
+import importlib.util
+pop_spec=importlib.util.spec_from_file_location('pop_wine_child_builder',ROOT/'tools/build-pop-wine-child.py')
+pop_builder=importlib.util.module_from_spec(pop_spec);pop_spec.loader.exec_module(pop_builder)
+pop_builder.build_wine_prx(command,{'client_object':str(request_client_chunked.relative_to(ROOT)),
+    'client_object_sha256':sha(request_client_chunked),'writer_object':str(request_writer.relative_to(ROOT)),
+    'writer_object_sha256':sha(request_writer)})
+(data/'orbisdesk').mkdir(exist_ok=True)
+shutil.copyfile(pop_builder.WORK/'pop-wine-child.prx',data/'orbisdesk/pop-wine-child.prx')
 prefix=data/'wine-prefix';prefix.mkdir(exist_ok=True)
 package=ROOT/'reports/increment15/prefix-package'
 wine_commit=json.loads((ROOT/'build/wine-boot/report.json').read_text())['wine_commit']
@@ -1270,12 +1282,21 @@ print(json.dumps({'identity_stripped':len(stripped['identity'])}))
 # maps it from there, and native/pop_wine_child.c opens lib/wine/x86_64-windows/ntdll.dll by path. comctl32_v6
 # stays too: Wine loads it by that name only from the builtin folder (see its staging above), so a prefix copy
 # (a reused local runtime folder had one) must never stand in for it.
-KEEP_LIBRARY_COPY={'ntdll.dll','comctl32_v6.dll'}
+KEEP_LIBRARY_COPY={'ntdll.dll','apisetschema.dll','comctl32_v6.dll'}  # opened only from lib/wine
+# A module whose Unix library is linked into the ELF stays too: platform/ps4/pw_wine_unixlibs.c finds
+# it by the unix_path Wine sets only for a builtin loaded from lib/wine. 04.42 and 04.43 loaded win32u
+# from system32 with no Unix side ("PWBOOT static_unixlib .../win32u.so" never logged): conhost crashed
+# in gdi32 at desktop start and the start hung at WINE SERVER READY.
+import re
+UNIXLIB_STEMS={n.lower() for n in re.findall(r'\{"([A-Za-z0-9_]+)\.so"',(ROOT/'platform/ps4/pw_wine_unixlibs.c').read_text())}
+if 'win32u' not in UNIXLIB_STEMS: raise SystemExit('pw_wine_unixlibs.c: no static Unix library table')
+def keep_library_copy(name):
+    name=name.lower();return name in KEEP_LIBRARY_COPY or name.rsplit('.',1)[0] in UNIXLIB_STEMS
 library_copies_removed=[]
 for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
     for module in sorted((data/'wine/lib/wine'/arch).iterdir()):
         twin=prefix/'drive_c/windows'/windows/module.name
-        if (module.is_file() and module.name.lower() not in KEEP_LIBRARY_COPY and twin.is_file()
+        if (module.is_file() and not keep_library_copy(module.name) and twin.is_file()
                 and twin.read_bytes()==module.read_bytes()):
             module.unlink();library_copies_removed.append(module.relative_to(data).as_posix())
 print(json.dumps({'library_copies_removed':len(library_copies_removed),
@@ -1315,6 +1336,15 @@ obsolete_files+=['wine-prefix/drive_c/windows/mono/mono-2.0/'+relative for relat
 obsolete_files.append('wine-prefix/drive_c/windows/system32/games-source.tar.gz')
 # ...and the lib/wine copies removed above. One left behind would win over the prefix's newer copy.
 obsolete_files+=library_copies_removed
+# The same holds for a lib/wine copy that an older build (alpha 1, W303 before 2026-11-20) shipped under a name
+# this build never puts there: for every module of system32 and syswow64 with no lib/wine copy in this build, its
+# lib/wine path is obsolete too (an absent file is fine). lib/wine holds only what the package ships.
+for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
+    for module in sorted((prefix/'drive_c/windows'/windows).iterdir()):
+        library='wine/lib/wine/%s/%s'%(arch,module.name)
+        if (module.is_file() and not keep_library_copy(module.name)
+                and not (data/library).exists() and library not in obsolete_files):
+            obsolete_files.append(library)
 # A runtime folder kept from an earlier local build may still hold what this one no longer ships (a clean CI
 # workspace never does): it goes before the inventory, so it is neither shipped nor both shipped and obsolete.
 stale_removed=0

@@ -176,6 +176,24 @@ if not args.skip_runtime:
             counts['kept']=counts.get('kept',0)+1
             print(index,'kept',name,'console-owned',flush=True)
             continue
+        if name.endswith('.prx'):
+            # GoldHEN's FTP: an overwritten PRX can stay loaded, and RETR returns the decrypted ELF, so delete
+            # first and verify by a slice of the ELF's text (as tools/upload-pop-separate.py does)
+            prx=(runtime/name).read_bytes()
+            if sha(prx)!=entry['sha256']:raise SystemExit('runtime file differs from manifest: '+name)
+            elf=(ROOT/'build/pop-wine-child'/(pathlib.PurePosixPath(name).stem.replace('-','_')+'.elf')).read_bytes()
+            def put_prx():
+                try:ftp.delete(remote)
+                except ftplib.error_perm:pass
+                ftp.storbinary('STOR '+remote,io.BytesIO(prx),blocksize=1<<20)
+                readback=fetch(remote) or b''
+                if not (len(readback)>len(prx) and elf[0x4000:0x4000+0x10000] in readback):
+                    raise SystemExit('read-back mismatch (decrypted text slice): '+remote)
+                return 'uploaded'
+            state=retrying(put_prx);counts[state]+=1
+            print(index,state,name,'(decrypted text slice)',flush=True)
+            if not retrying(chmod,remote,0o644):chmod_failed.append(name)
+            continue
         state=retrying(put,runtime/name,remote,entry['sha256']);counts[state]+=1
         print(index,state,name,flush=True)
         if not retrying(chmod,remote,0o666 if name.split('/')[0] in WRITABLE else 0o644):chmod_failed.append(name)

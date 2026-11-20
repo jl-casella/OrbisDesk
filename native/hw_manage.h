@@ -221,7 +221,7 @@ static void hw_manage_remove(const char *path,struct hw_manage_count *c)
 {
     struct stat st;
     if(c->keep&&hw_manage_kept(path))return;
-    if(lstat(path,&st)){if(errno!=ENOENT)hw_manage_failed(c,"stat",path);return;}
+    if(pw_wine_lstat(path,&st)){if(errno!=ENOENT)hw_manage_failed(c,"stat",path);return;}
     if(S_ISDIR(st.st_mode)){
         DIR *dir=opendir(path);
         if(dir){
