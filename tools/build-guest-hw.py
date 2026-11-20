@@ -6795,17 +6795,29 @@ revise('ntdll','heap','''        info->sites[info->listed].via = site->via;
 ''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
 revise('kernelbase','process','''struct pw_heap_site { void *site, *caller, *via; LONG blocks, bytes; };''','''struct pw_heap_site { void *site, *caller, *via; LONG blocks, bytes; void *up[3]; };''',
        '''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
-revise('kernelbase','process','''/* after its large blocks: the small blocks the guest's threads allocated in the process heap (i386). The blocks of a site''','''/* 04.32 (run-0261: 74 and 59 MB kept as "ucrtbase.dll via ucrtbase.dll"): the frame that counts for a site. When the
+revise('kernelbase','process','''/* after its large blocks: the small blocks the guest's threads allocated in the process heap (i386). The blocks of a site''','''/* 04.37 (run-0278, 04.34: "L4D2 Launcher.exe" started again after its game was closed from the overlay faulted in
+ * GetPrivateProfileStringW -> PROFILE_Find, reading 0x0062007a and then 0x221c0307 as a section): only the C runtimes
+ * proper allocate through more of themselves for their caller. kernel32 and kernelbase count for the code that called
+ * them directly (LocalAlloc, GlobalReAlloc), as in 04.30; a chain of their own frames is their own state. kernel32's
+ * profile cache (MRUProfile: PROFILE_Load <- PROFILE_Open <- GetPrivateProfileStringW <- GetPrivateProfileStringA <-
+ * the program) stays in kernel32 after the program that read the file has ended, and 04.32 freed it with that
+ * program's blocks. Kept: kernelbase's GlobalAlloc -> LocalAlloc blocks of a gone program, as before 04.32. */
+static BOOL ps4_guest_crt_chain_module( const WCHAR *name )
+{
+    return name && (!wcsicmp( name, L"ucrtbase.dll" ) || !wcsnicmp( name, L"msvcr", 5 ));
+}
+
+/* 04.32 (run-0261: 74 and 59 MB kept as "ucrtbase.dll via ucrtbase.dll"): the frame that counts for a site. When the
  * caller is a C runtime and the frame above it is one too (_aligned_malloc or _strdup calling malloc), it is the first
- * of the three frames above that is not a C runtime's; *via is its module. Without them, via stays. The loader lock is
- * held. */
+ * of the three frames above that is not a C runtime's; *via is its module. Without them, via stays. 04.37: C runtimes
+ * proper only (ps4_guest_crt_chain_module). The loader lock is held. */
 static void *ps4_site_frame( const WCHAR *caller, const struct pw_heap_site *site, const WCHAR **via )
 {
     void *frame = site->via;
     ULONG i;
 
-    if (!ps4_guest_crt_module( caller )) return frame;
-    for (i = 0; i < ARRAY_SIZE(site->up) && site->up[i] && ps4_guest_crt_module( *via ); i++)
+    if (!ps4_guest_crt_chain_module( caller )) return frame;
+    for (i = 0; i < ARRAY_SIZE(site->up) && site->up[i] && ps4_guest_crt_chain_module( *via ); i++)
     {
         frame = site->up[i];
         *via = ps4_guest_code_module( frame );

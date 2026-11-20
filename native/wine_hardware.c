@@ -1333,7 +1333,7 @@ int main(void)
             static char world_vk_batch[]="--env=PW_VK_BATCH=1",world_profile[]="--env=PW_NATIVE_PROFILE=1";
             OrbisKernelStat world_marker;
             /* 04.35: batching is on by default in the world (04.33 run-0275: zink's calls -58%, no PW_VK_BATCH
-             * fatal in Alan Wake or GTA SA); C:\orbiskbatch32.off turns it off. vkbatch32.txt is no longer needed. */
+             * fatal in Alan Wake or GTA SA); C:\orbis\vkbatch32.off turns it off. vkbatch32.txt is no longer needed. */
             const int world_batch=sceKernelStat("/data/wine-prefix/drive_c/orbis/vkbatch32.off",&world_marker)!=0;
             const int world_prof=sceKernelStat("/data/wine-prefix/drive_c/orbis/nativeprofile.txt",&world_marker)==0;
             if(world_batch) args[argc++]=world_vk_batch;
@@ -1386,15 +1386,18 @@ int main(void)
     }
     /* W264 (W262: every 32-bit program that loaded Mesa's i386 opengl32 ended the app; W263 went back to Wine's builtin):
      * C:\\orbis\\opengl32native.txt gives 32-bit programs Mesa's opengl32 (Zink) from syswow64; the 64-bit view has no
-     * builtin opengl32 and keeps Mesa's either way */
+     * builtin opengl32 and keeps Mesa's either way
+     * Alpha 2: Mesa's opengl32 is the default for 32-bit programs (every console run since W264 had the marker, which
+     * an install never created, so a fresh install had no 32-bit OpenGL); C:\\orbis\\opengl32builtin.txt goes back to
+     * Wine's builtin, and opengl32native.txt is no longer read. */
     {
         /* W267 (W266: Call of Duty alone stopped in zink's screen: the Khronos loader loaded DXVK's dxgi, which started
          * DXVK inside it): Wine's builtin dxgi, as explorer's world (AppDefaults\\explorer.exe, W190) */
         static char gl32_native[]="--env=WINEDLLOVERRIDES=opengl32=n,b;dxgi=b";
         OrbisKernelStat gl32_marker;
-        if(sceKernelStat("/data/wine-prefix/drive_c/orbis/opengl32native.txt",&gl32_marker)==0) {
+        if(sceKernelStat("/data/wine-prefix/drive_c/orbis/opengl32builtin.txt",&gl32_marker)!=0) {
             args[argc++]=gl32_native;
-            note(HW_BUILD " PWGL opengl32 native (opengl32native.txt)\n");
+            note(HW_BUILD " PWGL opengl32 native (default; opengl32builtin.txt turns it off)\n");
         }
     }
     args[argc]=NULL;

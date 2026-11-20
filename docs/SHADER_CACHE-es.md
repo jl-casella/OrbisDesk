@@ -185,4 +185,4 @@ err:   DxvkSubmissionQueue: Command submission failed: VK_ERROR_DEVICE_LOST
 
 ## 04.35: batching de Vulkan de 32 bits activado por defecto
 
-Desde la 04.35, el batching de las llamadas Vulkan de 32 bits está activado por defecto en el mundo de Explorer (04.33, run-0275: las llamadas de zink bajaron 58% en Alan Wake, y Alan Wake y GTA SA se jugaron y cerraron bien). La mejora de FPS en Alan Wake es chica, porque el límite es el propio hilo del juego. Para apagarlo, crear `C:\orbiskbatch32.off` y reiniciar OrbisDesk; `vkbatch32.txt` ya no se lee.
+Desde la 04.35, el batching de las llamadas Vulkan de 32 bits está activado por defecto en el mundo de Explorer (04.33, run-0275: las llamadas de zink bajaron 58% en Alan Wake, y Alan Wake y GTA SA se jugaron y cerraron bien). La mejora de FPS en Alan Wake es chica, porque el límite es el propio hilo del juego. Para apagarlo, crear `C:\orbis\vkbatch32.off` y reiniciar OrbisDesk; `vkbatch32.txt` ya no se lee.
