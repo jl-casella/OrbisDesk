@@ -1313,6 +1313,12 @@ obsolete_files+=['wine-prefix/drive_c/windows/mono/mono-2.0/'+relative for relat
 obsolete_files.append('wine-prefix/drive_c/windows/system32/games-source.tar.gz')
 # ...and the lib/wine copies removed above. One left behind would win over the prefix's newer copy.
 obsolete_files+=library_copies_removed
+# A runtime folder kept from an earlier local build may still hold what this one no longer ships (a clean CI
+# workspace never does): it goes before the inventory, so it is neither shipped nor both shipped and obsolete.
+stale_removed=0
+for path in obsolete_files:
+    if (data/path).is_file():(data/path).unlink();stale_removed+=1
+print(json.dumps({'stale_runtime_files_removed':stale_removed}))
 # The runtime's inventory (also the manifest's, below) and what the console must drop
 runtime_directories=[p.relative_to(data).as_posix() for p in sorted(data.rglob('*')) if p.is_dir()]
 runtime_files={p.relative_to(data).as_posix():{'sha256':sha(p),'bytes':p.stat().st_size} for p in sorted(data.rglob('*')) if p.is_file()}
