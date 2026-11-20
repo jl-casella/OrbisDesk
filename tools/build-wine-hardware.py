@@ -1271,11 +1271,20 @@ print(json.dumps({'identity_stripped':len(stripped['identity'])}))
 # stays too: Wine loads it by that name only from the builtin folder (see its staging above), so a prefix copy
 # (a reused local runtime folder had one) must never stand in for it.
 KEEP_LIBRARY_COPY={'ntdll.dll','apisetschema.dll','comctl32_v6.dll'}  # opened only from lib/wine
+# A module whose Unix library is linked into the ELF stays too: platform/ps4/pw_wine_unixlibs.c finds
+# it by the unix_path Wine sets only for a builtin loaded from lib/wine. 04.42 and 04.43 loaded win32u
+# from system32 with no Unix side ("PWBOOT static_unixlib .../win32u.so" never logged): conhost crashed
+# in gdi32 at desktop start and the start hung at WINE SERVER READY.
+import re
+UNIXLIB_STEMS={n.lower() for n in re.findall(r'\{"([A-Za-z0-9_]+)\.so"',(ROOT/'platform/ps4/pw_wine_unixlibs.c').read_text())}
+if 'win32u' not in UNIXLIB_STEMS: raise SystemExit('pw_wine_unixlibs.c: no static Unix library table')
+def keep_library_copy(name):
+    name=name.lower();return name in KEEP_LIBRARY_COPY or name.rsplit('.',1)[0] in UNIXLIB_STEMS
 library_copies_removed=[]
 for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
     for module in sorted((data/'wine/lib/wine'/arch).iterdir()):
         twin=prefix/'drive_c/windows'/windows/module.name
-        if (module.is_file() and module.name.lower() not in KEEP_LIBRARY_COPY and twin.is_file()
+        if (module.is_file() and not keep_library_copy(module.name) and twin.is_file()
                 and twin.read_bytes()==module.read_bytes()):
             module.unlink();library_copies_removed.append(module.relative_to(data).as_posix())
 print(json.dumps({'library_copies_removed':len(library_copies_removed),
@@ -1321,7 +1330,7 @@ obsolete_files+=library_copies_removed
 for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
     for module in sorted((prefix/'drive_c/windows'/windows).iterdir()):
         library='wine/lib/wine/%s/%s'%(arch,module.name)
-        if (module.is_file() and module.name.lower() not in KEEP_LIBRARY_COPY
+        if (module.is_file() and not keep_library_copy(module.name)
                 and not (data/library).exists() and library not in obsolete_files):
             obsolete_files.append(library)
 # A runtime folder kept from an earlier local build may still hold what this one no longer ships (a clean CI
