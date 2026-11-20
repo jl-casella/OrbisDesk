@@ -468,7 +468,8 @@ static int hw_install_runtime(char *detail,size_t detail_size)
     unsigned deleted=0;
     for(unsigned i=0;i<list.obsoletes&&!failed;i++){
         const char *p=list.obsolete[i];char target[PATH_MAX];
-        if(strncmp(p,"wine-prefix/",12)||strstr(p,".."))continue;  /* the builder checks this too */
+        /* the builder checks this too; wine/lib/wine/: library copies the prefix now holds alone (2026-11-20) */
+        if((strncmp(p,"wine-prefix/",12)&&strncmp(p,"wine/lib/wine/",14))||strstr(p,".."))continue;
         snprintf(target,sizeof(target),"/data/%s",p);
         if(!unlink(target))deleted++;
         else if(errno!=ENOENT)note(HW_BUILD " PWINSTALL obsolete %s errno=%d\n",p,errno);

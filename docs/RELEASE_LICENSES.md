@@ -121,7 +121,7 @@ What the archive (or the tag) must contain:
 | VLC 3.0.24 source (`vlc-3.0.24.tar.xz`) and the contrib sources VideoLAN used for the win64 build | GPL-2/LGPL; distributed unmodified, but the distributor still owes the source | Not downloaded |
 | Wine Gecko 2.47.4 source (`wine-gecko-2.47.4-src.tar.xz`) | MPL-2.0 and LGPL parts | Not downloaded |
 | DOSBox Pure at `ba6dcaee` | GPL-2.0-or-later | Already shipped as `DOS-runtime-source.tar.gz` |
-| ReactOS games at `5f6ef754` | GPL-2.0, LGPL-2.1 | Already shipped as `games-source.tar.gz` |
+| ReactOS games at `5f6ef754` | GPL-2.0, LGPL-2.1 | In `<tag>-third-party-sources.tar` (`reactos-games` repository); `games-source.tar.gz` is no longer in the runtime |
 | gbe_fork `release-2026_09_27` source tarball | LGPL-3.0 | Pinned; only a pointer (`gbe-SOURCE.txt`) ships |
 | libcdio matching `libcdio.dll` (W058-W301 only) | GPL-3.0-or-later | **Unknown**: the DLL was prebuilt by WFM's author. Removed from later builds; the removal is the answer for new releases |
 

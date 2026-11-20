@@ -1262,6 +1262,23 @@ for module in sorted(p for p in data.rglob('*') if p.is_file()):
             temporary.replace(module);stripped['identity'].append(str(module.relative_to(data)));break
         temporary.unlink(missing_ok=True)
 print(json.dumps({'identity_stripped':len(stripped['identity'])}))
+# 2026-11-20 (the clean CI install of 04.32 measured 1651 MB in /data): each PS4 build of a Wine module goes
+# to lib/wine and, the same bytes, to the prefix's system32 or syswow64 (155 modules, 93 MB twice). Wine's
+# loader takes a builtin from lib/wine first and, when lib/wine has none, the prefix's copy, which carries the
+# builtin marker: most modules already load that way (find_builtin_dll's "cannot find builtin library" lines).
+# So the lib/wine copy of a module whose prefix copy is identical goes. ntdll stays in lib/wine: the Unix loader
+# maps it from there, and native/pop_wine_child.c opens lib/wine/x86_64-windows/ntdll.dll by path.
+KEEP_LIBRARY_COPY={'ntdll.dll'}
+library_copies_removed=[]
+for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
+    for module in sorted((data/'wine/lib/wine'/arch).iterdir()):
+        twin=prefix/'drive_c/windows'/windows/module.name
+        if (module.is_file() and module.name.lower() not in KEEP_LIBRARY_COPY and twin.is_file()
+                and twin.read_bytes()==module.read_bytes()):
+            module.unlink();library_copies_removed.append(module.relative_to(data).as_posix())
+print(json.dumps({'library_copies_removed':len(library_copies_removed),
+                  'mb':round(sum((prefix/'drive_c/windows'/('system32' if p.split('/')[3]=='x86_64-windows' else 'syswow64')/p.split('/')[-1]).stat().st_size
+                                 for p in library_copies_removed)/2**20,1)}))
 # W170: the console keeps /data/wine-prefix between builds and the upload only adds files, so a
 # file a build stops shipping stays. W168's shortcut in the common Desktop showed File Manager
 # twice next to W169's one in the user's Desktop. upload-hardware.py deletes these paths.
@@ -1289,12 +1306,20 @@ obsolete_files+=['wine-prefix/drive_c/Program Files/VLC/'+name for name in vlc['
 obsolete_files.append('wine-prefix/drive_c/windows/system32/libcdio.dll')
 # W303: the applets removed above, on a console a W303 package installed before
 obsolete_files+=['wine-prefix/drive_c/windows/'+folder+'/'+name for folder in ('system32','syswow64') for name in REMOVED_APPLETS]
+# 2026-11-20: what this build stops shipping to make the runtime smaller, on a console an earlier build installed.
+# Wine Mono's development tools and reference assemblies (tools/stage-wine-mono.py dropped_paths)...
+obsolete_files+=['wine-prefix/drive_c/windows/mono/mono-2.0/'+relative for relative in mono['dropped_paths']]
+# ...the games' 93 MB source archive (tools/build-games.py: the release's third-party sources carry it)...
+obsolete_files.append('wine-prefix/drive_c/windows/system32/games-source.tar.gz')
+# ...and the lib/wine copies removed above. One left behind would win over the prefix's newer copy.
+obsolete_files+=library_copies_removed
 # The runtime's inventory (also the manifest's, below) and what the console must drop
 runtime_directories=[p.relative_to(data).as_posix() for p in sorted(data.rglob('*')) if p.is_dir()]
 runtime_files={p.relative_to(data).as_posix():{'sha256':sha(p),'bytes':p.stat().st_size} for p in sorted(data.rglob('*')) if p.is_file()}
+OBSOLETE_ROOTS=('wine-prefix/','wine/lib/wine/')  # the same roots native/hw_install.h and upload-hardware.py accept
 for path in obsolete_files:
-    if not path.startswith('wine-prefix/') or '..' in path.split('/') or path in runtime_files:
-        raise SystemExit('obsolete file must be an unshipped wine-prefix path: '+path)
+    if not path.startswith(OBSOLETE_ROOTS) or '..' in path.split('/') or path in runtime_files:
+        raise SystemExit('obsolete file must be an unshipped wine-prefix or wine/lib/wine path: '+path)
 user_reg_reset=[]   # CONSOLE_OWNED keys this build takes from its own user.reg once (tools/console_state.py)
 # alpha-1: the runtime travels inside OrbisDesk.pkg as /app0/runtime, and the launcher installs it into
 # /data on the first start of each build (native/hw_install.c), with install.json as its contract:

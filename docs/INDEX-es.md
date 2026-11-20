@@ -231,6 +231,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [RELEASES-es.md](RELEASES-es.md) — Construcción del producto, releases y rama de desarrollo
 - [RELEASE_LICENSES-es.md](RELEASE_LICENSES-es.md) — Licencias del release (alpha-1)
 - [RELEASE_TRACES-es.md](RELEASE_TRACES-es.md) — Trazas en release: un solo interruptor para el alpha-1
+- [RUNTIME_SIZE-es.md](RUNTIME_SIZE-es.md) — Tamaño del runtime
 - [SEAMONKEY_DESCRIPTORS-es.md](SEAMONKEY_DESCRIPTORS-es.md) — SeaMonkey y los descriptores de archivo del título
 - [SEAMONKEY_FILE_LOCKS-es.md](SEAMONKEY_FILE_LOCKS-es.md) — SeaMonkey, SQLite y los bloqueos de rangos de bytes
 - [SEAMONKEY_FLEXIBLE_MEMORY-es.md](SEAMONKEY_FLEXIBLE_MEMORY-es.md) — SeaMonkey y la memoria flexible

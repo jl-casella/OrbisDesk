@@ -121,7 +121,7 @@ Qué tiene que contener el archivo (o el tag):
 | Fuente de VLC 3.0.24 (`vlc-3.0.24.tar.xz`) y las fuentes de contrib que usó VideoLAN para el build win64 | GPL-2/LGPL; se distribuye sin modificar, pero quien distribuye igual debe la fuente | Sin descargar |
 | Fuente de Wine Gecko 2.47.4 (`wine-gecko-2.47.4-src.tar.xz`) | Partes MPL-2.0 y LGPL | Sin descargar |
 | DOSBox Pure en `ba6dcaee` | GPL-2.0-or-later | Ya viaja como `DOS-runtime-source.tar.gz` |
-| Juegos de ReactOS en `5f6ef754` | GPL-2.0, LGPL-2.1 | Ya viaja como `games-source.tar.gz` |
+| Juegos de ReactOS en `5f6ef754` | GPL-2.0, LGPL-2.1 | En `<tag>-third-party-sources.tar` (repositorio `reactos-games`); `games-source.tar.gz` ya no va en el runtime |
 | Tarball de fuente de gbe_fork `release-2026_09_27` | LGPL-3.0 | Fijado; sólo viaja una referencia (`gbe-SOURCE.txt`) |
 | libcdio que corresponda a `libcdio.dll` (solo W058-W301) | GPL-3.0-or-later | **Desconocida**: la DLL la precompiló el autor de WFM. Se quitó de las builds siguientes; para los releases nuevos, quitarla es la respuesta |
 

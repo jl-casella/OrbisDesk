@@ -182,11 +182,12 @@ if not args.skip_runtime:
     record['runtime']={'files':len(manifest['runtime_files']),
         'bytes':sum(e['bytes'] for e in manifest['runtime_files'].values()),**counts,'chmod_failed':chmod_failed}
     # W170: files earlier builds put in the persistent prefix and this one no longer ships.
-    # Only paths under wine-prefix/ that this build does not upload; an absent file is fine.
+    # Only paths under wine-prefix/ or wine/lib/wine/ (2026-11-20: library copies the prefix now holds alone)
+    # that this build does not upload; an absent file is fine.
     obsolete={'deleted':[],'absent':[]}
     def delete_file(path):return ftp.delete(path)
     for name in manifest.get('obsolete_files',[]):
-        if not name.startswith('wine-prefix/') or '..' in name.split('/') or name in manifest['runtime_files']:
+        if not name.startswith(('wine-prefix/','wine/lib/wine/')) or '..' in name.split('/') or name in manifest['runtime_files']:
             raise SystemExit('refusing obsolete path '+name)
         try:obsolete['deleted'].append({'path':name,'reply':retrying(delete_file,'/data/'+name)})
         except ftplib.error_perm as error:obsolete['absent'].append({'path':name,'reply':str(error)})

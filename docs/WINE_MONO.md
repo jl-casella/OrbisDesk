@@ -10,7 +10,7 @@ PES 2014's `settings.exe` is an IL-only .NET program. Started from the desktop a
 
 - [stage-wine-mono.py](../tools/stage-wine-mono.py) unpacks Wine Mono 11.3.0, the version the pinned Wine asks for (`dlls/mscoree/mscoree_private.h`). The archive is the upstream `wine-mono-11.3.0-x86.tar.xz`, pinned by SHA-256 in [product-assets.lock.json](../product-assets.lock.json); the digest matches the GitHub release asset. Despite its name it holds both runtimes, `bin/libmono-2.0-x86.dll` and `bin/libmono-2.0-x86_64.dll`, and the class libraries.
 - The console's file system has no symbolic links, so the 156 links in `lib/mono` become copies of their targets. `support/` is left out: it holds the `.msi` helpers that Wine's `appwiz.cpl` runs when it creates a prefix, which this sealed prefix does not do.
-- [build-wine-hardware.py](../tools/build-wine-hardware.py) copies the tree to `C:\windows\mono\mono-2.0`, the first place `mscoree` looks (`get_mono_path_local`), and Wine Mono's `COPYING` to `C:\windows\mono\licenses`. That adds about 275 MB to the runtime.
+- [build-wine-hardware.py](../tools/build-wine-hardware.py) copies the tree to `C:\windows\mono\mono-2.0`, the first place `mscoree` looks (`get_mono_path_local`), and Wine Mono's `COPYING` to `C:\windows\mono\licenses`. That added about 275 MB to the runtime. Since 2026-11-20 the stager leaves out the reference assemblies (`lib/mono/<version>-api`), MSBuild, xbuild and the C#/VB compilers, which only compile code; the tree is about 146 MB. A program that compiles C# at run time (CodeDom's `CSharpCodeProvider`) finds no compiler ([runtime size](RUNTIME_SIZE.md)).
 - `mscoree.dll` and `mscorwks.dll` are staged in both views, `system32` and `syswow64`.
 
 ## First hardware run (app version 04.09, run-0172)
