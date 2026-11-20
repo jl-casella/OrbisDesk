@@ -250,6 +250,18 @@ shutil.copyfile(loader_dir/'upstream-source.tar.gz',app/'elfldr-source.tar.gz')
 # Stage the same sealed prefix without DOS links: PS4 applications cannot use symbolic
 # links, so pw_wine_fs serves c: and z: from a fixed mount table.
 data=work/'runtime';data.mkdir(exist_ok=True)
+# PoP (2026-11-20): Wine for separate processes, the PRX native/process_p014_child.c loads from
+# /data/orbisdesk/pop-wine-child.prx. It used to go up only with tools/upload-pop-separate.py, so no package carried
+# it: after a clean install the child found none and showed its P015 test window instead of the program. It is
+# built here from this link command (tools/build-pop-wine-child.py) and installed with the runtime.
+import importlib.util
+pop_spec=importlib.util.spec_from_file_location('pop_wine_child_builder',ROOT/'tools/build-pop-wine-child.py')
+pop_builder=importlib.util.module_from_spec(pop_spec);pop_spec.loader.exec_module(pop_builder)
+pop_builder.build_wine_prx(command,{'client_object':str(request_client_chunked.relative_to(ROOT)),
+    'client_object_sha256':sha(request_client_chunked),'writer_object':str(request_writer.relative_to(ROOT)),
+    'writer_object_sha256':sha(request_writer)})
+(data/'orbisdesk').mkdir(exist_ok=True)
+shutil.copyfile(pop_builder.WORK/'pop-wine-child.prx',data/'orbisdesk/pop-wine-child.prx')
 prefix=data/'wine-prefix';prefix.mkdir(exist_ok=True)
 package=ROOT/'reports/increment15/prefix-package'
 wine_commit=json.loads((ROOT/'build/wine-boot/report.json').read_text())['wine_commit']
