@@ -365,7 +365,7 @@ static void hw_install_migrate_profile(const char *host)
             if(!strcmp(e->d_name,".")||!strcmp(e->d_name,".."))continue;
             char a[PATH_MAX],b[PATH_MAX];struct stat st;
             snprintf(a,sizeof(a),"%s/%s",from,e->d_name);snprintf(b,sizeof(b),"%s/%s",to,e->d_name);
-            if(!stat(b,&st)){kept++;note(HW_BUILD " PWINSTALL migrate kept users/%s/%s/%.80s (orbis has one)\n",host,folders[f],e->d_name);continue;}
+            if(!pw_wine_stat(b,&st)){kept++;note(HW_BUILD " PWINSTALL migrate kept users/%s/%s/%.80s (orbis has one)\n",host,folders[f],e->d_name);continue;}
             if(sceKernelRename(a,b)){kept++;note(HW_BUILD " PWINSTALL migrate failed users/%s/%s/%.80s errno=%d\n",host,folders[f],e->d_name,errno);}
             else moved++;
         }
@@ -407,8 +407,10 @@ static int hw_install_runtime(char *detail,size_t detail_size)
         struct hw_install_file *f=&list.file[i];char target[PATH_MAX];struct stat st;
         snprintf(target,sizeof(target),"/data/%s",f->path);
         if(!strcmp(f->path,HW_INSTALL_USER_REG)){f->action=HW_USER_REG;continue;}
-        if(hw_install_kept(&list,f->path)&&!stat(target,&st)){f->action=HW_SKIP;kept++;continue;}  /* the user's copy */
-        if(stat(target,&st)||(uint64_t)st.st_size!=f->bytes){f->action=HW_COPY;copy_bytes+=f->bytes;to_copy++;continue;}
+        /* pw_wine_stat, not stat (2026-11-20): the SDK's struct stat is not the kernel's layout (32-bit mode_t), so
+         * st_size came from the wrong bytes and every update copied the whole runtime again (copy=3742 of 3749) */
+        if(hw_install_kept(&list,f->path)&&!pw_wine_stat(target,&st)){f->action=HW_SKIP;kept++;continue;}  /* the user's copy */
+        if(pw_wine_stat(target,&st)||(uint64_t)st.st_size!=f->bytes){f->action=HW_COPY;copy_bytes+=f->bytes;to_copy++;continue;}
         int same=0;
         for(unsigned j=0;j<previous.files&&!same;j++)
             same=!strcmp(previous.file[j].path,f->path)&&!strcmp(previous.file[j].sha,f->sha)&&previous.file[j].bytes==f->bytes;
