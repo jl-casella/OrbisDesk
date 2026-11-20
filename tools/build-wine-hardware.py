@@ -1270,7 +1270,7 @@ print(json.dumps({'identity_stripped':len(stripped['identity'])}))
 # maps it from there, and native/pop_wine_child.c opens lib/wine/x86_64-windows/ntdll.dll by path. comctl32_v6
 # stays too: Wine loads it by that name only from the builtin folder (see its staging above), so a prefix copy
 # (a reused local runtime folder had one) must never stand in for it.
-KEEP_LIBRARY_COPY={'ntdll.dll','comctl32_v6.dll'}
+KEEP_LIBRARY_COPY={'ntdll.dll','apisetschema.dll','comctl32_v6.dll'}  # opened only from lib/wine
 library_copies_removed=[]
 for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
     for module in sorted((data/'wine/lib/wine'/arch).iterdir()):
