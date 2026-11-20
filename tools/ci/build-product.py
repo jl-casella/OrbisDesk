@@ -57,6 +57,9 @@ def build(version, cache_mode='reuse'):
     python('make-wallpaper-set')
     # zlib for the hardware ELF's link: tools/vk-h0/build-probe.sh makes it locally, the graphics block does not
     step('zlib-ps4', ['bash', ROOT / 'tools/build-zlib-ps4.sh'], env)
+    # the separate-process loader (PR #38): build-wine-hardware stages out/process-loader/elfldr.elf, built with the
+    # PS4 payload SDK that --fetch downloads and verifies (tools/process-loader.lock.json)
+    python('build-process-loader', '--fetch')
     python('build-wine-hardware', '--app-version', version)
     # the builder's build ID (W288, W302, ...) names its output folder; exactly one in a clean workspace
     manifests = list((ROOT / 'out').glob('wine-hardware-w*/manifest.json'))
