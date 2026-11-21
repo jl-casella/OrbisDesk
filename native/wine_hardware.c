@@ -33,6 +33,11 @@
 #include <pthread.h>
 /* W001 and W002 sources and evidence: reports/wine-hardware-w00N/release-w00N. */
 #define HW_BUILD "W303"
+/* the release name shown next to the version on the start screen; HW_BUILD stays the technical identity
+ * (logs, state folder, update ledger) */
+#ifndef HW_RELEASE
+#define HW_RELEASE "ALPHA-2"
+#endif
 #ifndef HW_VERSION
 #define HW_VERSION "04.02"
 #endif
@@ -513,7 +518,7 @@ static void draw_screen(int percent,const char *state,const char *detail)
         hw_text(pixels,WIDTH,HEIGHT,BAR_X+BAR_W+16,BAR_Y-1,label,0xffb0b0b0,2);
         centred_text(484,state,0xff8a8a8a,2);
         /* the visible version, on the start screen since the NORMAL/ROOT screen is gone (04.10) */
-        hw_text(pixels,WIDTH,HEIGHT,24,HEIGHT-30,"VERSION " HW_VERSION " (" HW_BUILD ")",0xff404040,2);
+        hw_text(pixels,WIDTH,HEIGHT,24,HEIGHT-30,"VERSION " HW_VERSION " " HW_RELEASE,0xff404040,2);
         hw_manage_hint();
     } else {
         centred_text(450,state,0xffff6a6a,3);
