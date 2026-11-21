@@ -192,7 +192,8 @@ if not args.skip_runtime:
                 return 'uploaded'
             state=retrying(put_prx);counts[state]+=1
             print(index,state,name,'(decrypted text slice)',flush=True)
-            if not retrying(chmod,remote,0o644):chmod_failed.append(name)
+            # dlopen refuses a PRX without the execute bit (EACCES), as the installer's hw_install_mode knows
+            if not retrying(chmod,remote,0o755):chmod_failed.append(name)
             continue
         state=retrying(put,runtime/name,remote,entry['sha256']);counts[state]+=1
         print(index,state,name,flush=True)

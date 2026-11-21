@@ -105,7 +105,7 @@ Each item was found on hardware. The comment next to the code gives the run and 
 
 ## Build and deploy
 
-Since 2026-11-20 `tools/build-wine-hardware.py` builds `pop-wine-child.prx` from its own link command and ships it in `OrbisDesk.pkg` as `orbisdesk/pop-wine-child.prx`. The launcher installs it into `/data/orbisdesk` with the rest of the runtime, and `tools/upload-hardware.py` uploads it with the runtime, verifying it by a slice of its decrypted text. Before that, only `tools/upload-pop-separate.py` uploaded it. A clean install of the package (the CI one included) then had no PRX, and the child showed its P015 test window instead of the program. The commands below are still the development route for the probe and the test programs.
+Since 2026-11-20 `tools/build-wine-hardware.py` builds `pop-wine-child.prx` from its own link command and ships it in `OrbisDesk.pkg` as `orbisdesk/pop-wine-child.prx`. The launcher installs it into `/data/orbisdesk` with the rest of the runtime, and `tools/upload-hardware.py` uploads it with the runtime, verifying it by a slice of its decrypted text. Before that, only `tools/upload-pop-separate.py` uploaded it. A clean install of the package (the CI one included) then had no PRX, and the child showed its P015 test window instead of the program. Both install it 0755: `dlopen` refuses a PRX without the execute bit with "Permission denied", which the first clean install of the dev 04.33 package hit (installed 0644) on 2026-11-21. The launcher also restores 0755 on an unchanged PRX left 0644 by that install. The commands below are still the development route for the probe and the test programs.
 
 ```sh
 python3 tools/build-wine-hardware.py --runtime-outside-package   # the title (its link command feeds the PRX)

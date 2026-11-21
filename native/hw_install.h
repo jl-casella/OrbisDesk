@@ -168,6 +168,12 @@ static int hw_install_hash(const char *path,char out[65])
     for(;;){ssize_t n=read(fd,buffer,sizeof(buffer));if(n<0){close(fd);return -1;}if(!n)break;hw_sha_update(&s,buffer,(size_t)n);}
     close(fd);hw_sha_hex(&s,out);return 0;
 }
+/* A PRX is loaded with dlopen (the separate-process child loads /data/orbisdesk/pop-wine-child.prx): the
+ * kernel refuses a module without the execute bit with EACCES, so PRX files are installed 0755, and files a
+ * previous install left 0644 get the bit back even when their content is unchanged. */
+static int hw_install_is_prx(const char *path){size_t n=strlen(path);return n>4&&!strcmp(path+n-4,".prx");}
+static mode_t hw_install_mode(const struct hw_install_list *l,const char *path)
+{return hw_install_writable(l,path)?0666:hw_install_is_prx(path)?0755:0644;}
 /* write data (a buffer) or the file at source to target through <target>.pwinstall, checking sha */
 static int hw_install_write(const char *source,const void *data,size_t size,const char *target,const char *sha,mode_t mode)
 {
@@ -439,16 +445,17 @@ static int hw_install_runtime(char *detail,size_t detail_size)
     uint64_t work=copy_bytes+hash_bytes+1,done=0;unsigned copied=0,present=0;int last_percent=-1;
     for(unsigned i=0;i<list.files&&!failed;i++){
         struct hw_install_file *f=&list.file[i];
-        if(f->action==HW_SKIP||f->action==HW_USER_REG){present+=f->action==HW_SKIP;continue;}
         char source[PATH_MAX],target[PATH_MAX];
         snprintf(source,sizeof(source),HW_INSTALL_ROOT "/%s",f->path);snprintf(target,sizeof(target),"/data/%s",f->path);
+        if(f->action==HW_SKIP&&hw_install_is_prx(f->path))chmod(target,hw_install_mode(&list,f->path));
+        if(f->action==HW_SKIP||f->action==HW_USER_REG){present+=f->action==HW_SKIP;continue;}
         if(f->action==HW_HASH){
             char got[65];
-            if(!hw_install_hash(target,got)&&!strcmp(got,f->sha)){present++;done+=f->bytes;goto progress;}
+            if(!hw_install_hash(target,got)&&!strcmp(got,f->sha)){if(hw_install_is_prx(f->path))chmod(target,hw_install_mode(&list,f->path));present++;done+=f->bytes;goto progress;}
             f->action=HW_COPY;
         }
         {char *slash=strrchr(target,'/');if(slash){*slash=0;hw_install_mkdirs(target,hw_install_writable(&list,f->path)?0777:0755);*slash='/';}}
-        if(hw_install_write(source,NULL,0,target,f->sha,hw_install_writable(&list,f->path)?0666:0644)){
+        if(hw_install_write(source,NULL,0,target,f->sha,hw_install_mode(&list,f->path))){
             int e=errno;failed=1;
             if(e==ENOSPC)snprintf(detail,detail_size,"NOT ENOUGH SPACE");
             else if(e==EILSEQ)snprintf(detail,detail_size,"PACKAGE FILE DAMAGED - REINSTALL");
