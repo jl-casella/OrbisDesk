@@ -2,13 +2,26 @@
 
 [English](SEAMONKEY_GPU.md) | [Español](SEAMONKEY_GPU-es.md)
 
-Status: GPU compositing shipped in 04.19 and crashed on the console at the second start (run-0218). From 04.20 the default is Basic again, and OpenGL is an opt-in. Run-0234 traced the second start's crash to MangoHud; the 04.26 fix is not built. 2026-11-18.
+Status: GPU compositing shipped in 04.19 and crashed on the console at the second start (run-0218). From 04.20 the default is Basic again, and OpenGL is an opt-in. Run-0234 traced the second start's crash to MangoHud; the 04.26 fix is not built. 2026-11-18. From 04.30 to 04.46 a clean install still composited with OpenGL; 04.47 restores Basic (first section below). 2026-11-21.
 
 ## Goal
 
 Until 04.18, SeaMonkey uses Gecko's Basic compositor: the CPU blends the layers, converts video from YUV and scales it. The goal is to move that work to the console's GPU, without a hang, with a clean fallback to Basic, and within the title's memory.
 
 This only moves compositing. Page JavaScript, layout and the painting of content (Skia on the CPU, already split over 4 off-main-thread painting workers) stay where they are ([responsiveness](SEAMONKEY_RESPONSIVENESS.md)).
+
+## Clean install showed OpenGL, 04.30 to 04.46 (04.47)
+
+The CI package from dev 2701c2d was installed after deleting all data except games. SeaMonkey started with the 34-pixel band at the bottom, and about:support showed Compositing OpenGL. The console had the package's defaults:
+- `defaults/pref/orbisdesk-gpu.js` was in SeaMonkey's folder.
+- `orbisdesk.cfg` had run (`orbisdesk.prefs-migration` 1 in prefs.js).
+- prefs.js had no acceleration or WebGL value of its own.
+
+**Cause:** orbisdesk-gpu.js set `layers.acceleration.disabled` true and `layers.acceleration.force-enabled` true. In Gecko's `gfxPlatform::InitCompositorAccelerationPrefs` (mozilla-esr60), the disabled pref calls `UserDisable`. Then the force-enabled pref calls `UserForceEnable` in any case, and that wins. So from 04.30, hardware compositing was on by default, and Gecko composited with OpenGL (`layers.prefer-opengl`). Up to 04.29, user.js set force-enabled false, so Basic was the default then.
+
+**This change (04.47):** [seamonkey-gpu.js](../fixtures/browser/seamonkey-gpu.js) sets `layers.acceleration.force-enabled` false. WebGL stays on (`webgl.disabled` false, `webgl.force-enabled` true). A default does not change a value saved in prefs.js, so a console that set these values in about:config keeps them. On the same console, setting `layers.acceleration.force-enabled` false in about:config turned OpenGL off, which confirms the cause. The package with this change is not tested yet: on a clean install, about:support should show Compositing Basic, and WebGL should work.
+
+**Turning OpenGL on from 04.47:** in about:config, set `layers.acceleration.disabled` to false and `layers.acceleration.force-enabled` to true, then restart SeaMonkey.
 
 ## OpenGL on, 04.32: Gecko sizes its GL frame from the window rectangle (04.34)
 

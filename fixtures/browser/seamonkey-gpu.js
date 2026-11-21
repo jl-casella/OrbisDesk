@@ -13,14 +13,18 @@ pref("layers.prefer-opengl", true);
 // 04.30: the GPU compositing and WebGL switches, as defaults (up to 04.29 user.js set them at every
 // start). Changed in about:config, they stay across starts and uploads. Off for now: with OpenGL,
 // 04.29 drew the window 34 pixels too high and YouTube did not play (docs/SEAMONKEY_GPU.md). To turn
-// both on by default, set the two "disabled" values below to false. With "disabled" false the
-// "force-enabled" values skip Gecko's blocklist, which does not know Wine's adapter.
+// both on by default, set the two "disabled" values below to false and both "force-enabled" values to
+// true: "force-enabled" skips Gecko's blocklist, which does not know Wine's adapter.
 // 04.34 (run-0270): the 34 pixels are Gecko's own. Its OpenGL compositor takes its frame size from
 // nsWindow::GetBounds (GetWindowRect, frame included), while the drawable is the client area. Basic and
 // Direct3D 11 hide that; OpenGL on Windows does not. Wine, Mesa and Zink return the client size, so
 // OpenGL stays off by default (docs/SEAMONKEY_GPU.md).
+// 04.47: force-enabled false. Gecko (gfxPlatform::InitCompositorAccelerationPrefs, mozilla-esr60) applies
+// force-enabled after disabled, and force-enabled wins: from 04.30 to 04.46 both true gave Compositing OpenGL
+// on a clean install, with the 34-pixel band. To turn OpenGL on in about:config, set disabled false and
+// force-enabled true.
 pref("layers.acceleration.disabled", true);
-pref("layers.acceleration.force-enabled", true);
+pref("layers.acceleration.force-enabled", false);
 // 04.34: WebGL on by default with the Basic compositor (the user's choice); GPU compositing stays off.
 pref("webgl.disabled", false);
 pref("webgl.force-enabled", true);
