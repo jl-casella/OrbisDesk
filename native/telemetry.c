@@ -16,6 +16,10 @@ extern void *scePthreadSelf(void);
 extern void scePthreadGetaffinity(void *, uint64_t *);
 extern uint64_t sceKernelGetProcessTime(void);
 extern void ac_ps4_get_gpu_app_busy(uint64_t *,uint64_t *,uint64_t *);
+/* 04.20: platform/ps4/pw_wine_sink_ps4.c, what the screen showed of the image frame generation follows, in its last
+ * measured second; 1 while that second is recent. Weak: a link without the hardware sink reports nothing. */
+extern int pw_hw_sink_fg_rate(unsigned *width,unsigned *height,unsigned *shown_tenths,unsigned *real_tenths,
+                              unsigned *generated_tenths,uint64_t *sample_us) __attribute__((weak));
 
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static struct pw_ps4_telemetry cached;
@@ -58,7 +62,9 @@ uint32_t pw_ps4_telemetry_query(void *info,uint32_t bytes,uint32_t *returned)
     uint64_t now=sceKernelGetProcessTime()*1000, cpu=0,busy=0,span=0,lost=0;
     struct rusage usage;
     int rc;
-    if (returned) *returned=sizeof(cached);
+    /* 04.20: a buffer for struct pw_ps4_telemetry_fg (MangoHud's FPS row) gets version 2; 80 bytes, version 1 as before */
+    int extended=bytes>=sizeof(struct pw_ps4_telemetry_fg);
+    if (returned) *returned=extended?sizeof(struct pw_ps4_telemetry_fg):sizeof(cached);
     if (bytes<sizeof(cached)) return 0xc0000004u;
     if (!info) return 0xc0000005u;
     pthread_mutex_lock(&lock);
@@ -113,7 +119,30 @@ uint32_t pw_ps4_telemetry_query(void *info,uint32_t bytes,uint32_t *returned)
                 (unsigned long long)lost,cached.flags);
         previous_wall=now;previous_cpu=cpu;previous_busy=busy;previous_span=span;previous_lost=lost;
     }
-    memcpy(info,&cached,sizeof(cached));
+    if (!extended) {
+        memcpy(info,&cached,sizeof(cached));
+        pthread_mutex_unlock(&lock);
+        return 0;
+    }
+    struct pw_ps4_telemetry_fg fg;
+    memset(&fg,0,sizeof(fg));
+    fg.base=cached;
     pthread_mutex_unlock(&lock);
+    fg.base.size=sizeof(fg);fg.base.version=PW_TELEMETRY_FG_VERSION;
+    /* read every call, not on the 500 ms sample: the sink publishes once a second and the HUD asks often */
+    {
+        unsigned width=0,height=0,shown=0,real=0,generated=0;uint64_t sample_us=0;
+        if (pw_hw_sink_fg_rate && pw_hw_sink_fg_rate(&width,&height,&shown,&real,&generated,&sample_us))
+        {
+            fg.fg_flags=PW_FG_SHOWN;fg.fg_width=width;fg.fg_height=height;
+            fg.fg_shown_tenths=shown;fg.fg_real_tenths=real;fg.fg_generated_tenths=generated;fg.fg_sample_ns=sample_us*1000;
+        }
+    }
+    {
+        static int logged;  /* once: the first caller that asked for version 2 (MangoHud 04.20) */
+        if (!__atomic_exchange_n(&logged,1,__ATOMIC_RELAXED))
+            fprintf(stderr,"PWTELEM framegen query bytes=%u version=%u fg_flags=%x\n",bytes,fg.base.version,fg.fg_flags);
+    }
+    memcpy(info,&fg,sizeof(fg));
     return 0;
 }

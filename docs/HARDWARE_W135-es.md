@@ -2,6 +2,8 @@
 
 [English](HARDWARE_W135.md) | [Español](HARDWARE_W135-es.md)
 
+**Corrección de firmware (2026-11-11):** el usuario confirmó que su consola es una PS4 Pro Baikal con firmware **12.50**, no 12.52. Las referencias a su consola en este documento están corregidas; los logs y manifiestos originales conservan el dato informado anteriormente. No atribuir estas pruebas a hardware 12.52.
+
 APP_VER 02.34. Base W134 (fase 4b aceptada: SuperMarioKart muestra el menú).
 
 ## Probe
@@ -14,7 +16,7 @@ APP_VER 02.34. Base W134 (fase 4b aceptada: SuperMarioKart muestra el menú).
 
 ## Resultado físico: 20261103T034008Z
 
-`compat32_probe native32=1 page=0x30000000 cs=0x43 cs_after=0x43 result=0x32beef32 signal=0`. El kernel de la PS4 (fw 12.52) **permite ejecutar código de 32 bits en modo compatibilidad desde la app**. El segundo arranque saltó la prueba por el marcador. Llegó al escritorio (confirmado por el usuario en la página).
+`compat32_probe native32=1 page=0x30000000 cs=0x43 cs_after=0x43 result=0x32beef32 signal=0`. El kernel de la PS4 (fw 12.50) **permite ejecutar código de 32 bits en modo compatibilidad desde la app**. El segundo arranque saltó la prueba por el marcador. Llegó al escritorio (confirmado por el usuario en la página).
 
 Ya conocido de antes: `ucontext` de Orbis con `mc_fpstate` en +320 y `mc_fsbase` en +1152 (`platform/ps4/pw_wine_context.h`, igual que lo medido por prospero-win en PS5), y `sysarch` para las bases de segmento.
 

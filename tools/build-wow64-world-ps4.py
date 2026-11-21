@@ -653,19 +653,24 @@ replace('signal_x86_64','''    if (needed_flags & CONTEXT_I386_DEBUG_REGISTERS) 
 # W246 (1): the legacy EXE window. In a 64-bit process (explorer) placement-free allocations keep out of
 # [0x400000, 0x2000000) when there is room above, so a 32-bit EXE without relocations (Vice City) gets its
 # base. W244: gta-vc.exe went to 00AE0000 unrelocated.
+# alpha-1 (run-0221, and every PES 2014 start in the world since W261): pes2014.exe has no relocations and
+# needs [0x400000, 0x2450000) (image size 0x2050000), more than the 32 MiB window. Just above 0x2000000 sat
+# what the 32-bit world maps when it starts: its process heap (023D0000) and a read-only view of locale.nls
+# (0x23f0000+0xc3000: the file's 794914 bytes in pages). The game always went to base_taken; the window is
+# now [0x400000, 0x8000000) (124 MiB of EXE image), still below the usual DLL base 0x10000000.
 replace('virtual','''        if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
         if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
 ''','''        if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
         if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
 #ifdef __ORBIS__
-        /* OrbisDesk W246: keep the legacy EXE window [0x400000, 0x2000000) for 32-bit EXEs at their base */
+        /* OrbisDesk W246, alpha-1 run-0221: keep the legacy EXE window [0x400000, 0x8000000) for 32-bit EXEs at their base */
         if (is_machine_64bit( main_image_info.Machine ) && !top_down &&
-            (char *)start < (char *)0x2000000 && (char *)end > (char *)0x2000000)
+            (char *)start < (char *)0x8000000 && (char *)end > (char *)0x8000000)
         {
-            if ((ptr = map_reserved_area( (void *)0x2000000, end, host_size, top_down, unix_prot, align_mask )))
+            if ((ptr = map_reserved_area( (void *)0x8000000, end, host_size, top_down, unix_prot, align_mask )))
                 goto done;
             if ((start > address_space_start || end < host_addr_space_limit) &&
-                (ptr = map_free_area( (void *)0x2000000, end, host_size, top_down, unix_prot, align_mask )))
+                (ptr = map_free_area( (void *)0x8000000, end, host_size, top_down, unix_prot, align_mask )))
                 goto done;
         }
 #endif
@@ -767,9 +772,11 @@ replace('virtual','''        if ((status = map_fixed_area( base, size, unix_prot
         if ((status = map_fixed_area( base, size, unix_prot ))) return status;
 #endif
 ''')
-replace('virtual','''        int pw_backing_prot = (unix_prot && view_size >= 0x100000) ? unix_prot : 0;
+# SeaMonkey's flexible reserve (docs/SEAMONKEY_FLEXIBLE_MEMORY.md, tools/build-audio-ps4.py) changed this line of
+# build/audio-ps4/virtual.c: small views take direct memory too once the flexible pool is low.
+replace('virtual','''        int pw_backing_prot = (unix_prot && (view_size >= 0x100000 || pw_flexible_low())) ? unix_prot : 0;  /* flexible reserve */
 #endif
-''','''        int pw_backing_prot = (unix_prot && view_size >= 0x100000) ? unix_prot : 0;
+''','''        int pw_backing_prot = (unix_prot && (view_size >= 0x100000 || pw_flexible_low())) ? unix_prot : 0;  /* flexible reserve */
         int pw_area_prot = pw_backing_prot ? PROT_NONE : unix_prot;  /* OrbisDesk W250 */
 
         pw_late_prot = pw_backing_prot;
@@ -777,8 +784,8 @@ replace('virtual','''        int pw_backing_prot = (unix_prot && view_size >= 0x
         int pw_area_prot = unix_prot;
 #endif
 ''')
-for call in ('map_reserved_area( (void *)0x2000000, end, host_size, top_down, ',
-             'map_free_area( (void *)0x2000000, end, host_size, top_down, ',
+for call in ('map_reserved_area( (void *)0x8000000, end, host_size, top_down, ',
+             'map_free_area( (void *)0x8000000, end, host_size, top_down, ',
              'map_reserved_area( start, end, host_size, top_down, ',
              'map_free_area( start, end, host_size, top_down, '):
     replace('virtual', call + 'unix_prot, align_mask )', call + 'pw_area_prot, align_mask )')
@@ -824,6 +831,63 @@ replace('virtual','''        fprintf( stderr, "PWBOOT image_map_addr_unavailable
         if (pw_trace_enabled())
             fprintf( stderr, "PWBOOT image_map_addr_unavailable requested=%llx mapped=%p\\n",
                      (unsigned long long)pe_mapping->image.map_addr, view->base );''')
+
+# 04.25 (run-0226, DOOM3.exe: "unaligned shared mapping 0x2b26000-0x2b27000 not supported"): a writable shared
+# image section (IMAGE_SCN_MEM_SHARED | IMAGE_SCN_MEM_WRITE) is a MAP_SHARED mapping of the server's shared-section
+# file, which the 16 KB host page allows only when the section covers whole host pages. A 4 KB-aligned section
+# that does not gets a private copy of that file's bytes instead, the way unaligned private sections are read
+# (map_file_into_view's read fallback). Every guest lives in this one process, so no other process maps the
+# section; what is lost is sharing between two guests that load the same image (each has its own copy). A
+# failed read keeps the image from loading, as before. Writable shared views of data files are unchanged.
+replace('virtual','''/***********************************************************************
+ *           get_committed_size
+''','''#ifdef __ORBIS__
+/* OrbisDesk 04.25: a writable shared image section that is not whole host pages becomes a private copy. */
+static NTSTATUS pw_map_shared_section( struct file_view *view, const UNICODE_STRING *nt_name, const BYTE *name,
+                                       int fd, size_t start, size_t size, off_t offset )
+{
+    char *map_addr = ROUND_ADDR( (char *)view->base + start, page_mask );
+    char *host_addr = ROUND_ADDR( (char *)view->base + start, host_page_mask );
+    size_t map_size = ROUND_SIZE( start, size, page_mask ), host_size;
+    ssize_t copied;
+
+    /* the same test as map_file_into_view's */
+    if (map_addr + map_size >= (char *)view->base + view->size) host_size = map_size;
+    else host_size = ROUND_SIZE( 0, map_size, host_page_mask );
+    if (host_addr == map_addr && host_size == map_size)
+        return map_file_into_view( view, fd, start, size, offset, VPROT_COMMITTED | VPROT_READ | VPROT_WRITE, FALSE );
+
+    mprotect( map_addr, map_size, PROT_READ | PROT_WRITE );
+    copied = pread( fd, map_addr, map_size, offset );
+    {
+        extern int pw_trace_enabled( void );  /* alpha 2: platform/ps4/pw_trace.h */
+
+        if (copied != (ssize_t)map_size || pw_trace_enabled())  /* alpha 2: a full copy only with traces */
+            fprintf( stderr, "PWLOAD shared_section_private image=%s section=%.8s address=%p size=%zx offset=%llx "
+                     "host_page=%zx copied=%zd errno=%d\\n", debugstr_us(nt_name), name, map_addr, map_size,
+                     (unsigned long long)offset, (size_t)host_page_size, copied, copied < 0 ? errno : 0 );
+    }
+    if (copied < 0) return STATUS_INVALID_PARAMETER;
+    /* the server's file holds every shared section at full size; zero a shorter tail all the same */
+    if ((size_t)copied < map_size) memset( map_addr + copied, 0, map_size - copied );
+    return STATUS_SUCCESS;
+}
+#endif
+
+
+/***********************************************************************
+ *           get_committed_size
+''')
+replace('virtual','''            if (map_file_into_view( view, shared_fd, sec[i].VirtualAddress, map_size, pos,
+                                    VPROT_COMMITTED | VPROT_READ | VPROT_WRITE, FALSE ) != STATUS_SUCCESS)
+''','''#ifdef __ORBIS__
+            if (pw_map_shared_section( view, nt_name, sec[i].Name, shared_fd, sec[i].VirtualAddress, map_size,
+                                       pos ) != STATUS_SUCCESS)  /* OrbisDesk 04.25 */
+#else
+            if (map_file_into_view( view, shared_fd, sec[i].VirtualAddress, map_size, pos,
+                                    VPROT_COMMITTED | VPROT_READ | VPROT_WRITE, FALSE ) != STATUS_SUCCESS)
+#endif
+''')
 
 # W255 (W253: Vice City ended with no signal and no CE- code): Wine's own exits leave a line.
 replace('thread','''void abort_process( int status )

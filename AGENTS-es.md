@@ -2,6 +2,8 @@
 
 [English](AGENTS.md) | [Español](AGENTS-es.md)
 
+**Corrección de firmware (2026-11-11):** el usuario confirmó que su consola es una PS4 Pro Baikal con firmware **12.50**, no 12.52. Las referencias a su consola en este documento están corregidas; los logs y manifiestos originales conservan el dato informado anteriormente. No atribuir estas pruebas a hardware 12.52.
+
 Este es el punto de entrada para una IA o una persona que empieza a trabajar en el repositorio. Usa Markdown con un mapa ASCII de carpetas. Los comandos son puntos de entrada con prerrequisitos explícitos; no afirman que un clon nuevo tenga una compilación completa con un solo comando.
 
 ## 1. Primera lectura y estado real
@@ -22,7 +24,7 @@ Explorer aloja varios invitados Windows dentro de un único título/proceso PS4.
 - No simular éxito de capacidades pendientes con stubs, eventos inventados o informes reescritos. Conservar el fallo real y una reproducción mínima.
 - Los parches de shadPS4 deben implementar comportamiento general de plataforma, con reproducción independiente cuando sea posible. Cambiar el emulador no cambia el kernel de una PS4 real.
 - Separar referencia anfitriona, emulador oficial, fork y hardware físico. No presentar un éxito del fork como compatibilidad oficial.
-- El producto visible es **OrbisDesk**. El paquete principal distribuido es `OrbisDesk.pkg`; la versión visible pertenece sólo al selector NORMAL/ROOT. Preservar identidades técnicas de actualización, claves de migración, evidencia antigua y rutas de compatibilidad. Ver [marca](docs/REBRANDING_ORBISDESK-es.md), [constantes](tools/project_brand.py) y [empaquetado](tools/orbis_package.py).
+- El producto visible es **OrbisDesk**. El paquete principal distribuido es `OrbisDesk.pkg`; la versión visible pertenece sólo a la pantalla de inicio (carga); el selector NORMAL/ROOT se quitó en la versión de la app 04.10 y todo inicio es ROOT, con vuelta a NORMAL sin GoldHEN. Preservar identidades técnicas de actualización, claves de migración, evidencia antigua y rutas de compatibilidad. Ver [marca](docs/REBRANDING_ORBISDESK-es.md), [constantes](tools/project_brand.py) y [empaquetado](tools/orbis_package.py).
 - Mantener documentación pública en inglés con una variante completa `-es.md`, según la [política](docs/DOCUMENTATION_POLICY-es.md). No incorporar investigaciones/comparaciones privadas a la documentación pública.
 
 ## 3. Mapa de carpetas y contenido de Git
@@ -201,11 +203,11 @@ Registrar revisión/diff, hashes de entradas y ejecutables, tipo/configuración 
 
 ## 9. Despliegue y feedback en PS4 física
 
-La consola disponible fue informada como PS4 Pro Baikal, firmware 12.52 y GoldHEN. Describe una instalación del usuario, no una matriz de compatibilidad. FTP usa 2121. Usar siempre la IP actual indicada por el usuario: los defaults todavía incluyen `.107`, mientras entregas recientes usaron `.100`.
+La consola disponible fue informada como PS4 Pro Baikal, firmware 12.50 y GoldHEN. Describe una instalación del usuario, no una matriz de compatibilidad. FTP usa 2121. Usar siempre la IP actual indicada por el usuario: los defaults todavía incluyen `.107`, mientras entregas recientes usaron `.100`.
 
 1. Compilar e inspeccionar `out/wine-hardware-wNNN/manifest.json`: paquete, ELF, raíz del runtime y hashes de fuentes. Verificar que los scripts de transferencia/recolección reconozcan esa build: mantienen listas explícitas.
 2. Con autorización de transferencia, subir paquete **y runtime requerido**, no sólo PKG. Las rutas habituales incluyen `/data/pkg/OrbisDesk.pkg`, `/data/wine-prefix`, `/data/wine-home` y `/data/wine`. No inventar otro montaje a partir de una captura histórica.
-3. El usuario cierra la app, instala desde la consola y la inicia manualmente o con su flujo de Remote Play. Subir por FTP no instala ni ejecuta. El usuario elige NORMAL/ROOT.
+3. El usuario cierra la app, instala desde la consola y la inicia manualmente o con su flujo de Remote Play. Subir por FTP no instala ni ejecuta. Desde la 04.10 todo inicio es ROOT (sin selector).
 4. Dar una secuencia corta y, si el chat lo permite, un botón «Ya la probé». Descargar logs cuando el usuario avise que terminó; no sustituir ese feedback por sondeos repetidos del título abierto.
 5. Comprobar el marcador de build y la corrida antes de interpretar. Si es la build anterior, informarlo y resolver instalación; no atribuir sus logs a la nueva.
 

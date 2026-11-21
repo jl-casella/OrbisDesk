@@ -2,7 +2,7 @@
 
 [English](RELEASE_TRACES.md) | [Español](RELEASE_TRACES-es.md)
 
-**Estado:** el interruptor corrió en la consola en la W299 (`W299 trace level=0 source=build release=1`). La segunda ronda (revisión del log de la W299) corrió en la W300: el log de release bajó de 403 KB a 217 KB. La tercera ronda (W300: volcados de cuelgue) está en las fuentes, todavía no en una build W.
+**Estado:** el interruptor corrió en la consola en la W299 (`W299 trace level=0 source=build release=1`). La segunda ronda (revisión del log de la W299) corrió en la W300: el log de release bajó de 403 KB a 217 KB. La tercera ronda (W300: volcados de cuelgue) está en las fuentes, todavía no en una build W. Las líneas propias del alpha 2 siguen el interruptor desde la 04.37 (ver [Líneas del alpha 2](#líneas-del-alpha-2)); todavía no corrieron en la consola.
 
 El alpha-1 se construye para velocidad. Las trazas de diagnóstico vienen apagadas, y un solo interruptor las vuelve a encender sin recompilar. Los marcadores de build, los errores reales, los crashes y las salidas se loguean siempre. Apagar las trazas nunca convierte un fallo en un éxito silencioso.
 
@@ -59,6 +59,38 @@ El título aparte de Steam S4 ([build-steam-s4.py](../tools/build-steam-s4.py)) 
 - **Solo cuando cambia.** `GetLogicalDrives` (`PWFS logical_drives`) loguea su primera respuesta y cada cambio, no cada llamada.
 - **Volcados de cuelgue.** Un `PWHUNG` o un shell detenido deja una línea, y el volcado completo de hilos pasa a ser una sola línea de resumen, `PWDUMP skipped age_ms=N threads=N loader_owner=N`. El volcado completo vuelve con trazas, o a pedido con `C:\orbis\dumpnow.txt`. En la W300, cuatro volcados completos de 37 hilos fueron el 70% del log, de un juego que estaba cargando, no colgado.
 - **Una sola vez.** RADV escribía cada línea a stderr y a la salida de depuración de la consola, y el launcher loguea las dos; ahora escribe solo a stderr.
+
+## Líneas del alpha 2
+
+El alpha 2 (04.23–04.36) sumó líneas de log para la caché de shaders, la generación de cuadros, FPS LIMIT, el overlay, la liberación de memoria de los invitados, SeaMonkey y el fondo del escritorio. Desde la 04.37 siguen el mismo interruptor. Para verlas en una corrida, creá `/data/orbisdesk/trace.txt` (vacío, o con `1`) antes de iniciar OrbisDesk. Con `0` o sin el archivo, el comportamiento es el de release. No hace falta recompilar.
+
+Hay tres marcadores opcionales anteriores que siguen aparte: `/data/orbisdesk/framegen.txt` (las líneas de tiempos de la generación de cuadros), `C:\orbis\nativeprofile.txt` (el perfil por hilo de wow64native) y `C:\orbis\vkbatch32.off`. No dependen del interruptor.
+
+**Solo con trazas desde la 04.37:**
+
+- **Caché de shaders y tiempo de cuadro.** `PWPERF` (la línea de ventana de 5 s y `slow_compile`). Sin trazas no se mide nada: el sink vuelve antes de sus contadores.
+- **FPS LIMIT.** El reporte de 5 s `PWFPS limit=… presents=…`, `PWFPS vblank count trusted|not trusted` y `PWFPS auto cap`.
+- **Generación de cuadros.** El reporte de 10 s `PWFG display pairs=…`, `PWFG display on|off`, `PWFG shown_rate`, `PWFG gpu_us` (cada 120 cuadros generados), las sondas de arranque (`PWFG probe …`, `PWFG buffers`), `PWFG target sc=` y las primeras líneas de copia.
+- **Overlay.** `PWOVERLAY open|close|keyboard|stats=`, las líneas de la tecla de MangoHud, `PWOVERLAY mangohud|desktop in_front` (nativo y kernelbase), `PWOVERLAY program … bits`, `PWOVERLAY hud:` (el resumen de MangoHud.conf), `PWOVERLAY keymap program=`, `PWOVERLAY render set … requested`, `PWOVERLAY exit taken by the closer`, y `PWOVERLAY control wait` cuando el mando quedó listo.
+- **Liberación de memoria de los invitados** (kernelbase y win32u). `PWGUEST heap_usage`, `heap_large`, `heap_small`, `heap_unowned`, las listas `kept bytes … from`, `heaps … claimed`, `heap … kept: held by`, `PWGUEST vulkan module=… devices=`, `PWGUEST gl module=… result=`, `PWVK guest_memory`, `PWVK guest_release`, `PWVK guest_teardown … ms=` y `PWAUDIO guest …: N streams out of the mixer`.
+- **Detalle del ciclo de vida de los invitados.** `PWGUEST thread_new`, `thread_starts`, `ended: thread`, `class … unregistered`, `ilonly entry`, `mangohud excluded`.
+- **Ventanas y gráficos.** `PWVK size`, `PWVK layer`, `PWRECT`, `PWSINK monitor`, `PWSINK fullscreen off|not|image`, `PWINPUT warp`, y `PWGL viewport` y `PWSTW size` de Mesa WGL (las dos aparecen en el log como `MESA: error:`).
+- **Fondo del escritorio.** `PWDESK wallpaper menu`, `PWDESK background open|apply`; `render` y `browse` solo cuando salen bien.
+- **Video.** `PWAVI open` y la descripción de cada stream, `first_sample`, `eos`, y `stopped` cuando terminó limpio.
+- **Plataforma y lado Unix de Wine.** `PWFS descriptor_growth`, los cambios de `PWMEM direct_free source=`, `PWIPC request_chunked`, `PWSERVER request_deferred`, `PWLOAD shared_section_private` después de una copia completa, y las líneas `device … gave back N bytes` de RADV.
+
+**Lo que queda en release, y por qué:**
+
+- Toda línea que reporta un fallo, un rechazo o algo que se conserva. Por ejemplo: `PWFG failed …`, `PWFG off for this run`, `PWFG generator off for this run`, `PWOVERLAY … not saved`, `… refused`, `config line ignored`, `PWGUEST … release failed`, `heaps not recorded`, `kept: … more than listed`, `PWVK guest_teardown … kept`, `PWAVI stream … not offered|unreadable`, `PWAVI reject`, `PWFS lock_failed`, `PWDESK background apply … error|refused`, y `ended with submissions unfinished` de RADV. Son lo que necesita un reporte de campo, y no cuestan nada mientras nada falla.
+- **Los ajustes que cambió el usuario, una vez por cambio.** `PWOVERLAY framegen=`, `fpslimit=`, `control type=`, `control pad.…=`, `render … program=`, `keymap saved`, `PWFG mode=`, `PWFPS limit=… cap=` y `PWPAD profile=… reload`. Un reporte de crash necesita saber qué estaba encendido.
+- **El camino de salida.** `PWOVERLAY exit requested|title|result`, y las líneas de "nadie contestó". Son raras, y son las últimas líneas antes de que se cierre un título.
+- **Un mando que no quedó listo.** `PWOVERLAY control wait … ready=0`.
+- **El estado de arranque, una sola vez.** `PWFG config`, `PWFG ready`, `PWFG no present hook`, `PWTELEM framegen query`, `PWHID dualsense unavailable`, `PWNET kernel_poll`, `PWBOOT memory_info`, `PWINSTALL plan`, `PWCACHE radv disk_cache=` y `address32_hi`. `PWCACHE` queda porque su parche de Mesa conserva su marca sobre un árbol de fuentes ya existente; es una línea por dispositivo.
+- **Anomalías raras.** `PWGUEST leftover thread`, `own_modules … kept`, `PWWOW tls_slot`, `PWSINK mode kept|restore`, `PWFONT`, `PWWOW win32u`, `PWCRT`, `PWTOP` y las líneas `fault` de los invitados.
+- **Separación de procesos y lanzamiento.** `PWSEP …`, `PWOPEN …`, `PWLAUNCH`: una línea por decisión de lanzamiento, necesaria cuando un juego no arranca.
+- **Red, HID y DirectInput.** `PWNSI` (un aviso por corrida y una línea por cada cambio de red de la consola), `PWHID winebus unlink again ignored` y `PWINPUT device … gone: released`. Cada una es rara y señala un evento real.
+
+Tres cosas no cambian: `PW_NATIVE_PROFILE` sigue siendo opcional mediante `nativeprofile.txt`; `PW_VK_BATCH` enciende el batching y no es una traza; y la cadena de depuración `PWHUD` de MangoHud solo aparece con el canal `warn+debugstr` de Wine.
 
 ## Siempre se loguea
 

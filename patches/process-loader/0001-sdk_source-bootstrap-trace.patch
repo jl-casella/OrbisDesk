@@ -1,0 +1,63 @@
+--- a/crt/crt.c
++++ b/crt/crt.c
+@@ -45,6 +45,7 @@
+  **/
+ static int
+ payload_terminate(int status) {
++  pw_loader_stage("crt_terminate", status);
+   void (*_exit)(int) = 0;
+ 
+   // we are running inside a hijacked process, just return
+@@ -71,18 +72,22 @@
+ payload_init(void) {
+   int err = 0;
+ 
+-  if((err=__klog_init())) {
+-    return err;
+-  }
+-  if((err=__kernel_init())) {
+-    return err;
+-  }
+-  if((err=__rtld_init())) {
+-    return err;
+-  }
+-  if((err=__patch_init())) {
+-    return err;
+-  }
++  pw_loader_stage("crt_klog_enter", 0);
++  err=__klog_init();
++  pw_loader_stage("crt_klog_return", err);
++  if(err) return err;
++  pw_loader_stage("crt_kernel_enter", 0);
++  err=__kernel_init();
++  pw_loader_stage("crt_kernel_return", err);
++  if(err) return err;
++  pw_loader_stage("crt_rtld_enter", 0);
++  err=__rtld_init();
++  pw_loader_stage("crt_rtld_return", err);
++  if(err) return err;
++  pw_loader_stage("crt_patch_enter", 0);
++  err=__patch_init();
++  pw_loader_stage("crt_patch_return", err);
++  if(err) return err;
+ 
+   return err;
+ }
+@@ -102,6 +107,7 @@
+   int argc = 0;
+   int err = 0;
+ 
++  pw_loader_stage("crt_entered", 0);
+   // clear .bss section
+   for(unsigned char* bss=__bss_start; bss<__bss_end; bss++) {
+     *bss = 0;
+@@ -134,7 +140,9 @@
+   }
+ 
+   // Run the payload
++  pw_loader_stage("crt_main_enter", 0);
+   err = main(argc, argv, envp);
++  pw_loader_stage("crt_main_return", err);
+ 
+   // Run .fini functions
+   count = __fini_array_end - __fini_array_start;

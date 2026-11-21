@@ -19,7 +19,9 @@
  * address, which is what lets a CPU pointer stand for a GPU address.
  * W153: and only when the compiled shader reads them without FLAT instructions (W152: the first
  * frame hung the GPU); else the shader without image layers (screen_frag_pool.h) draws.
- * Every failure is logged with the Vulkan result and leaves the sink on its CPU copy. */
+ * Every failure is logged with the Vulkan result and leaves the sink on its CPU copy.
+ * Frame generation (framegen.inc.c, included at the end) uses the same device and queue. */
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -70,6 +72,11 @@ static VkPipeline pipeline;
 static VkDescriptorSet set;
 static VkCommandBuffer cmd;
 static VkFence fence;
+/* frame generation (framegen.inc.c): the queue is also submitted to from a presenting thread, and needs the
+ * device's limits and the queue's timestamp bits */
+static pthread_mutex_t queue_lock=PTHREAD_MUTEX_INITIALIZER;
+static VkPhysicalDeviceLimits device_limits;
+static uint32_t timestamp_bits;
 
 #define DEVICE_FUNCTIONS(X) X(vkGetDeviceQueue) X(vkCreateBuffer) X(vkGetBufferMemoryRequirements) \
     X(vkAllocateMemory) X(vkBindBufferMemory) X(vkMapMemory) X(vkCreateBufferView) X(vkCreateImage) \
@@ -112,10 +119,12 @@ static int device_init(void)
     vkGetPhysicalDeviceMemoryProperties(gpu,&memory);
     VkPhysicalDeviceProperties properties;vkGetPhysicalDeviceProperties(gpu,&properties);
     max_texels=properties.limits.maxTexelBufferElements;
+    device_limits=properties.limits;
     VkQueueFamilyProperties families[8];count=8;
     vkGetPhysicalDeviceQueueFamilyProperties(gpu,&count,families);
     for(family=0;family<count && !(families[family].queueFlags&VK_QUEUE_GRAPHICS_BIT);++family) {}
     if(family==count) {fprintf(stderr,"PWSINK gpu_failed no graphics queue\n");return -1;}
+    timestamp_bits=families[family].timestampValidBits;
     /* W152: the shader reads layers by GPU address (GL_EXT_buffer_reference) */
     /* W153: with 64-bit integers (the address arithmetic) and the compiled code readable
      * (pipeline_init looks for FLAT instructions in it) */
@@ -298,11 +307,12 @@ static int make_pipeline(const uint32_t *code,size_t size,VkPipelineCreateFlags 
     return 0;
 }
 
-/* W153: 1 when the pipeline's compiled code has a FLAT memory instruction (ACO's IR and
- * disassembly name them flat_*), 0 when it has none, -1 when RADV gave no code to look at */
-static int uses_flat(void)
+/* W153: 1 when the pipeline's compiled code for stage has a FLAT memory instruction (ACO's IR and
+ * disassembly name them flat_*), 0 when it has none, -1 when RADV gave no code to look at.
+ * Frame generation checks its compute pipelines with it too. */
+static int uses_flat(VkPipeline which,VkShaderStageFlags stage)
 {
-    VkPipelineInfoKHR info={.sType=VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR,.pipeline=pipeline};
+    VkPipelineInfoKHR info={.sType=VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR,.pipeline=which};
     VkPipelineExecutablePropertiesKHR properties[4];
     uint32_t count=4,looked=0;
     for(uint32_t i=0;i<count;++i) properties[i]=(VkPipelineExecutablePropertiesKHR){
@@ -310,15 +320,15 @@ static int uses_flat(void)
     VkResult r=vkGetPipelineExecutablePropertiesKHR(device,&info,&count,properties);
     if(r!=VK_SUCCESS && r!=VK_INCOMPLETE) {fprintf(stderr,"PWSINK gpu_images executables = %d\n",(int)r);return -1;}
     for(uint32_t e=0;e<count;++e) {
-        if(!(properties[e].stages&VK_SHADER_STAGE_FRAGMENT_BIT)) continue;
-        VkPipelineExecutableInfoKHR which={.sType=VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR,.pipeline=pipeline,
-                                           .executableIndex=e};
+        if(!(properties[e].stages&stage)) continue;
+        VkPipelineExecutableInfoKHR executable={.sType=VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR,.pipeline=which,
+                                                .executableIndex=e};
         VkPipelineExecutableInternalRepresentationKHR texts[8];
         uint32_t text_count=8;
         for(uint32_t i=0;i<text_count;++i) texts[i]=(VkPipelineExecutableInternalRepresentationKHR){
             .sType=VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR};
         /* first the sizes, then the texts into one arena (cut short, VK_INCOMPLETE, if too long) */
-        r=vkGetPipelineExecutableInternalRepresentationsKHR(device,&which,&text_count,texts);
+        r=vkGetPipelineExecutableInternalRepresentationsKHR(device,&executable,&text_count,texts);
         if(r!=VK_SUCCESS && r!=VK_INCOMPLETE) {fprintf(stderr,"PWSINK gpu_images representations = %d\n",(int)r);return -1;}
         static char arena[1<<20];
         size_t used=0;
@@ -326,7 +336,7 @@ static int uses_flat(void)
             if(texts[t].dataSize>sizeof(arena)-used) texts[t].dataSize=sizeof(arena)-used;
             texts[t].pData=arena+used;used+=texts[t].dataSize;
         }
-        r=vkGetPipelineExecutableInternalRepresentationsKHR(device,&which,&text_count,texts);
+        r=vkGetPipelineExecutableInternalRepresentationsKHR(device,&executable,&text_count,texts);
         if(r!=VK_SUCCESS && r!=VK_INCOMPLETE) {fprintf(stderr,"PWSINK gpu_images texts = %d\n",(int)r);return -1;}
         for(uint32_t t=0;t<text_count;++t) {
             const char *text=texts[t].pData;
@@ -382,7 +392,7 @@ static int pipeline_init(void)
                                             .pSetLayouts=&set_layout,.pushConstantRangeCount=1,.pPushConstantRanges=&range};
     TRY(vkCreatePipelineLayout(device,&layout_info,NULL,&layout));
     if(images && !make_pipeline(screen_frag,sizeof(screen_frag),VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR)) {
-        int flat=uses_flat();
+        int flat=uses_flat(pipeline,VK_SHADER_STAGE_FRAGMENT_BIT);
         if(!flat) {fprintf(stderr,"PWSINK gpu_images shader=address flat=0\n");goto commands;}
         fprintf(stderr,"PWSINK gpu_images off: the compiled shader %s\n",flat>0?"uses FLAT":"could not be checked");
     } else if(images) fprintf(stderr,"PWSINK gpu_images off: no pipeline with image layers\n");
@@ -510,7 +520,10 @@ int pw_sink_gpu_draw_layers(unsigned buffer,const struct layer *layers,unsigned 
     vkCmdEndRenderPass(cmd);
     TRY(vkEndCommandBuffer(cmd));
     VkSubmitInfo submit={.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,.commandBufferCount=1,.pCommandBuffers=&cmd};
-    TRY(vkQueueSubmit(queue,1,&submit,fence));
+    pthread_mutex_lock(&queue_lock);   /* frame generation submits from a presenting thread */
+    VkResult submitted=vkQueueSubmit(queue,1,&submit,fence);
+    pthread_mutex_unlock(&queue_lock);
+    TRY(submitted);
     TRY(vkWaitForFences(device,1,&fence,VK_TRUE,1000000000ull));
     TRY(vkResetFences(device,1,&fence));
     return 0;
@@ -524,3 +537,6 @@ int pw_sink_gpu_draw(unsigned buffer,unsigned stride,int left,int top,int scale_
     struct layer desktop={screen,0,0,(int)screen_width,(int)screen_height,stride/4,0,screen_width,screen_height};
     return pw_sink_gpu_draw_layers(buffer,&desktop,1,screen_width,screen_height,left,top,scale_w,scale_h,cursor_x,cursor_y);
 }
+
+/* Frame generation, stages 2 and 3 (docs/FRAME_GENERATION.md): it shares this file's device, queue and checks */
+#include "framegen.inc.c"

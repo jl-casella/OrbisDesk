@@ -162,6 +162,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [HARDWARE_W228-es.md](HARDWARE_W228-es.md) — W228: modo ROOT y discos USB como unidades
 - [HARDWARE_W284-es.md](HARDWARE_W284-es.md) — OrbisDesk: paquete con nombre limpio (W284)
 - [HARDWARE_W285_W288-es.md](HARDWARE_W285_W288-es.md) — W285–W288: streams de audio de invitados, carpeta de logs de GPU, menú GRÁFICOS y MangoHud en wined3d
+- [HARDWARE_guest-gpu-memory-es.md](HARDWARE_guest-gpu-memory-es.md) — Memoria de GPU de los invitados que terminan dentro de explorer
 - [HARDWARE_mando-hid-es.md](HARDWARE_mando-hid-es.md) — Mando como gamepad HID (stack HID de Wine dentro del proceso)
 - [HARDWARE_mando-juegos-analisis-es.md](HARDWARE_mando-juegos-analisis-es.md) — Mando para juegos después de W195: análisis (borrador, sin cambios de código)
 
@@ -220,6 +221,23 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 ## Otras notas públicas
 
 - [CI-es.md](CI-es.md) — Ejecutar CI y medir la matriz de plataforma
+- [DESKTOP_BACKGROUND-es.md](DESKTOP_BACKGROUND-es.md) — Diálogo de fondo de escritorio: tus propias imágenes como fondo (borrador)
+- [FPS_LIMIT-es.md](FPS_LIMIT-es.md) — Límite de FPS (por programa)
+- [FRAME_GENERATION-es.md](FRAME_GENERATION-es.md) — Generación de fotogramas (experimental)
+- [MANAGE_INSTALLATION-es.md](MANAGE_INSTALLATION-es.md) — Administrar la instalación
+- [MANGOJUICE-es.md](MANGOJUICE-es.md) — MangoJuice: el programa de ajustes de MangoHud
+- [OVERLAY_MENU-es.md](OVERLAY_MENU-es.md) — El menú del overlay con L3+R3 (04.31)
+- [POP_SEPARATE_PROCESS-es.md](POP_SEPARATE_PROCESS-es.md) — Procesos de Windows separados (fases B–D de PoP)
+- [PROCESS_FAMILY_PROBES-es.md](PROCESS_FAMILY_PROBES-es.md) — Sondas de familias de procesos para launchers de base fija
 - [RELEASES-es.md](RELEASES-es.md) — Construcción del producto, releases y rama de desarrollo
 - [RELEASE_LICENSES-es.md](RELEASE_LICENSES-es.md) — Licencias del release (alpha-1)
 - [RELEASE_TRACES-es.md](RELEASE_TRACES-es.md) — Trazas en release: un solo interruptor para el alpha-1
+- [RUNTIME_SIZE-es.md](RUNTIME_SIZE-es.md) — Tamaño del runtime
+- [SEAMONKEY_DESCRIPTORS-es.md](SEAMONKEY_DESCRIPTORS-es.md) — SeaMonkey y los descriptores de archivo del título
+- [SEAMONKEY_FILE_LOCKS-es.md](SEAMONKEY_FILE_LOCKS-es.md) — SeaMonkey, SQLite y los bloqueos de rangos de bytes
+- [SEAMONKEY_FLEXIBLE_MEMORY-es.md](SEAMONKEY_FLEXIBLE_MEMORY-es.md) — SeaMonkey y la memoria flexible
+- [SEAMONKEY_GPU-es.md](SEAMONKEY_GPU-es.md) — Composición por GPU en SeaMonkey
+- [SEAMONKEY_RESPONSIVENESS-es.md](SEAMONKEY_RESPONSIVENESS-es.md) — La respuesta de SeaMonkey en la consola
+- [SHADER_CACHE-es.md](SHADER_CACHE-es.md) — Compilación de shaders, tiempo de cuadro y la caché de shaders en disco
+- [WARCRAFT3-es.md](WARCRAFT3-es.md) — Warcraft III 1.07: las importaciones estáticas de Storm y los videos AVI de introducción
+- [WINE_MONO-es.md](WINE_MONO-es.md) — Wine Mono: programas .NET

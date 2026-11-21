@@ -9,8 +9,9 @@ has one process and no service manager. Here:
 - ntoskrnl.exe from an overlay of the pinned source (revisions below): drivers load from their
   service registry key when there is no service manager, and the IRP loop sets the named event
   PwNtoskrnlPnpReady once its PnP manager runs;
-- hidclass.sys, hidparse.sys, winebus.sys, winehid.sys and winexinput.sys unchanged from the pinned
-  build, and whatever of their imports the last hardware runtime lacks;
+- hidclass.sys, hidparse.sys, winebus.sys, winehid.sys and winexinput.sys from the pinned build
+  (hidclass's device.c and, since 04.28, winebus's main.c from overlays), and whatever of their
+  imports the last hardware runtime lacks;
 - winebus's Unix side (winebus-unix.o for the boot ELF): the pinned unixlib.c, hid.c and the
   bus_udev.c/bus_iohid.c stubs (no udev or IOKit in the Orbis build), with native/winebus_orbis.c in
   place of bus_sdl.c, linked with ld -r; its table becomes pw_winebus_unix_call_funcs for
@@ -38,7 +39,8 @@ if commit!=json.loads((ROOT/'sources.lock.json').read_text())['sources']['wine']
 for folder in (work,out):folder.mkdir(parents=True,exist_ok=True)
 # W206: hidclass.sys also from an overlay (a new client queue starts with the last report).
 # W214: the W202/W205 diagnostic traces are gone; winexinput.sys and winebus.sys are the pinned build's.
-OVERLAID={'ntoskrnl.exe':('ntoskrnl',),'hidclass.sys':('device',)}
+# 04.28: winebus.sys's main.c too (a second unlink of a removed device, below).
+OVERLAID={'ntoskrnl.exe':('ntoskrnl',),'hidclass.sys':('device',),'winebus.sys':('main',)}
 def overlay_dir(module):return overlay if module=='ntoskrnl.exe' else work/(module+'-overlay')
 for module in OVERLAID:
     if overlay_dir(module).exists():shutil.rmtree(overlay_dir(module))
@@ -182,6 +184,36 @@ revise('hidclass.sys:device.c','''    if (!(queue = hid_queue_create())) irp->Io
             hid_queue_push_report( queue, last );
             hid_report_decref( last );
         }''','W206: a new client queue starts with the last report.')
+
+# 04.28: a second unlink of a removed device left the bus's device list empty. A removal unlinks a
+# device twice: the bus thread on BUS_EVENT_TYPE_DEVICE_REMOVED, then pdo_pnp_dispatch on
+# IRP_MN_REMOVE_DEVICE (only for a device ntoskrnl enumerated, i.e. one that was started).
+# list_remove leaves the entry's links as they were, so the second one wrote the old neighbours
+# back: with the pad as the bus's only device, the list became empty again and dropped the device
+# added in between. W236's type change (native/winebus_orbis.c replace_device) queues exactly that
+# sequence, so the new pad was never enumerated: no driver, no start, no "&IG_" device, while a
+# change away from a never-started device worked (run-0246: 7 changes to x360 lost, 7 others not).
+# The entry is re-initialised after the unlink, so a second list_remove changes nothing.
+revise('winebus.sys:main.c','''static void bus_unlink_hid_device(DEVICE_OBJECT *device)
+{
+    struct device_extension *ext = (struct device_extension *)device->DeviceExtension;
+
+    RtlEnterCriticalSection(&device_list_cs);
+    list_remove(&ext->entry);
+    RtlLeaveCriticalSection(&device_list_cs);
+}''','''static void bus_unlink_hid_device(DEVICE_OBJECT *device)
+{
+    struct device_extension *ext = (struct device_extension *)device->DeviceExtension;
+
+    RtlEnterCriticalSection(&device_list_cs);
+    /* OrbisDesk (04.28): a second unlink (the bus's DEVICE_REMOVED event, then IRP_MN_REMOVE_DEVICE)
+     * must not write the old neighbours back: that dropped a device added in between */
+    if (list_empty(&ext->entry))
+        ERR("PWHID winebus unlink again ignored device=%p vid=%04x pid=%04x\\n", device, ext->desc.vid, ext->desc.pid);
+    list_remove(&ext->entry);
+    list_init(&ext->entry);
+    RtlLeaveCriticalSection(&device_list_cs);
+}''','04.28: a second unlink of a removed device leaves the device list alone.')
 
 # The pinned build's own commands for each overlaid module (make -n), with the overlay units and
 # separate outputs; the other objects are the pinned build's own.

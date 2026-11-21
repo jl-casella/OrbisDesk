@@ -18,7 +18,7 @@ Status: compiled in WSL; menu and staging edited. Not packaged, not uploaded and
 | Spider Solitaire | `spider.exe` | ReactOS `base/applications/games/spider` + cardlib |GPL- 2.0|
 |(library)| `cards.dll` |ReactOS `dll/win32/cards`, default card style|LGPL- 2.1 -or-later; free images|
 
-ReactOS revision `5f6ef754f90eef792e4ef90561bcff2cac4d3afb` (`games.lock.json`, partial check out at `.deps/reactos-games`). In the same directory are the notices `ReactOS-COPYING.txt`, `ReactOS-COPYING.LIB.txt`, `cards-images-COPYING.txt`, `games-README.txt` and `games-source.tar.gz` (corresponding source and commands).
+ReactOS revision `5f6ef754f90eef792e4ef90561bcff2cac4d3afb` (`games.lock.json`, partial check out at `.deps/reactos-games`). In the same directory are the notices `ReactOS-COPYING.txt`, `ReactOS-COPYING.LIB.txt`, `cards-images-COPYING.txt`, and `games-README.txt`. Since 2026-11-20 `games-source.tar.gz` (corresponding source and commands) stays in `out/games` and is not shipped: each release's `<tag>-third-party-sources.tar` carries the pinned ReactOS revision, and `tools/build-games.py` is in the repository at the tag ([runtime size](RUNTIME_SIZE.md)).
 
 It was chosen ReactOS because Solitaire and Spider are Win32 pure (user32, gdi32, comctl32, shell32, advapi32), compete with llvm-mingw without touching the code and all its imports are already in the runtime PE64 of OrbisDesk (`out/wine-gui`, ucrtbase via apiset). cardlib load `cards.dll` with `LoadLibrary`; If missing, it shows "Error loading cards.dll (32bit)" and comes out, it doesn't go on without cards.
 

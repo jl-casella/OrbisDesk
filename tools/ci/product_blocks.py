@@ -65,8 +65,8 @@ def prepare_sources():
     """Pinned sources, SDK, archives and assets; the LLVM runtime sources under ~/vk-h0/src."""
     deps = json.loads((ROOT / 'dependencies.lock.json').read_text())
     # The Steam client lives inside the title since alpha-1 (tools/build-steam-hosted.py), so Playden's
-    # sources and curl patch are inputs; MangoJuice stays a reference only.
-    names = [n for n in deps['repositories'] if n != 'mangojuice']
+    # sources and curl patch are inputs; MangoJuice is built since it replaced "MangoHud Config" (docs/MANGOJUICE.md).
+    names = list(deps['repositories'])
     command = [sys.executable, ROOT / 'tools/restore-dependencies.py', '--fetch']
     for name in names:
         command += ['--only', name]

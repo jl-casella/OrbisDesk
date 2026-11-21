@@ -253,6 +253,17 @@ class KeyTests(unittest.TestCase):
                 development = cache.make_keys()
                 self.assertNotEqual(unrelated['wine']['key'], development['wine']['key'])
                 self.assertNotEqual(unrelated['graphics']['key'], development['graphics']['key'])
+                # a security rebuild of the same upstream release and the image's PostgreSQL client do not
+                packages += 'libc6-dev:amd64=2.35-0ubuntu3.15\nlibpq-dev:amd64=18.6-1.pgdg22.04+1\n'
+                rebuilt_before = cache.make_keys()
+                packages = packages.replace('2.35-0ubuntu3.15', '2.35-0ubuntu3.18').replace('18.6-1', '18.7-1')
+                rebuilt_after = cache.make_keys()
+                self.assertEqual(rebuilt_before['wine']['key'], rebuilt_after['wine']['key'])
+                self.assertEqual(rebuilt_before['graphics']['key'], rebuilt_after['graphics']['key'])
+                # a new upstream release of a development package does
+                packages = packages.replace('2.35-0ubuntu3.18', '2.36-0ubuntu1')
+                upgraded = cache.make_keys()
+                self.assertNotEqual(rebuilt_after['wine']['key'], upgraded['wine']['key'])
 
 
 class DownloadTests(unittest.TestCase):

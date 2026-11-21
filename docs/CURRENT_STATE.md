@@ -2,6 +2,8 @@
 
 [English](CURRENT_STATE.md) | [Español](CURRENT_STATE-es.md)
 
+**Firmware correction (2026-11-11):** the user confirmed that the test console is a PS4 Pro Baikal running **12.50**, not 12.52. References to their console in this document are corrected; original logs and manifests retain the earlier reported value. Do not attribute these tests to 12.52 hardware.
+
 The current product base is **W303**, whose local default SFO version is **04.02**. Commit `208803d` records clean-install console validation. The complete GitHub-hosted product build now succeeds; the reviewed `dev` baseline is `aa43870`. A CI candidate has its own assigned SFO version and source SHA, and needs its own runtime acceptance evidence.
 
 - **Installation:** `OrbisDesk.pkg` carries the runtime. The first-start installer runs after the NORMAL/ROOT choice and before the ROOT jailbreak, while `/app0/runtime` is accessible. It verifies copied files and preserves user-owned state. See [installation and release flow](RELEASES.md#first-start-install).
@@ -343,7 +345,7 @@ Sources: `tools/vk-h0/patch-mangohud-frame-sampling.py` over the copy WSL in `~/
 
 ## Current environment and preferences
 
-PS4 Pro Baikal, informed firmware 12.52, GoldHEN Last IP. 104; . 107 was previous. Always use --explicit host. WSL Ubuntu - 22.04 to compile.
+PS4 Pro Baikal, informed firmware 12.50, GoldHEN Last IP. 104; . 107 was previous. Always use --explicit host. WSL Ubuntu - 22.04 to compile.
 
 The user instala/ejecuta manually; is not used BinLoader to launch these apps. Avoid local matrix: compile and verify artefactos/transferencia and continue with the actual test. Do not mark functional by simulated responses or initial catches. The automatic state presented of the collector does not amount to passed.
 

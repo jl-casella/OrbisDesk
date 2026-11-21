@@ -36,6 +36,16 @@
       "url": "https://dl.winehq.org/wine/wine-gecko/2.47.4/wine-gecko-2.47.4-x86.tar.xz",
       "sha256": "2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6"
     },
+    "wine-mono-x86": {
+      "path": ".deps/downloads/wine-mono-11.3.0-x86/wine-mono-11.3.0-x86.tar.xz",
+      "url": "https://dl.winehq.org/wine/wine-mono/11.3.0/wine-mono-11.3.0-x86.tar.xz",
+      "sha256": "54a1b0111c3fe4b785eae688af94d27e64995707ad648b6fee8000381b80d298"
+    },
+    "wine-mono-copying": {
+      "path": ".deps/downloads/wine-mono-11.3.0-x86/COPYING",
+      "url": "https://raw.githubusercontent.com/wine-mono/wine-mono/wine-mono-11.3.0/COPYING",
+      "sha256": "0265443ffc97c9450dbcf402c2430bf9fe87d7a6c92d5d7684fcecfe749bf75d"
+    },
     "registry-vk": {
       "path": "~/.cache/wine/vk-1.4.357.xml",
       "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.357/registry/vk.xml",

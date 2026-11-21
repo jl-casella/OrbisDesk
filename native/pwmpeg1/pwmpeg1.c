@@ -469,6 +469,16 @@ static HRESULT create_filter(IUnknown *outer, IUnknown **out)
 
 /* ---- class factory ---- */
 
+/* alpha-1: the AVI splitter (pwavi.c) is the module's second class */
+extern const GUID CLSID_PWAviSplitter;
+HRESULT pwavi_create(IUnknown *outer, IUnknown **out);
+
+struct factory
+{
+    IClassFactory IClassFactory_iface;
+    HRESULT (*create)(IUnknown *outer, IUnknown **out);
+};
+
 static HRESULT WINAPI factory_QueryInterface(IClassFactory *iface, REFIID iid, void **out)
 {
     if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IClassFactory))
@@ -490,7 +500,7 @@ static HRESULT WINAPI factory_CreateInstance(IClassFactory *iface, IUnknown *out
 
     *out = NULL;
     if (outer && !IsEqualGUID(iid, &IID_IUnknown)) return E_NOINTERFACE;
-    if (FAILED(hr = create_filter(outer, &unk))) return hr;
+    if (FAILED(hr = CONTAINING_RECORD(iface, struct factory, IClassFactory_iface)->create(outer, &unk))) return hr;
     hr = IUnknown_QueryInterface(unk, iid, out);
     IUnknown_Release(unk);
     return hr;
@@ -502,11 +512,15 @@ static IClassFactoryVtbl factory_vtbl =
 {
     factory_QueryInterface, factory_AddRef, factory_Release, factory_CreateInstance, factory_LockServer,
 };
-static IClassFactory factory = {&factory_vtbl};
+static struct factory mpeg_factory = {{&factory_vtbl}, create_filter};
+static struct factory avi_factory = {{&factory_vtbl}, pwavi_create};
 
 HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void **out)
 {
-    if (IsEqualGUID(clsid, &CLSID_PWMpeg1)) return IClassFactory_QueryInterface(&factory, iid, out);
+    if (IsEqualGUID(clsid, &CLSID_PWMpeg1))
+        return IClassFactory_QueryInterface(&mpeg_factory.IClassFactory_iface, iid, out);
+    if (IsEqualGUID(clsid, &CLSID_PWAviSplitter))
+        return IClassFactory_QueryInterface(&avi_factory.IClassFactory_iface, iid, out);
     *out = NULL;
     return CLASS_E_CLASSNOTAVAILABLE;
 }

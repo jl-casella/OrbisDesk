@@ -44,19 +44,23 @@ Games reported running on physical PS4. Results depend on the game and build;
 this list does not imply complete compatibility or a completed playthrough.
 
 - Age of Empires 2
+- Alan Wake's American Nightmare — downloaded using the included unofficial Steam client, with its Steam emulator (gbe_fork) turned on from the game's page and the overlay's Graphics set to wined3d + OpenGL (DXVK and wined3d + Vulkan hang).
 - Call of Duty
 - DOS games via DOSBox Pure — Mario & Luigi and Carmen Sandiego.
 - GTA 3
 - GTA San Andreas
 - GTA Vice City
 - Max Payne 1 and 2
+- Need for Speed Most Wanted
 - Need for Speed Underground 2
-- Portal — downloaded using the included unofficial Steam client.
+- Portal and Portal 2 — downloaded using the included unofficial Steam client.
+- Prince of Persia: The Sands of Time — from its own launcher, which runs in a separate process.
 - Quake 3
 - Solitaire, Spider and Minesweeper — included in the PKG.
 - SuperMarioKart
 - The Lost Forest
-- Worms 4
+- Worms 3D — from its own launcher, which runs in a separate process; the resolution is chosen in the launcher.
+- Worms 4 Mayhem — also from its own launcher, once its install registry keys are imported with a .reg file.
 
 ## Screenshots
 

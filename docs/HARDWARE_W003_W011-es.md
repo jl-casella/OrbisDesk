@@ -2,13 +2,15 @@
 
 [English](HARDWARE_W003_W011.md) | [Español](HARDWARE_W003_W011-es.md)
 
+**Corrección de firmware (2026-11-11):** el usuario confirmó que su consola es una PS4 Pro Baikal con firmware **12.50**, no 12.52. Las referencias a su consola en este documento están corregidas; los logs y manifiestos originales conservan el dato informado anteriormente. No atribuir estas pruebas a hardware 12.52.
+
 Todas usan el mismo Title ID `ORBW00002` (APP_VER 01.02 a 01.10) y el runtime de W001 ya subido a `/data`. Cada corrida física está en `reports/wine-hardware-w0NN/physical/<ts>/`, con su log y su `report.json`.
 
 Desde W004, por pedido del usuario, los paquetes se suben sin smoke test previo en el emulador. W003 fue el último que pasó por el emulador (`reports/wine-hardware-w003/20261031T061617Z/`, `passed`).
 
 ## Hechos de la plataforma medidos en la consola
 
-| Llamada (app de PS4, firmware 12.52) | Resultado |
+| Llamada (app de PS4, firmware 12.50) | Resultado |
 |---|---|
 | `dup2(fd, 1/2)` |EPERM|
 | `fcntl(fd, F_DUP2FD)` (FreeBSD 10) |EINVAL|

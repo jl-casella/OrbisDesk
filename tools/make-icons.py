@@ -5,7 +5,7 @@
 The test programs (glxgears, vkcube, vkspin64) have no icon resources, so the shortcuts point
 to these .ico files: each drawn here, 16, 32 and 48 pixels, 32-bit BGRA with an AND mask.
 glxgears: three gears (red, green, blue); vkcube: a shaded cube; vkspin64: the probe's
-red-green-blue triangle; mangohud: an orange tile with an M, for the MangoHud configuration.
+red-green-blue triangle on a yellow-to-magenta tile; mangohud: an orange tile with an M.
 Output: out/icons/<name>.ico and manifest.json.
 """
 import hashlib,json,math,pathlib,struct
@@ -21,15 +21,15 @@ def raster(size,inside):
     for y in range(size):
         row=[]
         for x in range(size):
-            hits={}
+            hits=[]
             for sy in range(4):
                 for sx in range(4):
                     colour=inside((x+(sx+.5)/4)/size,(y+(sy+.5)/4)/size)
-                    if colour:hits[colour]=hits.get(colour,0)+1
-            pixel=(0,0,0,0)
-            for colour,count in sorted(hits.items(),key=lambda item:item[1]):
-                pixel=blend(pixel,colour,count/16) if pixel[3] else colour+(int(255*count/16),)
-            row.append(pixel)
+                    if colour:hits.append(colour)
+            # coverage gives the alpha and the samples' mean the colour. (Until vkspin64's tile, alpha came from
+            # the most frequent colour, so a gradient, whose samples all differ, came out about 1/16 opaque.)
+            if not hits:row.append((0,0,0,0));continue
+            row.append(tuple(sum(c[i] for c in hits)//len(hits) for i in range(3))+(255*len(hits)//16,))
         pixels.append(row)
     return pixels
 
@@ -63,16 +63,29 @@ def vkcube(x,y):
     if polygon((centre,ur,lr,bottom),x,y):return (120,20,30)
     return None
 
+def rounded(x,y,half,corner):
+    dx,dy=abs(x-.5),abs(y-.5)
+    if dx>half or dy>half:return False
+    return not (dx>half-corner and dy>half-corner and math.hypot(dx-(half-corner),dy-(half-corner))>corner)
+
 def vkspin64(x,y):
-    # the G001 probe's triangle (native/vk_probe/shaders/triangle.vert), colours by barycentre
-    a,b,c=(.5,.10),(.92,.86),(.08,.86)
+    # The G001 probe's triangle (native/vk_probe/shaders/triangle.vert), colours by barycentre, white-edged,
+    # on a rounded tile from yellow to magenta with a dark rim. The bare triangle was lost on the Start
+    # menu: its blue corner on the dark menu (38,38,40) and the blue highlight (0,120,215), its white
+    # centre on the light menu (240,240,240). The tile and rim stand out on all three.
+    if not rounded(x,y,.47,.13):return None
+    if not rounded(x,y,.41,.09):return (25,22,30)
+    a,b,c=(.5,.19),(.80,.74),(.20,.74)
     det=(b[1]-c[1])*(a[0]-c[0])+(c[0]-b[0])*(a[1]-c[1])
     l1=((b[1]-c[1])*(x-c[0])+(c[0]-b[0])*(y-c[1]))/det
     l2=((c[1]-a[1])*(x-c[0])+(a[0]-c[0])*(y-c[1]))/det
     l3=1-l1-l2
-    if min(l1,l2,l3)<0:return None
-    peak=max(l1,l2,l3)
-    return tuple(int(255*v/peak) for v in (l1,l2,l3))
+    if min(l1,l2,l3)>=.10:
+        peak=max(l1,l2,l3)
+        return tuple(int(255*v/peak) for v in (l1,l2,l3))
+    if min(l1,l2,l3)>=-.02:return (255,255,255)
+    t=min(max((y-.1)/.8,0),1)
+    return (255,int(205-175*t),int(20+150*t))  # (255,205,20) at the top to (255,30,170) at the bottom
 
 def mangohud(x,y):
     # rounded orange tile with a white M

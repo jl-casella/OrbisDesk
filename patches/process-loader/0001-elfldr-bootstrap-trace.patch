@@ -1,0 +1,160 @@
+--- a/bootstrap-bin.c
++++ b/bootstrap-bin.c
+@@ -160,12 +160,15 @@
+   max_vaddr = ROUND_PG(max_vaddr);
+   img_size = max_vaddr - min_vaddr;
+ 
++  pw_loader_stage("bin_map_enter", img_size);
+   // Reserve an address space of sufficient size.
+   if((img = mmap(0, img_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))
+      == MAP_FAILED) {
++    pw_loader_stage("bin_map_failed", (long)img);
+     return;
+   }
++  pw_loader_stage("bin_map_return", (long)img);
+ 
+   // Parse program headers.
+   for(int i = 0; i < ehdr->e_phnum; i++) {
+@@ -196,13 +199,17 @@
+   }
+ 
+   entry = (void *)(img + ehdr->e_entry);
++  pw_loader_stage("bin_elf_enter", (long)entry);
+   entry();
++  pw_loader_stage("bin_elf_return", 0);
+ 
+   munmap(img, img_size);
+ }
+ 
+ int
+ _start(void) {
++  pw_loader_stage("bin_entered", 0);
+   elfldr_exec(elfldr_elf);
++  pw_loader_stage("bin_return", 0);
+   return 0;
+ }
+--- a/bootstrap-elf.c
++++ b/bootstrap-elf.c
+@@ -49,6 +49,7 @@
+   uint8_t qaflags[16];
+   int err;
+ 
++  pw_loader_stage("bootstrap_main", fw);
+   LOG_PUTS("Bootstrapping elfldr.elf...");
+ 
+   switch(fw & 0xffff0000) {
+@@ -145,6 +146,7 @@
+       return -1;
+   }
+ 
++  pw_loader_stage("bootstrap_qa_enter", 0);
+   if(kernel_get_qaflags(qaflags)) {
+     LOG_PERROR("kernel_get_qaflags");
+     return -1;
+@@ -156,6 +158,7 @@
+     return -1;
+   }
+ 
++  pw_loader_stage("bootstrap_ptrace_patch", pt_patch);
+   if(pt_patch) {
+     LOG_PRINTF("pathing kernel at 0x%lx (ptrace)\n", pt_patch);
+     kernel_patch(pt_patch, 0, "\x90\x90\x90\x90\x90\x90", 6);
+@@ -193,7 +196,9 @@
+ 
+   if(!err) {
+     signal(SIGCHLD, SIG_IGN);
++    pw_loader_stage("bootstrap_spawn_enter", 0);
+     err = elfldr_spawn(-1, argv, socksrv_elf, socksrv_elf_len);
++    pw_loader_stage("bootstrap_spawn_return", err);
+   }
+ 
+   if(kernel_set_ucred_caps(-1, caps)) {
+--- a/elfldr.c
++++ b/elfldr.c
+@@ -447,6 +447,7 @@
+   const char *SceSpZeroConf = "/system/vsh/app/NPXS21016/eboot.bin";
+   struct sched_param sp;
+ 
++  pw_loader_stage("rfork_child_enter", getpid());
+   if(syscall(0x23b, 0)) {
+     klog_perror("sys_budget_set");
+     return 0;
+@@ -470,11 +471,12 @@
+     return 0;
+   }
+ 
+-  sp.sched_priority = sched_get_priority_min(SCHED_RR);
++  sp.sched_priority = sched_get_priority_max(SCHED_RR);
+   if(sched_setscheduler(0, SCHED_RR, &sp)) {
+     LOG_PERROR("sched_setscheduler");
+   }
+ 
++  pw_loader_stage("child_pre_execve", getpid());
+   execve(SceSpZeroConf, argv, 0);
+ 
+   klog_perror("execve");
+@@ -505,6 +507,7 @@
+     return -1;
+   }
+ 
++  pw_loader_stage("rfork_enter", getpid());
+   if((pid = rfork_thread(RFPROC | RFCFDG | RFMEM, stack + MB(2),
+                          elfldr_rfork_entry, (void *)argv))
+      < 0) {
+@@ -514,6 +517,7 @@
+     return -1;
+   }
+ 
++  pw_loader_stage("rfork_return", pid);
+   EV_SET(&evt, pid, EVFILT_PROC, EV_ADD, NOTE_EXEC | NOTE_EXIT, 0, 0);
+   if(kevent(kq, &evt, 1, &evt, 1, 0) < 0) {
+     LOG_PERROR("kevent");
+@@ -522,6 +526,7 @@
+     return -1;
+   }
+ 
++  pw_loader_stage("attach_enter", pid);
+   while(pt_attach(pid) == -1) {
+     if(errno == EBUSY) {
+       continue;
+@@ -536,6 +541,7 @@
+   free(stack);
+   close(kq);
+ 
++  pw_loader_stage("attach_return", pid);
+   if(pt_dynlib_process_needed_and_relocate(pid)) {
+     LOG_PT_PERROR(pid, "pt_dynlib_process_needed_and_relocate");
+     pt_detach(pid, SIGKILL);
+@@ -583,6 +589,7 @@
+     return -1;
+   }
+ 
++  pw_loader_stage("elf_exec_enter", pid);
+   // Execute the ELF
+   elfldr_set_procname(pid, "Payload");
+   if(elfldr_exec(pid, stdio, elf, elf_size)) {
+--- a/socksrv.c
++++ b/socksrv.c
+@@ -266,11 +266,13 @@
+     return -1;
+   }
+ 
++  pw_loader_stage("service_listen_enter", port);
+   if(listen(srvfd, 5) != 0) {
+     LOG_PERROR("listen");
+     return -1;
+   }
+ 
++  pw_loader_stage("service_listening", port);
+   while(1) {
+     socklen = sizeof(cliaddr);
+     if((connfd = accept(srvfd, (struct sockaddr *)&cliaddr, &socklen)) < 0) {
+@@ -381,6 +383,7 @@
+   pid_t pid;
+   char c;
+ 
++  pw_loader_stage("service_main", getpid());
+   syscall(SYS_thr_set_name, -1, "elfldr.elf");
+   signal(SIGCHLD, SIG_IGN);
+   signal(SIGPIPE, SIG_IGN);

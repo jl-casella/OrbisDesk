@@ -7,6 +7,9 @@
  *                two-finger press or a two-finger tap right button; d-pad arrows,
  *                triangle Enter, square Escape, options Windows key
  *   USB mouse    relative motion moves the same pointer; left, right, middle buttons, wheel
+ * 04.26: every pointer motion (USB mouse, stick, touchpad, a profile's right stick) goes to Wine as relative
+ * motion (ps5drv type 5), so mouse look gets deltas from wherever the program put the cursor; ps5drv says where
+ * the cursor ends up (pw_hw_pad_pointer_at), a program's SetCursorPos included, and this pointer follows.
  *   USB keyboard USB HID usages translated to Windows virtual keys, with modifiers
  * W178: the controller's state is also xinput's (pw_wine_pad); while a program reads it there,
  * its sticks and buttons stop driving the pointer and keys (game mode).
@@ -133,14 +136,16 @@ static void push_wheel(int delta,const char *source)
     unsigned *wheel_logged=source[0]=='p'?&pad_wheel_logged:&mouse_wheel_logged;
     if(*wheel_logged<16 && pw_trace_on()) {++*wheel_logged;fprintf(stderr,"PWBOOT input_event source=%s type=4 delta=%d at=%d,%d\n",source,delta,cursor_x,cursor_y);}
 }
-/* W248: relative motion (ps5drv type 5: x and y the delta), for mouse look; the first few are logged */
-static void push_relative(int dx,int dy)
+/* W248: relative motion (ps5drv type 5: x and y the delta), for mouse look; the first few of each source are
+ * logged: "rstick" (a profile's right stick), 04.26: "usb" (the USB mouse) and "pointer" (the stick and touchpad) */
+static void push_relative(int dx,int dy,const char *source)
 {
-    static unsigned relative_logged;
+    static unsigned rstick_logged,usb_logged,pointer_logged;
+    unsigned *relative_logged=source[0]=='r'?&rstick_logged:source[0]=='u'?&usb_logged:&pointer_logged;
     pthread_mutex_lock(&lock);
     if(count<QUEUE) {queue[(head+count++)%QUEUE]=(struct PwWineInput){5,0,dx,dy,0};}
     pthread_mutex_unlock(&lock);
-    if(relative_logged<8 && pw_trace_on()) {++relative_logged;fprintf(stderr,"PWPAD rstick mouse dx=%d dy=%d\n",dx,dy);}
+    if(*relative_logged<8 && pw_trace_on()) {++*relative_logged;fprintf(stderr,"PWPAD %s mouse dx=%d dy=%d\n",source,dx,dy);}
 }
 static int move_by(double dx,double dy)
 {
@@ -149,6 +154,40 @@ static int move_by(double dx,double dy)
     if(fx>width-1) fx=width-1; if(fy>height-1) fy=height-1;
     if((int)fx==cursor_x && (int)fy==cursor_y) return 0;
     cursor_x=(int)fx;cursor_y=(int)fy;return 1;
+}
+/* 04.26: every pointer motion goes to Wine as relative motion (ps5drv type 5), never as this pointer's position.
+ * Mouse look puts the cursor back in the middle after each read (GetCursorPos and SetCursorPos, dinput's exclusive
+ * mouse); an absolute move carried this pointer's old place instead, and the game saw the distance from the middle to
+ * it on every move (W303 run-0238: the camera ran to the ceiling or the floor, with the USB mouse and the touchpad).
+ * ps5drv says where the cursor ends up (pw_hw_pad_pointer_at: after relative motion and a program's SetCursorPos);
+ * the poll thread takes it at the start of each read (take_pointer), and the stick and touchpad move from there.
+ * moved_x and moved_y: where this pointer was when its motion was last sent (flush_moves). */
+static int pointer_at_x,pointer_at_y,pointer_at_pending,moved_x,moved_y;
+void pw_hw_pad_pointer_at(int x,int y);
+void pw_hw_pad_pointer_at(int x,int y)
+{
+    pthread_mutex_lock(&lock);
+    pointer_at_x=x;pointer_at_y=y;pointer_at_pending=1;
+    pthread_mutex_unlock(&lock);
+}
+/* the poll thread, at the start of each read: a correction of ps5drv's is never sent back as motion */
+static void take_pointer(void)
+{
+    int pending,x,y;
+    pthread_mutex_lock(&lock);
+    pending=pointer_at_pending;x=pointer_at_x;y=pointer_at_y;pointer_at_pending=0;
+    pthread_mutex_unlock(&lock);
+    if(!pending) return;
+    fx=x;fy=y;
+    if(move_by(0,0)) pw_hw_cursor_moved();
+    moved_x=cursor_x;moved_y=cursor_y;
+}
+/* the poll thread: the stick's and the touchpad's motion since the last send, as relative motion */
+static void flush_moves(void)
+{
+    int dx=cursor_x-moved_x,dy=cursor_y-moved_y;
+    if(dx || dy) push_relative(dx,dy,"pointer");
+    moved_x=cursor_x;moved_y=cursor_y;
 }
 /* W178 (phase 7): the pad for xinput (tools/build-xinput-hw.py, after prospero-win 0470). This
  * thread stays the pad's only reader and keeps its last state for pw_wine_pad. While any program
@@ -224,8 +263,13 @@ void pw_wine_set_rumble(uint32_t left,uint32_t right)
  * Square sent Escape, which quits it. A profile names a key per button and per direction of the left
  * stick, read as digital past a threshold; buttons it does not name do nothing, the right stick does
  * not scroll, and the touchpad stays the pointer (its click too, unless the profile names it).
- * Lines are "source = key", "#" or ";" start a comment; "stick = mouse" keeps the stick as pointer. */
-enum {STICK_UP=1,STICK_DOWN=2,STICK_LEFT=4,STICK_RIGHT=8,STICK_THRESHOLD=64,PROFILE_KEYS=32};
+ * Lines are "source = key", "#" or ";" start a comment; "stick = mouse" keeps the stick as pointer.
+ * 04.36: rstick_up/down/left/right give the right stick's directions keys too (not with "rstick = mouse"); the
+ * overlay's KEY MAPPING (native/hw_overlay.c) writes these files and asks for a reload (pw_hw_pad_profile_reload). A key
+ * may also be mouse_left, mouse_right or mouse_middle (that button, down while the source is held, where the pointer is)
+ * or wheel_up / wheel_down (one notch per press). */
+enum {STICK_UP=1,STICK_DOWN=2,STICK_LEFT=4,STICK_RIGHT=8,RSTICK_UP=16,RSTICK_DOWN=32,RSTICK_LEFT=64,RSTICK_RIGHT=128,
+      STICK_THRESHOLD=64,PROFILE_KEYS=32};
 static struct {uint32_t button,stick,vk;} profile_keys[PROFILE_KEYS];
 static unsigned profile_count;
 static int profile_active,profile_stick_mouse,profile_touchpad;
@@ -234,16 +278,27 @@ static uint32_t stick_keys_down;
  * VK_UP in SMK's profile) sent their own up: letting go of one released the key while the other
  * still held it, and the kart stopped accelerating. A key goes down with its first source and up
  * with its last. */
-static uint8_t profile_held[256];
+/* 04.36: and the mouse targets above the 256 virtual keys (PROFILE_MOUSE_LEFT..PROFILE_WHEEL_DOWN) */
+enum {PROFILE_MOUSE_LEFT=0x100,PROFILE_MOUSE_RIGHT,PROFILE_MOUSE_MIDDLE,PROFILE_WHEEL_UP,PROFILE_WHEEL_DOWN,PROFILE_TARGETS};
+static uint8_t profile_held[PROFILE_TARGETS];
 static char profile_name[96];  /* W213: the program whose profile is active */
 /* W248: "rstick = mouse": the right stick as relative mouse motion, also in game mode */
 enum {RSTICK_SPEED=900};
 static int rstick_mouse,rstick_speed=RSTICK_SPEED,rstick_deadzone=DEADZONE;
 static double rstick_fx,rstick_fy;
+/* 04.36: a target's down or up as an event: a key, a mouse button (ps5drv type 3: 0 left, 1 right, 2 middle, as the USB
+ * mouse's) at the pointer where it is, or one wheel notch on the way down (nothing on the way up) */
+static void profile_send(uint32_t vk,int down)
+{
+    if(vk==PROFILE_WHEEL_UP || vk==PROFILE_WHEEL_DOWN) {if(down) push_wheel(vk==PROFILE_WHEEL_UP?120:-120,"profile");}
+    else if(vk>=PROFILE_MOUSE_LEFT) push(3,vk-PROFILE_MOUSE_LEFT,down,"profile");
+    else push(1,vk,down,"profile");
+}
 static int profile_key(uint32_t vk,int down)
 {
-    if(down? profile_held[vk&0xff]++ : (!profile_held[vk&0xff] || --profile_held[vk&0xff])) return 0;
-    push(1,vk,down,"profile");return 1;
+    if(vk>=PROFILE_TARGETS) return 0;
+    if(down? profile_held[vk]++ : (!profile_held[vk] || --profile_held[vk])) return 0;
+    profile_send(vk,down);return 1;
 }
 static const struct {const char *name;uint32_t button,stick;} profile_sources[]={
     {"cross",ORBIS_PAD_BUTTON_CROSS,0},{"circle",ORBIS_PAD_BUTTON_CIRCLE,0},{"square",ORBIS_PAD_BUTTON_SQUARE,0},
@@ -252,13 +307,17 @@ static const struct {const char *name;uint32_t button,stick;} profile_sources[]=
     {"options",ORBIS_PAD_BUTTON_OPTIONS,0},{"touchpad",ORBIS_PAD_BUTTON_TOUCH_PAD,0},
     {"up",ORBIS_PAD_BUTTON_UP,0},{"down",ORBIS_PAD_BUTTON_DOWN,0},{"left",ORBIS_PAD_BUTTON_LEFT,0},
     {"right",ORBIS_PAD_BUTTON_RIGHT,0},{"stick_up",0,STICK_UP},{"stick_down",0,STICK_DOWN},
-    {"stick_left",0,STICK_LEFT},{"stick_right",0,STICK_RIGHT}};
+    {"stick_left",0,STICK_LEFT},{"stick_right",0,STICK_RIGHT},{"rstick_up",0,RSTICK_UP},{"rstick_down",0,RSTICK_DOWN},
+    {"rstick_left",0,RSTICK_LEFT},{"rstick_right",0,RSTICK_RIGHT}};
 static uint32_t profile_vk(const char *name)
 {
     static const struct {const char *name;uint32_t vk;} keys[]={
         {"up",VK_UP},{"down",VK_DOWN},{"left",VK_LEFT},{"right",VK_RIGHT},{"space",VK_SPACE},{"enter",VK_RETURN},
         {"escape",VK_ESCAPE},{"tab",VK_TAB},{"backspace",VK_BACK},{"shift",VK_SHIFT},{"ctrl",VK_CONTROL},
-        {"alt",VK_MENU},{"home",0x24},{"end",0x23},{"pageup",0x21},{"pagedown",0x22},{"insert",0x2d},{"delete",0x2e}};
+        {"alt",VK_MENU},{"home",0x24},{"end",0x23},{"pageup",0x21},{"pagedown",0x22},{"insert",0x2d},{"delete",0x2e},
+        /* 04.36: mouse buttons and wheel notches (profile_send) */
+        {"mouse_left",PROFILE_MOUSE_LEFT},{"mouse_right",PROFILE_MOUSE_RIGHT},{"mouse_middle",PROFILE_MOUSE_MIDDLE},
+        {"wheel_up",PROFILE_WHEEL_UP},{"wheel_down",PROFILE_WHEEL_DOWN}};
     for(unsigned i=0;i<sizeof(keys)/sizeof(keys[0]);i++) if(!strcasecmp(name,keys[i].name)) return keys[i].vk;
     if(strlen(name)==1 && ((name[0]|0x20)>='a' && (name[0]|0x20)<='z')) return (uint32_t)((name[0]|0x20)-'a'+'A');
     if(strlen(name)==1 && name[0]>='0' && name[0]<='9') return (uint32_t)name[0];
@@ -324,7 +383,17 @@ void pw_hw_pad_profile(const char *exe)
  * another guest); a guest's exit clears only its own profile. */
 static pthread_mutex_t profile_request_lock=PTHREAD_MUTEX_INITIALIZER;
 static char profile_request[96];
-static int profile_request_kind;  /* 0 none, 1 load, 2 clear */
+static int profile_request_kind;  /* 0 none, 1 load, 2 clear, 3 reload (04.36) */
+/* 04.36: the overlay's KEY MAPPING saved <exe>.ini, or removed it: the pad thread loads it again (poll_input), or,
+ * with no file left, clears the profile when it is that program's */
+void pw_hw_pad_profile_reload(const char *exe);
+void pw_hw_pad_profile_reload(const char *exe)
+{
+    pthread_mutex_lock(&profile_request_lock);
+    snprintf(profile_request,sizeof(profile_request),"%s",exe?exe:"");
+    profile_request_kind=3;
+    pthread_mutex_unlock(&profile_request_lock);
+}
 /* W238: kernelbase's overlay closer reports MangoHud through this call ("<mangohud>", which no file
  * name can be): native/hw_overlay.c */
 extern void pw_hw_overlay_mangohud(int loaded);
@@ -390,7 +459,7 @@ void pw_wine_pad_profile(const char *exe,int load)
 }
 static void profile_reset(uint32_t *previous)
 {
-    for(unsigned vk=0;vk<256;vk++) if(profile_held[vk]) {profile_held[vk]=0;push(1,vk,0,"profile");}
+    for(unsigned vk=0;vk<PROFILE_TARGETS;vk++) if(profile_held[vk]) {profile_held[vk]=0;profile_send(vk,0);}
     /* and what the emulation held when a profile takes over */
     for(unsigned i=0;i<sizeof(pad_map)/sizeof(pad_map[0]);i++)
         if(*previous&pad_map[i].button) push(pad_map[i].type,pad_map[i].code,0,"pad");
@@ -415,6 +484,18 @@ static void profile_apply_request(uint32_t *previous)
     } else if(kind==2 && profile_name[0] && !strcasecmp(name,profile_name)) {
         profile_reset(previous);
         fprintf(stderr,"PWPAD guest profile=%s cleared\n",name);
+    } else if(kind==3) {  /* 04.36 */
+        snprintf(file,sizeof(file),"/data/wine-prefix/drive_c/orbis/padmaps/%s.ini",name);
+        FILE *ini=fopen(file,"r");
+        if(ini) {
+            fclose(ini);
+            profile_reset(previous);
+            fprintf(stderr,"PWPAD profile=%s reload (overlay)\n",name);
+            pw_hw_pad_profile(name);
+        } else if(profile_name[0] && !strcasecmp(name,profile_name)) {
+            profile_reset(previous);
+            fprintf(stderr,"PWPAD profile=%s cleared: its file was removed (overlay)\n",name);
+        } else fprintf(stderr,"PWPAD profile=%s reload: no file, keeps %s\n",name,profile_name[0]?profile_name:"-");
     }
 }
 
@@ -449,18 +530,22 @@ static int poll_controller(unsigned reads,uint32_t *previous,int *moved)
             if(*previous&pad_map[i].button) {push(pad_map[i].type,pad_map[i].code,0,"pad");changed=1;}
         if(gaming && (*previous&ORBIS_PAD_BUTTON_TOUCH_PAD)) {push(3,touch_press_code,0,"touchpad");changed=1;}
         /* W181: and the profile's keys */
-        for(unsigned vk=0;gaming && vk<256;vk++)
-            if(profile_held[vk]) {profile_held[vk]=0;push(1,vk,0,"profile");changed=1;}
+        for(unsigned vk=0;gaming && vk<PROFILE_TARGETS;vk++)
+            if(profile_held[vk]) {profile_held[vk]=0;profile_send(vk,0);changed=1;}
         if(gaming) stick_keys_down=0;
     }
     int dx=(int)data.leftStick.x-128,dy=(int)data.leftStick.y-128;
     /* quadratic response: fine aim near the centre, fast at full tilt */
     if(!game_mode && !mouse_off && !(profile_active && !profile_stick_mouse) && (abs(dx)>DEADZONE || abs(dy)>DEADZONE))
         if(move_by(abs(dx)>DEADZONE?(double)dx*abs(dx)/1400.0:0,abs(dy)>DEADZONE?(double)dy*abs(dy)/1400.0:0)) *moved=1;
-    /* W181: a profile's stick keys, on each change of direction */
-    if(profile_active && !profile_stick_mouse && !game_mode) {
-        uint32_t stick=(dy<-STICK_THRESHOLD?STICK_UP:0)|(dy>STICK_THRESHOLD?STICK_DOWN:0)|
+    /* W181: a profile's stick keys, on each change of direction. 04.36: and the right stick's (rstick_*), unless it
+     * is mouse look; the left stick's unless "stick = mouse" */
+    if(profile_active && !game_mode) {
+        int rx=(int)data.rightStick.x-128,rdy=(int)data.rightStick.y-128;
+        uint32_t stick=profile_stick_mouse?0:(dy<-STICK_THRESHOLD?STICK_UP:0)|(dy>STICK_THRESHOLD?STICK_DOWN:0)|
                        (dx<-STICK_THRESHOLD?STICK_LEFT:0)|(dx>STICK_THRESHOLD?STICK_RIGHT:0);
+        if(!rstick_mouse) stick|=(rdy<-STICK_THRESHOLD?RSTICK_UP:0)|(rdy>STICK_THRESHOLD?RSTICK_DOWN:0)|
+                                 (rx<-STICK_THRESHOLD?RSTICK_LEFT:0)|(rx>STICK_THRESHOLD?RSTICK_RIGHT:0);
         for(unsigned i=0;i<profile_count;i++) {
             uint32_t now=stick&profile_keys[i].stick,before=stick_keys_down&profile_keys[i].stick;
             if(profile_keys[i].stick && now!=before && profile_key(profile_keys[i].vk,now!=0)) changed=1;
@@ -503,8 +588,9 @@ static int poll_controller(unsigned reads,uint32_t *previous,int *moved)
             delta[a]=(int)*carry[a];*carry[a]-=delta[a];
         }
         if(delta[0] || delta[1]) {
-            push_relative(delta[0],delta[1]);changed=1;
-            if(move_by(delta[0],delta[1])) pw_hw_cursor_moved();  /* the sink's arrow follows */
+            /* 04.26: not moved here too (flush_moves would send it again): the sink's arrow follows ps5drv
+             * (pw_hw_pad_pointer_at), and mouse look is not stopped at the screen's edge */
+            push_relative(delta[0],delta[1],"rstick");changed=1;
         }
     } else rstick_fx=rstick_fy=0;
     if(!game_mode && !profile_active && !mouse_off && !rstick_mouse && abs(ry)>DEADZONE) {
@@ -539,27 +625,33 @@ static int poll_controller(unsigned reads,uint32_t *previous,int *moved)
     *previous=data.buttons;
     return changed;
 }
+/* 04.26: the USB mouse's motion of one read, summed, goes as relative motion (push_relative "usb") before a
+ * click or a wheel notch of the same read and at its end. Not moved here: ps5drv says where the cursor went
+ * (pw_hw_pad_pointer_at), a program's warp included. */
 static int poll_mouse(uint32_t *previous,int *moved)
 {
     PwMouseData samples[MOUSE_SAMPLES];memset(samples,0,sizeof(samples));
-    int got=mouse_read(mouse,samples,MOUSE_SAMPLES),changed=0;
+    int got=mouse_read(mouse,samples,MOUSE_SAMPLES),changed=0,rel_x=0,rel_y=0;
     for(int i=0;i<got && i<MOUSE_SAMPLES;i++) {
         if(!samples[i].connected) continue;
-        if((samples[i].x || samples[i].y) && move_by(samples[i].x,samples[i].y)) *moved=1;
+        rel_x+=samples[i].x;rel_y+=samples[i].y;
         /* one wheel notch per unit; the sign follows the device, checked on hardware */
         if(samples[i].wheel) {
-            if(*moved) {push(2,0,0,"mouse");*moved=0;}
+            if(*moved) {flush_moves();*moved=0;}
+            if(rel_x || rel_y) {push_relative(rel_x,rel_y,"usb");rel_x=rel_y=0;}
             push_wheel(samples[i].wheel*120,"mouse");changed=1;
         }
         for(uint32_t b=0;b<3;b++) {
             uint32_t now=samples[i].buttons&(1u<<b),before=*previous&(1u<<b);
             if(now!=before) {
-                if(*moved) {push(2,0,0,"mouse");*moved=0;}  /* the click lands where the pointer is */
+                if(*moved) {flush_moves();*moved=0;}  /* the click lands where the pointer is */
+                if(rel_x || rel_y) {push_relative(rel_x,rel_y,"usb");rel_x=rel_y=0;}
                 push(3,b,now!=0,"mouse");changed=1;
             }
         }
         *previous=samples[i].buttons;
     }
+    if(rel_x || rel_y) {push_relative(rel_x,rel_y,"usb");changed=1;}
     return changed;
 }
 static int poll_keyboard(uint16_t *held,unsigned *held_count,uint32_t *mods)
@@ -708,10 +800,11 @@ static void *poll_input(void *unused)
         /* W031 showed the USB modules do not disturb the controller: open them at once. */
         if(reads==1) open_usb_devices();
         if(profile_request_kind) profile_apply_request(&pad_buttons);  /* W213: guest profiles */
+        take_pointer();  /* 04.26: the stick and touchpad move from where the cursor is */
         if(pad>=0) changed|=poll_controller(reads,&pad_buttons,&moved);
         if(mouse>=0) changed|=poll_mouse(&mouse_buttons,&moved);
         if(keyboard>=0) changed|=poll_keyboard(held,&held_count,&mods);
-        if(moved) {push(2,0,0,"pointer");pw_hw_cursor_moved();}
+        if(moved) {flush_moves();pw_hw_cursor_moved();}  /* 04.26: relative motion, not the position */
         if(moved || changed) wake_all();
         sceKernelUsleep(POLL_US);
     }
@@ -740,6 +833,8 @@ static void start(void)
     const char *size=getenv("WINE_PS5_DESKTOP");unsigned w,h;
     if(size && sscanf(size,"%ux%u",&w,&h)==2 && w>=320 && h>=200 && w<=3840 && h<=2160) {width=(int)w;height=(int)h;}
     cursor_x=width/2;cursor_y=height/2;fx=cursor_x;fy=cursor_y;
+    /* 04.26: the one absolute move: Wine's cursor starts where this pointer does; motion is relative from here */
+    moved_x=cursor_x;moved_y=cursor_y;push(2,0,0,"start");
     pw_hw_pad_handle();
     input_user=pad_user;
     cursor_valid=1;

@@ -36,19 +36,23 @@ Juegos reportados funcionando en PS4 física. Los resultados dependen del juego 
 la build; esta lista no implica compatibilidad completa ni haber terminado cada juego.
 
 - Age of Empires 2
+- Alan Wake's American Nightmare — descargado mediante el cliente no oficial de Steam incluido, con su emulador de Steam (gbe_fork) activado desde la página del juego y Gráficos del overlay en wined3d + OpenGL (con DXVK y con wined3d + Vulkan se cuelga).
 - Call of Duty
 - GTA 3
 - GTA San Andreas
 - GTA Vice City
 - Juegos DOS vía DOSBox Pure — Mario & Luigi y Carmen Sandiego.
 - Max Payne 1 y 2
+- Need for Speed Most Wanted
 - Need for Speed Underground 2
-- Portal — descargado mediante el cliente no oficial de Steam incluido.
+- Portal y Portal 2 — descargados mediante el cliente no oficial de Steam incluido.
+- Prince of Persia: Las Arenas del Tiempo — desde su propio lanzador, que corre en un proceso separado.
 - Quake 3
 - Solitaire, Spider y Minesweeper — incluidos en el PKG.
 - SuperMarioKart
 - The Lost Forest
-- Worms 4
+- Worms 3D — desde su propio lanzador, que corre en un proceso separado; la resolución se elige en el lanzador.
+- Worms 4 Mayhem — también desde su propio lanzador, después de importar sus claves de instalación con un archivo .reg.
 
 ## Capturas
 

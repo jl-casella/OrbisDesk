@@ -49,6 +49,22 @@ static pthread_mutex_t frames_lock = PTHREAD_MUTEX_INITIALIZER;
 /* platform/ps4/pw_wine_sink_ps4.c (W165): the presents per second for its F12 frame counter */
 extern void pw_wine_vk_fps( unsigned int tenths );
 
+/* Frame generation, stage 1 (docs/FRAME_GENERATION.md): every present, with its process time in
+ * microseconds, for whoever set the hook (the hardware sink, pw_wine_sink_ps4.c). A pointer, not a
+ * call: the ELFs that link this file without that sink (the PoP child) leave it NULL. It runs on the
+ * presenting thread before the present returns, so the pixels are still the ones just presented. */
+void (*pw_vk_present_hook)( const void *swapchain, const void *pixels, unsigned int pitch, unsigned int width,
+                            unsigned int height, int format, uint64_t present_us );
+
+/* 04.26: every Vulkan present so far, all swapchains; the overlay (native/hw_overlay.c) holds MangoHud's key until
+ * one comes after it, since MangoHud reads its key in its present hook, before this one */
+static volatile unsigned int present_count;
+unsigned int pw_wine_vk_presents( void );
+unsigned int pw_wine_vk_presents( void )
+{
+    return present_count;
+}
+
 static void presented( const void *swapchain, const void *pixels, uint32_t pitch, uint32_t width, uint32_t height,
                        int format, uint64_t blit_wait_ns )
 {
@@ -60,6 +76,7 @@ static void presented( const void *swapchain, const void *pixels, uint32_t pitch
     unsigned int i;
 
     pthread_mutex_lock( &frames_lock );
+    present_count++;  /* 04.26 */
     for (i = 0; i < PW_VK_SWAPCHAINS && frames[i].swapchain != swapchain; i++) {}
     if (i == PW_VK_SWAPCHAINS) i = next_slot++ % PW_VK_SWAPCHAINS;
     frames[i].swapchain = swapchain;
@@ -87,6 +104,7 @@ static void presented( const void *swapchain, const void *pixels, uint32_t pitch
     }
     pthread_mutex_unlock( &frames_lock );
     if (fps_tenths) pw_wine_vk_fps( fps_tenths );
+    if (pw_vk_present_hook) pw_vk_present_hook( swapchain, pixels, pitch, width, height, format, now );
 }
 
 static int last_frame( const void *swapchain, const void **pixels, unsigned int *pitch, unsigned int *width,

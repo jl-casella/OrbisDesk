@@ -54,6 +54,42 @@ selected=work/'fd.c';selected.write_text(text[:start]+replacement+text[end:]);ob
 # step (fd event, request included, or timer) running more than 5 s. Read only.
 fd_text=selected.read_text()
 for old,new in (
+    ('''    struct object        obj;         /* object header */
+    const struct fd_ops *fd_ops;''',
+     '''    struct object        obj;         /* object header */
+#ifdef __ORBIS__
+    struct timeout_user *request_retry;
+#endif
+    const struct fd_ops *fd_ops;'''),
+    ('''    struct fd *fd = (struct fd *)obj;
+
+    free_async_queue( &fd->read_q );''',
+     '''    struct fd *fd = (struct fd *)obj;
+
+#ifdef __ORBIS__
+    if (fd->request_retry) remove_timeout_user( fd->request_retry );
+#endif
+    free_async_queue( &fd->read_q );'''),
+    ('''/* get the events we want to poll() for */''',
+     '''#ifdef __ORBIS__
+static void pw_resume_request( void *private )
+{
+    struct fd *fd = private;
+    fd->request_retry = NULL;
+    set_fd_events( fd, POLLIN );
+}
+
+void pw_defer_request( struct fd *fd );
+void pw_defer_request( struct fd *fd )
+{
+    /* Defer only this client. Other fds and timers keep their normal dispatch. */
+    if (!fd->request_retry &&
+        (fd->request_retry = add_timeout_user( -10 * 10000, pw_resume_request, fd )))
+        set_fd_events( fd, -1 );
+}
+#endif
+
+/* get the events we want to poll() for */'''),
     ('''static inline void fd_poll_event( struct fd *fd, int event )
 {
     if (fd->fd_ops->poll_event) fd->fd_ops->poll_event( fd, event );
@@ -67,6 +103,8 @@ for old,new in (
 static volatile unsigned int pw_server_step;
 static volatile int pw_server_kind, pw_server_unix_fd, pw_server_event;
 static void *volatile pw_server_func;
+
+extern volatile int pw_request_stage, pw_request_fd;   /* request.c, PoP D.7 */
 
 static void *pw_server_watch( void *arg )
 {
@@ -87,11 +125,11 @@ static void *pw_server_watch( void *arg )
                 struct thread *client = current;  /* set while a request is handled */
 
                 len = snprintf( text, sizeof(text),
-                                "PWSERVER stuck_s=%u kind=%s func=%p watch=%p unix_fd=%d event=%x client=%04x req=%d\\n",
+                                "PWSERVER stuck_s=%u kind=%s func=%p watch=%p unix_fd=%d event=%x client=%04x req=%d rstage=%x rfd=%d\\n",
                                 stuck, pw_server_kind == 1 ? "fd" : "timer", pw_server_func, (void *)pw_server_watch,
                                 pw_server_unix_fd,
                                 pw_server_event, client ? client->id : 0,
-                                client ? (int)client->req.request_header.req : -1 );
+                                client ? (int)client->req.request_header.req : -1, pw_request_stage, pw_request_fd );
             }
         }
         else
@@ -232,10 +270,33 @@ static int get_next_timeout( struct timespec *ts )
     fprintf( stderr, "PWSERVER watch rc=%d\\n", watch_rc );
     if (!watch_rc) pthread_detach( watch );
 #endif
-''')):
+'''),
+    # LockFile/LockFileEx (docs/SEAMONKEY_FILE_LOCKS.md; 04.12: SeaMonkey's NS_ERROR_STORAGE_BUSY on YouTube): the SDK's
+    # struct flock and F_RDLCK/F_WRLCK are Linux's and reached the kernel unchanged, so every byte-range lock failed with
+    # EINVAL (STATUS_INVALID_PARAMETER). The two calls go through pw_wine_fcntl_lock (platform/ps4/pw_wine_fs.c).
+    ('''static int set_unix_lock( struct fd *fd, file_pos_t start, file_pos_t end, int type )
+{''',
+     '''#ifdef __ORBIS__
+#define PW_LOCK_FCNTL pw_wine_fcntl_lock  /* OrbisDesk: the kernel's struct flock (tools/build-wine-delete-server.py) */
+extern int pw_wine_fcntl_lock( int fd, int cmd, struct flock *lock );
+#else
+#define PW_LOCK_FCNTL fcntl
+#endif
+
+static int set_unix_lock( struct fd *fd, file_pos_t start, file_pos_t end, int type )
+{'''),
+    ('''        if (fcntl( fd->unix_fd, F_SETLK, &fl ) != -1) return 1;''',
+     '''        if (PW_LOCK_FCNTL( fd->unix_fd, F_SETLK, &fl ) != -1) return 1;'''),
+    ('''            if (fcntl( fd->unix_fd, F_GETLK, &fl ) != -1)''',
+     '''            if (PW_LOCK_FCNTL( fd->unix_fd, F_GETLK, &fl ) != -1)''')):
     if fd_text.count(old)!=1:raise SystemExit('Unexpected context in server/fd.c: '+old[:60])
     fd_text=fd_text.replace(old,new)
-selected.write_text(fd_text)
+fd_init = '    fd->poll_index = -1;'
+if fd_text.count(fd_init) != 2: raise SystemExit('Unexpected fd initializers')
+selected.write_text(fd_text.replace(fd_init, fd_init + '''
+#ifdef __ORBIS__
+    fd->request_retry = NULL;
+#endif'''))
 command=[str(selected) if arg==str(source) else str(obj) if arg==str(ROOT/'build/wine-server/fd.o') else arg for arg in entry['command']]
 with (work/'compile.log').open('w') as log:subprocess.run(command,cwd=ROOT/'.deps/wine/ps4-unix',stdout=log,stderr=subprocess.STDOUT,check=True)
 # Phase 8: server/sock.c, as described above
@@ -306,7 +367,43 @@ for old,new in (
         extern int pw_wine_thread_setaffinity( long tid, unsigned long long mask );
         ret = pw_wine_thread_setaffinity( thread->unix_tid, affinity );
     }
-#elif defined(HAVE_SCHED_SETAFFINITY)''')):
+#elif defined(HAVE_SCHED_SETAFFINITY)'''),
+    # 04.25 (run-0224, run-0229: the title ran out of descriptors, most of them threads' pipes; docs/SEAMONKEY_DESCRIPTORS.md):
+    # a thread made by NtCreateThreadEx may send one end of a Unix socket pair as its request fd, already non-blocking
+    # (tools/prepare-wine-boot.py, ntdll thread.c); fcntl may refuse a socket on the console, so it gets the same
+    # fallback as the server's other sockets. Its replies go back on the same descriptor (reply_fd -2).
+    ('''DECL_HANDLER(new_thread)
+{''',
+     '''#ifdef __ORBIS__
+extern int pw_wine_socket_nonblock( int fd );  /* OrbisDesk 04.25 (platform/ps4/pw_wine_net.c) */
+#endif
+DECL_HANDLER(new_thread)
+{'''),
+    ('''    else if (request_fd == -1 || fcntl( request_fd, F_SETFL, O_NONBLOCK ) == -1)''',
+     '''#ifdef __ORBIS__
+    else if (request_fd == -1 || (fcntl( request_fd, F_SETFL, O_NONBLOCK ) == -1 &&
+                                  pw_wine_socket_nonblock( request_fd ) == -1))  /* OrbisDesk 04.25 */
+#else
+    else if (request_fd == -1 || fcntl( request_fd, F_SETFL, O_NONBLOCK ) == -1)
+#endif'''),
+    ('''static int init_thread( struct thread *thread, int reply_fd, int wait_fd )
+{''',
+     '''static int init_thread( struct thread *thread, int reply_fd, int wait_fd )
+{
+#ifdef __ORBIS__
+    /* OrbisDesk 04.25: replies on the thread's request socket (tools/build-wine-delete-server.py) */
+    if (reply_fd == -2 && thread->request_fd && !thread->reply_fd)
+    {
+        if ((wait_fd = thread_get_inflight_fd( thread, wait_fd )) == -1)
+        {
+            set_error( STATUS_TOO_MANY_OPENED_FILES );
+            return 0;
+        }
+        thread->reply_fd = (struct fd *)grab_object( thread->request_fd );
+        thread->wait_fd  = create_anonymous_fd( &thread_fd_ops, wait_fd, &thread->obj, 0 );
+        return thread->wait_fd != NULL;
+    }
+#endif''')):
     if thread_text.count(old)!=1:raise SystemExit('Unexpected context in server/thread.c: '+old[:60])
     thread_text=thread_text.replace(old,new)
 thread_selected=work/'thread.c';thread_selected.write_text(thread_text);thread_obj=work/'thread.o'
@@ -331,6 +428,26 @@ for old,new in (
 static const timeout_t save_period = 5 * -TICKS_PER_SEC;  /* delay between periodic saves */
 #else
 static const timeout_t save_period = 30 * -TICKS_PER_SEC;  /* delay between periodic saves */
+#endif'''),
+    ('''    save_all_subkeys( key, f );
+    ret = !fclose(f);''',
+     '''    save_all_subkeys( key, f );
+#ifdef __ORBIS__
+    /* OrbisDesk PoP D.7 (hardware 2026-11-13 and 14: a console restart while the title ran left system.reg,
+     * user.reg and userdef.reg at 0 bytes, and Wine's boot stopped): the temporary file reaches the disk before
+     * it replaces the old one (tools/build-wine-delete-server.py) */
+    if (!fflush( f )) fsync( fileno( f ));
+#endif
+    ret = !fclose(f);'''),
+    ('''        if (!lstat( filename, &st ) && (!S_ISREG(st.st_mode) || st.st_nlink > 1))''',
+     '''#ifdef __ORBIS__
+        /* OrbisDesk PoP D.7 (hardware 2026-11-14: system.reg at 0 bytes again after a forced restart, with the
+         * fsync below in place): this branch truncates the file and writes it in place, and the SDK's struct
+         * stat does not match the kernel's (native/wine_hardware.c, W230), so st_nlink is not reliable; the
+         * prefix's registry files are plain files, always replaced through a temporary one */
+        if (0 && !lstat( filename, &st ))
+#else
+        if (!lstat( filename, &st ) && (!S_ISREG(st.st_mode) || st.st_nlink > 1))
 #endif'''),
     ('''        /* we don't need to do anything here with the current implementation */
         release_object( key );''',
@@ -406,13 +523,122 @@ process_command=[str(process_selected) if arg==str(process_source) else str(proc
 if str(process_obj) not in process_command or str(process_selected) not in process_command:raise SystemExit('process.o recipe changed')
 with (work/'process-compile.log').open('w') as log:
     subprocess.run(process_command,cwd=ROOT/'.deps/wine/ps4-unix',stdout=log,stderr=subprocess.STDOUT,check=True)
+# PoP D.7: server/request.c. read_request reads a client's request in a loop that ends on EAGAIN, so it relies on
+# the request fd being non-blocking. A separate process's threads hand their request fds over the bridge socket
+# (native/pop_loader_spawn.h); hardware 2026-11-13 (Tony Hawk's launcher, separate, starting its DirectInput and
+# XInput threads) left the whole title frozen with "PWSERVER stuck_s=60 kind=fd func=thread_poll_event ... req=-1":
+# the server sat in read() on such an fd. Each read now first asks poll() with no wait; nothing to read is EAGAIN,
+# as on a non-blocking fd, so the server never blocks on a client.
+request_entry=next(e for e in base['results'] if e['unit']=='request')
+request_source=ROOT/'.deps/wine/ps4-overlay/server/request.c'
+if sha(request_source)!=request_entry['source_sha256']:raise SystemExit('Server request source changed from proven input')
+request_text=request_source.read_text()
+for old,new in (
+    ("""void read_request( struct thread *thread )
+{
+    int ret;
+""","""#ifdef __ORBIS__
+/* OrbisDesk PoP D.7: read() on a client fd only when poll() says there is data (tools/build-wine-delete-server.py) */
+/* PoP D.7 (hardware 2026-11-13, d29: still "stuck ... func=thread_poll_event client=0000 req=-1" with Tony Hawk's
+ * launcher in a separate process): where a request read stands, reported by pw_server_watch (fd.c). 1 = poll,
+ * 2 | revents << 8 = read after poll answered, 0 = not reading */
+volatile int pw_request_stage, pw_request_fd;
+#include <sys/ioctl.h>
+#ifndef FIONREAD
+#define FIONREAD 0x4004667f   /* FreeBSD sys/filio.h, _IOR('f', 127, int); the SDK headers have Linux's only */
+#endif
+extern void pw_defer_request( struct fd *fd );
+static ssize_t pw_request_read( struct thread *thread, void *buffer, size_t size, int header )
+{
+    struct fd *request_fd = thread->request_fd;
+    int fd = get_unix_fd( request_fd );
+    struct pollfd pfd = { fd, POLLIN, 0 };
+    ssize_t ret;
+
+    pw_request_fd = fd;
+    pw_request_stage = 1;
+    if (poll( &pfd, 1, 0 ) <= 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR)))
+        goto retry;
+    /* PoP D.7 (hardware 2026-11-13, d30: "rstage=102 rfd=195", poll() answered POLLIN for a separate process's
+     * request pipe and read() then blocked the server): read no more than the kernel says is waiting. Nothing
+     * waiting is EAGAIN, as on a non-blocking descriptor; a descriptor without FIONREAD keeps the plain read. */
+    {
+        int waiting = -1;
+
+        if (!ioctl( fd, FIONREAD, &waiting ))
+        {
+            if (waiting <= 0 || (header && (size_t)waiting < size))
+            {
+                static unsigned int reported;
+                extern int pw_trace_enabled( void );  /* alpha 2: platform/ps4/pw_trace.h */
+
+                if (pw_trace_enabled() && (++reported <= 16 || !(reported % 256)))
+                    fprintf( stderr, "PWSERVER request_deferred fd=%d revents=%x waiting=%d header=%d "
+                             "client=%04x req=%d remaining=%u total=%u n=%u\\n",
+                             fd, pfd.revents, waiting, header, thread->id,
+                             header ? -1 : (int)thread->req.request_header.req,
+                             header ? 0 : thread->req_toread,
+                             header ? 0 : thread->req.request_header.request_size, reported );
+                if (pfd.revents & (POLLHUP | POLLERR))
+                {
+                    pw_request_stage = 0;
+                    return 0;
+                }
+                goto retry;
+            }
+            if ((size_t)waiting < size) size = waiting;
+        }
+    }
+    pw_request_stage = 2 | (pfd.revents << 8);
+    ret = read( fd, buffer, size );
+    pw_request_stage = 0;
+    return ret;
+
+retry:
+    pw_request_stage = 0;
+    pw_defer_request( request_fd );
+    errno = EWOULDBLOCK;
+    return -1;
+}
+#define REQUEST_READ(thread, buffer, size, header) pw_request_read( thread, buffer, size, header )
+#else
+#define REQUEST_READ(thread, buffer, size, header) read( get_unix_fd( (thread)->request_fd ), buffer, size )
+#endif
+
+void read_request( struct thread *thread )
+{
+    int ret;
+"""),
+    ('''read( get_unix_fd( thread->request_fd ), &thread->req,
+                         sizeof(thread->req) )''',
+     '''REQUEST_READ( thread, &thread->req, sizeof(thread->req), 1 )'''),
+    ('''read( get_unix_fd( thread->request_fd ),
+                    (char *)thread->req_data + thread->req.request_header.request_size
+                      - thread->req_toread,
+                    thread->req_toread )''',
+     '''REQUEST_READ( thread,
+                            (char *)thread->req_data + thread->req.request_header.request_size
+                              - thread->req_toread,
+                            thread->req_toread, 0 )''')):
+    if request_text.count(old)!=1:raise SystemExit('Unexpected context in server/request.c: '+old[:60])
+    request_text=request_text.replace(old,new)
+if '#include <poll.h>' not in request_text:
+    request_text=request_text.replace('#include <errno.h>\n','#include <errno.h>\n#include <poll.h>\n#include <sys/ioctl.h>\n',1)
+    if '#include <poll.h>' not in request_text:raise SystemExit('server/request.c: no errno.h include to follow')
+request_selected=work/'request.c';request_selected.write_text(request_text);request_obj=work/'request.o'
+request_command=[str(request_selected) if arg==str(request_source) else str(request_obj) if arg==str(ROOT/'build/wine-server/request.o') else arg
+                 for arg in request_entry['command']]
+if str(request_obj) not in request_command or str(request_selected) not in request_command:raise SystemExit('request.o recipe changed')
+with (work/'request-compile.log').open('w') as log:
+    subprocess.run(request_command,cwd=ROOT/'.deps/wine/ps4-unix',stdout=log,stderr=subprocess.STDOUT,check=True)
 units=[]
 for unit in base['results']:
     original=ROOT/'build/wine-server'/(unit['unit']+'.o')
     if sha(original)!=unit['object_sha256']:raise SystemExit('Original server object changed: '+unit['unit'])
     units.append(obj if unit['unit']=='fd' else sock_obj if unit['unit']=='sock' else
                  thread_obj if unit['unit']=='thread' else registry_obj if unit['unit']=='registry' else
-                 ptrace_obj if unit['unit']=='ptrace' else process_obj if unit['unit']=='process' else original)
+                 ptrace_obj if unit['unit']=='ptrace' else process_obj if unit['unit']=='process' else
+                 request_obj if unit['unit']=='request' else original)
 combined=work/'combined.o'
 subprocess.run(['ld.lld','-r','-o',str(combined),*map(str,units)],check=True)
 mapping=ROOT/'build/wine-server/namespace.txt'
@@ -428,5 +654,7 @@ report={'wine_commit':base['wine_commit'],'original_source_sha256':sha(source),'
         'registry':{'original_source_sha256':sha(registry_source),'source_sha256':sha(registry_selected),
                     'object_sha256':sha(registry_obj),'command':registry_command},
         'ptrace':{'original_source_sha256':sha(ptrace_source),'source_sha256':sha(ptrace_selected),
-                  'object_sha256':sha(ptrace_obj),'command':ptrace_command}}
+                  'object_sha256':sha(ptrace_obj),'command':ptrace_command},
+        'request':{'original_source_sha256':sha(request_source),'source_sha256':sha(request_selected),
+                   'object_sha256':sha(request_obj),'command':request_command}}
 (work/'report.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report))

@@ -29,6 +29,13 @@ registered"). docs/investigacion-gta-vc-base-0x400000.md.
      splitters, WAVE parser, MPEG audio and video decoders) are left out: nothing here creates
      those classes, and listing them would offer filters that are not there;
    - pwmpeg1's class and filter, input MEDIATYPE_Stream/MPEG1System, outputs RGB32 and PCM.
+4. alpha-1 (Warcraft III 1.07, run-0187: its movies are AVI, DivX video and MP3 audio, and RenderFile failed, since
+   Wine's AVI splitter is in winegstreamer too; Game.dll then read through its NULL graph): an AVI splitter,
+   native/pwmpeg1/pwavi.c, built into pwmpeg1.ax as its second class. It splits without decoding, as Windows'
+   AVI Splitter does: the video and audio decoders are the program's own (Warcraft III registers blizzard.ax,
+   DivX) or the system's (ACM Wrapper with l3codeca.acm for MP3). Registered with input
+   MEDIATYPE_Stream/MEDIASUBTYPE_Avi above the merit of the sealed prefix's winegstreamer splitters, which
+   fail to load here, so that quartz tries it first.
    The audio renderers are registered by devenum at run time (DirectSound devices), as on Wine.
 Output: out/dshow-i386/i386-windows/, system.reg.add and manifest.json; tools/build-wine-hardware.py
 copies the Wine modules to wine/lib/wine/i386-windows and syswow64, pwmpeg1.ax to syswow64, and
@@ -245,8 +252,10 @@ wine_inc=['-Iinclude','-I'+src+'/include','-I'+src+'/include/msvcrt','-D_UCRT','
 i386_flags=['-fno-strict-aliasing','-ffunction-sections','-fno-omit-frame-pointer','-msse2','-gdwarf-4','-g','-O2',
             '-mpreferred-stack-boundary=2','-mlong-double-64',*PREFIX_MAP]
 filter_source=ROOT/'native/pwmpeg1/pwmpeg1.c';spec=ROOT/'native/pwmpeg1/pwmpeg1.spec'
-obj=work/'pwmpeg1.o'
+avi_source=ROOT/'native/pwmpeg1/pwavi.c'  # alpha-1: the AVI splitter, the module's second class
+obj=work/'pwmpeg1.o';avi_obj=work/'pwavi.o'
 run(['i686-w64-mingw32-gcc','-c','-o',obj,filter_source,'-I'+str(PLMPEG),*wine_inc,'-Wall',*i386_flags])
+run(['i686-w64-mingw32-gcc','-c','-o',avi_obj,avi_source,*wine_inc,'-Wall',*i386_flags])
 libs=[BUILD/p for p in ('libs/strmbase/i386-windows/libstrmbase.a','libs/strmiids/i386-windows/libstrmiids.a',
       'libs/uuid/i386-windows/libuuid.a','libs/dxguid/i386-windows/libdxguid.a','dlls/ole32/i386-windows/libole32.a',
       'dlls/user32/i386-windows/libuser32.a','libs/winecrt0/i386-windows/libwinecrt0.a',
@@ -256,11 +265,12 @@ for lib in libs:
     if not lib.is_file():raise SystemExit('missing library: '+str(lib))
 ax=out/ARCH/'pwmpeg1.ax'
 run(['tools/winegcc/winegcc','-o',ax,'--wine-objdir','.','--cc-cmd=i686-w64-mingw32-gcc','-b','i686-w64-mingw32',
-     '-shared',spec,obj,*libs,'-Wl,--disable-stdcall-fixup','-Wl,--build-id'])
+     '-shared',spec,obj,avi_obj,*libs,'-Wl,--disable-stdcall-fixup','-Wl,--build-id'])
 for name in imports(ax):
     if name not in present and name not in modules:raise SystemExit('pwmpeg1.ax imports '+name+', which is not staged')
 modules['pwmpeg1.ax']={'path':ARCH+'/pwmpeg1.ax','sha256':sha(ax),'source':str(filter_source.relative_to(ROOT)),
-                       'source_sha256':sha(filter_source),'builtin':False,'imports':imports(ax)}
+                       'source_sha256':sha(filter_source),'builtin':False,'imports':imports(ax),
+                       'sources':{str(s.relative_to(ROOT)):sha(s) for s in (filter_source,avi_source,spec)}}
 
 # ---- 3. registration ----
 writes={};order=[]
@@ -290,6 +300,9 @@ GUID_NULL=bytes(16)
 PWMPEG1=struct.pack('<IHH',0xd1abd1fb,0x1295,0x47e2)+bytes([0xa8,0xfc,0x65,0x86,0x8f,0x9c,0x0c,0x90])
 if b'0xd1abd1fb, 0x1295, 0x47e2, {0xa8, 0xfc, 0x65, 0x86, 0x8f, 0x9c, 0x0c, 0x90}' not in filter_source.read_bytes():
     raise SystemExit('pwmpeg1.c CLSID differs from the stager')
+PWAVI=struct.pack('<IHH',0xd1abd1fc,0x1295,0x47e2)+bytes([0xa8,0xfc,0x65,0x86,0x8f,0x9c,0x0c,0x90])
+if b'0xd1abd1fc, 0x1295, 0x47e2, {0xa8, 0xfc, 0x65, 0x86, 0x8f, 0x9c, 0x0c, 0x90}' not in avi_source.read_bytes():
+    raise SystemExit('pwavi.c CLSID differs from the stager')
 MERIT_PREFERRED,MERIT_NORMAL,MERIT_UNLIKELY,MERIT_DO_NOT_USE=0x800000,0x600000,0x400000,0x200000
 REG_PINFLAG_B_ZERO,REG_PINFLAG_B_RENDERER,REG_PINFLAG_B_OUTPUT=1,2,8
 def filter_data(merit,pins):
@@ -349,6 +362,14 @@ instance('CLSID_LegacyAmFilterCategory',PWMPEG1,'PW MPEG-1 Decoder',MERIT_NORMAL
          [(0,[(S,uuids['MEDIASUBTYPE_MPEG1System'])]),
           (REG_PINFLAG_B_OUTPUT|REG_PINFLAG_B_ZERO,[(V,uuids['MEDIASUBTYPE_RGB32'])]),
           (REG_PINFLAG_B_OUTPUT|REG_PINFLAG_B_ZERO,[(A,uuids['MEDIASUBTYPE_PCM'])])])
+# alpha-1: pwavi (in pwmpeg1.ax), above the sealed prefix's "AVI Splitter" (winegstreamer, MERIT_NORMAL)
+key=['Software','Classes','Wow6432Node','CLSID',guid_text(PWAVI)]
+emit(key,'',('sz','PW AVI Splitter'))
+emit(key+['InprocServer32'],'',('sz','C:\\windows\\system32\\pwmpeg1.ax'))
+emit(key+['InprocServer32'],'ThreadingModel',('sz','Both'))
+instance('CLSID_LegacyAmFilterCategory',PWAVI,'PW AVI Splitter',MERIT_NORMAL+1,
+         [(0,[(S,uuids['MEDIASUBTYPE_Avi'])]),
+          (REG_PINFLAG_B_OUTPUT,[(V,GUID_NULL)])])
 text='';count=0
 for key,name in order:
     if name is not None:continue

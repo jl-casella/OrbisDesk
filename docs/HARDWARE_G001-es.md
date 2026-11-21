@@ -2,6 +2,8 @@
 
 [English](HARDWARE_G001.md) | [Español](HARDWARE_G001-es.md)
 
+**Corrección de firmware (2026-11-11):** la PS4 Pro Baikal del usuario usa **12.50**, no 12.52. Esto corrige la identificación de nuestra consola, no los resultados de terceros citados aquí. Se conserva el ancla antigua para no romper enlaces históricos; los logs originales no se reescriben.
+
 ## Objetivo
 
 Probar que la GPU de la PS4 se puede usar con Vulkan desde un homebrew compilado con nuestro SDK. Es el primer paso hacia Vulkan en Wine (H1: el mismo driver dentro del ELF de Wine; H2: winevulkan; H3: `vkcube.exe` con contador de FPS; H4: windows-glxgears mediante Zink).
@@ -17,7 +19,7 @@ Probar que la GPU de la PS4 se puede usar con Vulkan desde un homebrew compilado
   - el log va a `/data/orbis-win/g001/`;
   - el paso 3 dura 20 s (1200 cuadros);
   - una vez por segundo se registra una línea `fps`, con los cuadros presentados y los FPS que permitirían el render y la espera del fence solos, sin vsync.
-- DolphinPS4 informa que su probe funciona en una PS4 Slim con 12.52 y en una Pro con 11.00 (`README.md`). En una Pro con 12.52 no está probado.
+- DolphinPS4 informa que su probe funciona en una PS4 Slim con 12.52 y en una Pro con 11.00 (`README.md`). En nuestra Pro con 12.50 no estaba probado en esa etapa.
 
 ## Cómo se construye
 
@@ -57,7 +59,9 @@ El OELF tiene un solo segmento `LOAD` RW, que es lo que exige `check-oelf.cmake`
   - `vk-probe-stderr.log`;
   - `mesa.log`.
 
-## G001 en la PS4 Pro (12.52)
+<a id="g001-en-la-ps4-pro-1252"></a>
+
+## G001 en la PS4 Pro (12.50)
 
 Evidencia: `reports/vk-probe-g001/physical/20261101T164147Z/vk-probe.log`. El `vk-probe-stderr.log` quedó vacío y no se generó `mesa.log`.
 
@@ -304,6 +308,7 @@ Conclusión: RADV sobre GNM funciona en esta consola con nuestro SDK y nuestra i
   - **Íconos:** `tools/make-icons.py` dibuja en Python los íconos de 16, 32 y 48 px y los escribe como `.ico` (BMP de 32 bits con máscara), en `C:\orbis\icons`: engranajes, cubo, triángulo RGB y una "M" naranja. Los programas de prueba no tienen íconos propios.
   - **MangoHud.conf inicial:** fps, frametime, gráfico de frametime, CPU, GPU, RAM, y posición arriba a la izquierda.
   - **MangoJuice no se incluyó.** MangoJuice-Windows (`e2ec0755`) es una aplicación Vala con GTK4, libadwaita-1 y gee-0.8, y no tiene releases. Hay que compilar toda la pila GTK4 para Windows y tener `valac` en el host, que no está instalado.
+    - Más adelante: [MangoJuice](MANGOJUICE-es.md) sí se compila e instala (tools/build-mangojuice-hw.py) y reemplaza a "MangoHud Config".
   - PKG `/data/pkg/orbis-win-W090-3456e351caaf.pkg` (APP_VER 01.89).
 - Corrección: el usuario aclara que el overlay **no apareció** ni en W089 ni en W090.
   - En los dos, `vkcube` carga las mismas DLL. Entre ellas está `dnsapi`, que viene de `IPHLPAPI` y que solo importa `libMangoHud.dll`. `wined3d` arranca en `no3d` y se consulta la RAM.

@@ -43,6 +43,16 @@ BUILD_PACKAGE_PREFIXES = ('binutils', 'gcc', 'g++', 'cpp', 'clang', 'llvm', 'lld
                           'mingw-w64', 'bison', 'flex', 'gettext', 'autoconf', 'automake', 'libtool', 'make',
                           'pkg-config', 'pkgconf', 'python3', 'perl', 'libc6', 'libc-', 'libstdc++', 'libgcc',
                           'nasm', 'meson', 'ninja', 'cmake', 'p7zip')
+# On the hosted image for its own tools (PostgreSQL's apt repository) and read by none of these builds. Its point
+# releases changed both keys between the two jobs of one prebuilt run (2026-11-19: libpq-dev 18.6 and 18.7).
+IMAGE_ONLY_PACKAGES = ('libpq-dev',)
+
+
+def upstream_version(version):
+    """A Debian version without its revision (2.35-0ubuntu3.18 -> 2.35). Ubuntu's security rebuilds of one
+    upstream release do not change what these builds compile, but runner images pick them up at different times
+    (2026-11-19: glibc 2.35-0ubuntu3.15 and 3.18 in two jobs of one run, so the product found no prebuilt block)."""
+    return version.rsplit('-', 1)[0] if '-' in version else version
 
 
 def fingerprint(value):
@@ -270,9 +280,12 @@ def restore(bundle, key_record, destinations, permitted_links):
 def build_packages(lines):
     selected = []
     for line in lines:
-        name = line.split('=', 1)[0].split(':', 1)[0]
+        package, _, version = line.partition('=')
+        name = package.split(':', 1)[0]
+        if name in IMAGE_ONLY_PACKAGES:
+            continue
         if name.endswith('-dev') or name.startswith(BUILD_PACKAGE_PREFIXES):
-            selected.append(line)
+            selected.append(package + '=' + upstream_version(version))
     return sorted(selected)
 
 

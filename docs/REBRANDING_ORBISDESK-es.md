@@ -57,4 +57,4 @@ W283 transferida con lectura de vuelta el 2026-11-07 a `/data/pkg/orbisdesk-W283
 
 ## Nombre limpio desde W284
 
-El título PS4 pasa a ser sólo `OrbisDesk` y el archivo distribuido `OrbisDesk.pkg`. La versión visible se muestra únicamente en el selector de arranque NORMAL/ROOT. Se elimina del resto de pantallas de carga y error. La versión técnica del SFO sigue aumentando (03.83 en esta entrega) para mantener las actualizaciones; W284 permanece en logs y evidencia interna. No cambia el funcionamiento de Wine.
+El título PS4 pasa a ser sólo `OrbisDesk` y el archivo distribuido `OrbisDesk.pkg`. La versión visible se muestra únicamente en el selector de arranque NORMAL/ROOT. Se elimina del resto de pantallas de carga y error. Desde la versión de la app 04.10 no hay selector (todo inicio es ROOT), y la versión se muestra en cambio al pie de la pantalla de carga del inicio. La versión técnica del SFO sigue aumentando (03.83 en esta entrega) para mantener las actualizaciones; W284 permanece en logs y evidencia interna. No cambia el funcionamiento de Wine.

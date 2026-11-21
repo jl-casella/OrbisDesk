@@ -63,7 +63,7 @@ def put(local,remote,expected):
 # W172/W175/W292: the user.reg keys the console keeps (tools/console_state.py, shared with the
 # first-run installer's install.json)
 USER_REG='wine-prefix/user.reg';REG_HEADER=b'WINE REGISTRY Version 2'
-from console_state import CONSOLE_OWNED
+from console_state import CONSOLE_OWNED,CONSOLE_OWNED_FILES
 reset=[key.lower() for key in manifest.get('user_reg_reset',[])]
 if not set(reset)<=set(CONSOLE_OWNED):raise SystemExit('user_reg_reset names keys the console does not own: %r'%reset)
 def reg_blocks(text):
@@ -171,17 +171,42 @@ if not args.skip_runtime:
                   'added=%d'%len(added),'left_deleted=%d'%len(deleted),'ledger=%s'%('found' if ledger else 'absent'),flush=True)
             if not retrying(chmod,remote,0o666):chmod_failed.append(name)
             continue
+        if name in CONSOLE_OWNED_FILES and retrying(remote_hash,remote) is not None:
+            # the user's copy (MangoJuice's MangoHud.conf) stays; the build's is only the clean-install default
+            counts['kept']=counts.get('kept',0)+1
+            print(index,'kept',name,'console-owned',flush=True)
+            continue
+        if name.endswith('.prx'):
+            # GoldHEN's FTP: an overwritten PRX can stay loaded, and RETR returns the decrypted ELF, so delete
+            # first and verify by a slice of the ELF's text (as tools/upload-pop-separate.py does)
+            prx=(runtime/name).read_bytes()
+            if sha(prx)!=entry['sha256']:raise SystemExit('runtime file differs from manifest: '+name)
+            elf=(ROOT/'build/pop-wine-child'/(pathlib.PurePosixPath(name).stem.replace('-','_')+'.elf')).read_bytes()
+            def put_prx():
+                try:ftp.delete(remote)
+                except ftplib.error_perm:pass
+                ftp.storbinary('STOR '+remote,io.BytesIO(prx),blocksize=1<<20)
+                readback=fetch(remote) or b''
+                if not (len(readback)>len(prx) and elf[0x4000:0x4000+0x10000] in readback):
+                    raise SystemExit('read-back mismatch (decrypted text slice): '+remote)
+                return 'uploaded'
+            state=retrying(put_prx);counts[state]+=1
+            print(index,state,name,'(decrypted text slice)',flush=True)
+            # dlopen refuses a PRX without the execute bit (EACCES), as the installer's hw_install_mode knows
+            if not retrying(chmod,remote,0o755):chmod_failed.append(name)
+            continue
         state=retrying(put,runtime/name,remote,entry['sha256']);counts[state]+=1
         print(index,state,name,flush=True)
         if not retrying(chmod,remote,0o666 if name.split('/')[0] in WRITABLE else 0o644):chmod_failed.append(name)
     record['runtime']={'files':len(manifest['runtime_files']),
         'bytes':sum(e['bytes'] for e in manifest['runtime_files'].values()),**counts,'chmod_failed':chmod_failed}
     # W170: files earlier builds put in the persistent prefix and this one no longer ships.
-    # Only paths under wine-prefix/ that this build does not upload; an absent file is fine.
+    # Only paths under wine-prefix/ or wine/lib/wine/ (2026-11-20: library copies the prefix now holds alone)
+    # that this build does not upload; an absent file is fine.
     obsolete={'deleted':[],'absent':[]}
     def delete_file(path):return ftp.delete(path)
     for name in manifest.get('obsolete_files',[]):
-        if not name.startswith('wine-prefix/') or '..' in name.split('/') or name in manifest['runtime_files']:
+        if not name.startswith(('wine-prefix/','wine/lib/wine/')) or '..' in name.split('/') or name in manifest['runtime_files']:
             raise SystemExit('refusing obsolete path '+name)
         try:obsolete['deleted'].append({'path':name,'reply':retrying(delete_file,'/data/'+name)})
         except ftplib.error_perm as error:obsolete['absent'].append({'path':name,'reply':str(error)})

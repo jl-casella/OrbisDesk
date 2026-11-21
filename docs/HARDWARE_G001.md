@@ -5,6 +5,8 @@
 
 [English](HARDWARE_G001.md) | [Español](HARDWARE_G001-es.md)
 
+**Firmware correction (2026-11-11):** the user's PS4 Pro Baikal runs **12.50**, not 12.52. This corrects our console identity, not the cited third-party results. The old anchor is retained for historical links; original logs are not rewritten.
+
 <a id="objetivo"></a>
 
 
@@ -26,7 +28,7 @@ Prove that the GPU of the PS4 can be used with Vulkan from a homebrew compiled w
   - the log is to `/data/orbis-win/g001/`;
   - the pass 3 lasts 20 s (1200 paintings);
   - Once per second, a line `fps` is recorded, with the tables presented and the FPS that would allow the rendering and waiting of the fice alone, without vsync.
-- DolphinPS4 reports that your probe works in a PS4 Slim with 12.52 and a Pro with 11.00 (`README.md`). In a Pro with 12.52 it's not proven.
+- DolphinPS4 reports that your probe works in a PS4 Slim with 12.52 and a Pro with 11.00 (`README.md`). On our Pro running 12.50 it had not been tested at that stage.
 
 <a id="cómo-se-construye"></a>
 
@@ -75,7 +77,7 @@ The ELF has a single segment `LOAD` RW, which is what requires `check-oelf.cmake
 <a id="g001-en-la-ps4-pro-1252"></a>
 
 
-## G001 in PS4 Pro (12.52)
+## G001 in PS4 Pro (12.50)
 
 Evidence: `reports/vk-probe-g001/physical/20261101T164147Z/vk-probe.log`. The `vk-probe-stderr.log` was empty and did not generate `mesa.log`.
 
@@ -339,6 +341,7 @@ Conclusion: RADV over GNM works on this console with our SDK and our homebrew id
   - **Icons:** `tools/make-icons.py` draw in Python the icons of 16, 32 and 48 px and writes them as `.ico` (BMP of 32 bit with mask), in `C:\orbis\icons`: gears, cube, triangle RGB and an orange "M." The test programs have no icons of their own.
   - **MangoHud.initial conf:** fps, frametime, frametime chart, CPU, GPU, RAM, and position up left.
   - **MangoJuice not included.** MangoJuice - Windows (`e2ec0755`) is a Vala application with GTK4, libadwait- 1 and ge- 0.8, and has no releases. You have to compile the whole GTK4 battery for Windows and have `valac` in the host, which is not installed.
+    - Later: [MangoJuice](MANGOJUICE.md) is built and staged after all (tools/build-mangojuice-hw.py) and replaces "MangoHud Config".
   - PKG `/data/pkg/orbis-win-W090-3456e351caaf.pkg` (APP_VER 01.89).
 - Correction: the user clarifies that the overlay **did not appear** either in W089 or in W090.
   - In both of these, `vkcube` load the same DLL. Among them is `dnsapi`, which comes from `IPHLPAPI` and which only matters `libMangoHud.dll`. `wined3d` starts at `no3d` and the RAM is consulted.

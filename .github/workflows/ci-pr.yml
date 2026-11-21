@@ -12,12 +12,28 @@ concurrency:
 jobs:
   platform:
     name: Platform matrix
-    if: github.event_name == 'pull_request'
-    needs: [metadata, host]
+    # Skipped (a stable, non-blocking result) when every changed file is outside the matrix: tools/ci/pr_scope.py
+    if: github.event_name == 'pull_request' && needs.scope.outputs.matrix == 'true'
+    needs: [metadata, host, scope]
     uses: ./.github/workflows/matrix-manual.yml
     with:
       profile: platform-v1
       cache_mode: reuse
+  scope:
+    name: Matrix scope
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.scope.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          # the PR merge commit and its first parent, the base branch tip
+          fetch-depth: 2
+      - name: Changed files against the base branch
+        id: scope
+        run: python3 tools/ci/pr_scope.py --base HEAD^1 --head HEAD
   metadata:
     runs-on: ubuntu-22.04
     timeout-minutes: 10

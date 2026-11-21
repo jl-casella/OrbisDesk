@@ -197,18 +197,98 @@ char *pw_wine_getcwd(int side,char *buffer,size_t bytes)
 #ifdef __ORBIS__
 extern int sysctl(const int *,unsigned int,void *,size_t *,const void *,size_t);
 #endif
+/* SeaMonkey descriptors (docs/SEAMONKEY_DESCRIPTORS.md; W303 04.11: YouTube stopped when the title ran out
+ * at open=958, its disk cache and explorer's folder listing failing with it): what the descriptors are, so
+ * a run tells a thread's pipes (six per live thread with the in-process server: request, reply, wait,
+ * both ends) from sockets and from files (two per open handle: the server's and the client's cached
+ * copy); and the kernel's descriptor limit. libkernel's getrlimit takes FreeBSD's numbers: RLIMIT_NOFILE
+ * is 8 there (the SDK header's 7 is Linux's, FreeBSD's RLIMIT_NPROC). */
+#ifdef __ORBIS__
+struct pw_rlimit {int64_t current,maximum;};
+extern int pw_getrlimit(int,struct pw_rlimit *) __asm__("getrlimit");  /* not the SDK header's prototype */
+#endif
+/* 04.24 (run-0224: SeaMonkey with GPU compositing hit EMFILE 10 s in at open=798, after 958 in run-0180 and 1035 in
+ * run-0212, with RLIMIT_NOFILE at 13952): the limit is not the table's. The kernel's own counters, by name (the
+ * numeric MIBs gave ENOENT): kern.openfiles is every process's open files, so it tells a console-wide limit from
+ * the title's own. Each value as the kernel returns it (int or long); -1 and the errno when it refuses. */
+#ifdef __ORBIS__
+extern int sysctlbyname(const char *,void *,size_t *,const void *,size_t);
+#endif
+static int kernel_counters(char *line,size_t bytes)
+{
+    static const char *const names[]={"kern.openfiles","kern.maxfiles","kern.maxfilesperproc","kern.maxusers",
+                                      "kern.ipc.numopensockets","kern.ipc.maxsockets","kern.ipc.pipekva",
+                                      "kern.ipc.maxpipekva"};
+    int len=0;
+    for(unsigned i=0;i<sizeof(names)/sizeof(names[0]) && len<(int)bytes;++i) {
+        long long value=-1;int rc=ENOSYS;
+#ifdef __ORBIS__
+        union {int i;long long l;} raw={.l=0};size_t size=sizeof(raw);
+        rc=sysctlbyname(names[i],&raw,&size,NULL,0)?errno:0;
+        if(!rc) value=size==sizeof(int)?raw.i:raw.l;
+#endif
+        if(rc) len+=snprintf(line+len,bytes-len," %s=-1/%d",names[i],rc);
+        else len+=snprintf(line+len,bytes-len," %s=%lld",names[i],value);
+    }
+    return len;
+}
+/* The kinds of the open descriptors, as descriptor_report counts them; -1 in each on no scan */
+struct descriptor_kinds {int open,highest,files,folders,pipes,sockets,others,unknown;};
+static void descriptor_count(struct descriptor_kinds *kinds)
+{
+    memset(kinds,0,sizeof(*kinds));kinds->highest=-1;
+    for(int i=0;i<8192;++i) if(fcntl(i,F_GETFD)!=-1) {
+        struct stat st;
+        kinds->open++;kinds->highest=i;
+        if(pw_wine_fstat(i,&st)) kinds->unknown++;
+        else if(S_ISREG(st.st_mode)) kinds->files++;
+        else if(S_ISDIR(st.st_mode)) kinds->folders++;
+        else if(S_ISFIFO(st.st_mode)) kinds->pipes++;
+        else if(S_ISSOCK(st.st_mode)) kinds->sockets++;
+        else kinds->others++;
+    }
+}
+/* 04.24: at each fd_high, what the descriptors are, to see which kind grows to the limit. 04.26 (run-0234): a thread
+ * made by NtCreateThreadEx holds three pipe ends since 04.25 (its wait pipe, the thread's two and the server's one) and
+ * two socket ends (tools/prepare-wine-boot.py), so threads~ is pipes/3; a process's first thread still holds seven.
+ * Every kern.* name answered ENOENT in run-0229 and run-0234, so they are read only once, at the first EMFILE. */
+static void descriptor_growth(int fd)
+{
+    struct descriptor_kinds k;
+    descriptor_count(&k);
+    if(pw_trace_on()) fprintf(stderr,"PWFS descriptor_growth fd=%d open=%d files=%d folders=%d pipes=%d sockets=%d other=%d unknown=%d"
+            " threads~%d\n",fd,k.open,k.files,k.folders,k.pipes,k.sockets,k.others,k.unknown,k.pipes/3);
+}
 static void descriptor_report(void)
 {
     int open_count=0,highest=-1,per_process=-1,system=-1,rc_process=-1,rc_system=-1;
-    for(int i=0;i<8192;++i) if(fcntl(i,F_GETFD)!=-1) {open_count++;highest=i;}
+    int files=0,folders=0,pipes=0,sockets=0,others=0,unknown=0;
+    for(int i=0;i<8192;++i) if(fcntl(i,F_GETFD)!=-1) {
+        struct stat st;
+        open_count++;highest=i;
+        if(pw_wine_fstat(i,&st)) unknown++;
+        else if(S_ISREG(st.st_mode)) files++;
+        else if(S_ISDIR(st.st_mode)) folders++;
+        else if(S_ISFIFO(st.st_mode)) pipes++;
+        else if(S_ISSOCK(st.st_mode)) sockets++;
+        else others++;
+    }
+    long long limit_current=-1,limit_maximum=-1;int rc_limit=-1;
 #ifdef __ORBIS__
     int mib[2]={1 /* CTL_KERN */,27 /* KERN_MAXFILESPERPROC */};size_t size=sizeof(per_process);
     rc_process=sysctl(mib,2,&per_process,&size,NULL,0)?errno:0;
     mib[1]=7 /* KERN_MAXFILES */;size=sizeof(system);
     rc_system=sysctl(mib,2,&system,&size,NULL,0)?errno:0;
+    struct pw_rlimit limit={-1,-1};
+    rc_limit=pw_getrlimit(8 /* FreeBSD RLIMIT_NOFILE */,&limit)?errno:0;
+    limit_current=limit.current;limit_maximum=limit.maximum;
 #endif
     fprintf(stderr,"PWFS descriptors open=%d highest=%d maxfilesperproc=%d errno=%d maxfiles=%d errno=%d\n",
             open_count,highest,per_process,rc_process,system,rc_system);
+    fprintf(stderr,"PWFS descriptor_kinds files=%d folders=%d pipes=%d sockets=%d other=%d unknown=%d "
+            "nofile=%lld/%lld errno=%d\n",files,folders,pipes,sockets,others,unknown,limit_current,limit_maximum,rc_limit);
+    char counters[512];kernel_counters(counters,sizeof(counters));
+    fprintf(stderr,"PWFS kernel_files%s\n",counters);  /* 04.24 */
 }
 static void open_trace(const char *path,int fd)
 {
@@ -222,6 +302,7 @@ static void open_trace(const char *path,int fd)
     if(fd>=high_mark) {
         high_mark=fd+64;
         fprintf(stderr,"PWFS fd_high fd=%d path=%s\n",fd,path);
+        descriptor_growth(fd);  /* 04.24 */
     }
     if(fd<0 && (saved==EMFILE || saved==ENFILE)) {
         unsigned n=__atomic_add_fetch(&descriptor_failures,1,__ATOMIC_RELAXED);
@@ -264,6 +345,50 @@ int pw_wine_close(int fd)
 {
     pthread_mutex_lock(&lock);int rc=close(fd);if(!rc) forget_locked(fd);
     pthread_mutex_unlock(&lock);return rc;
+}
+/* fcntl byte-range locks (F_GETLK, F_SETLK, F_SETLKW) for wineserver's LockFile/LockFileEx
+ * (docs/SEAMONKEY_FILE_LOCKS.md). The SDK's F_GETLK/F_SETLK/F_SETLKW are the kernel's (FreeBSD)
+ * numbers, but its struct flock and F_RDLCK/F_WRLCK are Linux's, and its fcntl hands the pointer
+ * to the kernel unchanged. The kernel then read the lock type from the wrong bytes (0, not a lock
+ * type) and refused every lock with EINVAL: LockFileEx failed with ERROR_INVALID_PARAMETER and
+ * SQLite reported SQLITE_BUSY (SeaMonkey: NS_ERROR_STORAGE_BUSY). Here the lock goes to the
+ * kernel in its own layout and comes back translated; the first failures are traced. */
+#ifdef __ORBIS__
+struct pw_kernel_flock {int64_t l_start,l_len;int32_t l_pid;int16_t l_type,l_whence;int32_t l_sysid;};
+_Static_assert(sizeof(struct pw_kernel_flock)==32,"FreeBSD struct flock");
+enum {PW_KERNEL_RDLCK=1,PW_KERNEL_UNLCK=2,PW_KERNEL_WRLCK=3};
+#endif
+int pw_wine_fcntl_lock(int fd,int cmd,struct flock *lock)
+{
+#ifdef __ORBIS__
+    struct pw_kernel_flock kernel;memset(&kernel,0,sizeof(kernel));
+    kernel.l_start=lock->l_start;kernel.l_len=lock->l_len;kernel.l_pid=lock->l_pid;kernel.l_whence=lock->l_whence;
+    switch(lock->l_type) {
+    case F_RDLCK:kernel.l_type=PW_KERNEL_RDLCK;break;
+    case F_WRLCK:kernel.l_type=PW_KERNEL_WRLCK;break;
+    case F_UNLCK:kernel.l_type=PW_KERNEL_UNLCK;break;
+    default:errno=EINVAL;return -1;
+    }
+    int rc=fcntl(fd,cmd,&kernel);  /* the SDK's fcntl passes the pointer through for these commands */
+    if(rc==-1) {
+        static int failures;int saved=errno;
+        /* EBADF for a write lock: the handle is read-only (wineserver opened its file O_RDONLY) and
+         * set_unix_lock asks again for a read lock, as on any Wine (04.14: SQLite's read-only
+         * connections, PENDING byte). Not a failure; only a refused read lock or another error is. */
+        if(!(saved==EBADF && lock->l_type==F_WRLCK) && __atomic_fetch_add(&failures,1,__ATOMIC_RELAXED)<8)
+            fprintf(stderr,"PWFS lock_failed fd=%d cmd=%d type=%s start=%lld len=%lld errno=%d\n",fd,cmd,
+                    lock->l_type==F_RDLCK?"read":lock->l_type==F_WRLCK?"write":"unlock",
+                    (long long)lock->l_start,(long long)lock->l_len,saved);
+        errno=saved;return -1;
+    }
+    if(cmd==F_GETLK) {
+        lock->l_type=kernel.l_type==PW_KERNEL_RDLCK?F_RDLCK:kernel.l_type==PW_KERNEL_WRLCK?F_WRLCK:F_UNLCK;
+        lock->l_whence=kernel.l_whence;lock->l_start=kernel.l_start;lock->l_len=kernel.l_len;lock->l_pid=kernel.l_pid;
+    }
+    return rc;
+#else
+    return fcntl(fd,cmd,lock);
+#endif
 }
 #ifdef __ORBIS__
 /* A real duplicate without dup(): pass the descriptor through a private socket pair with
@@ -353,6 +478,43 @@ int pw_wine_openat(int side,int directory,const char *path,int flags,...)
     full[prefix++]='/';memcpy(full+prefix,path,tail+1);
     return pw_wine_open(side,full,flags,mode);
 }
+/* PoP D.7 (hardware 2026-11-13: Tony Hawk's American Wasteland's launcher, run in a separate process, said
+ * "Please install DirectX 9.0c": its FindFirstFileA on C:\windows\system32\d3d9.dll failed with
+ * ERROR_NOT_SUPPORTED, as every folder listing there did except the current folder's). In a separate process
+ * (native/pop_wine_child.c) every directory descriptor comes from the title's wineserver over the bridge, so no
+ * record of this process has its device and inode. Wine's client looks a path up before the server opens it
+ * (lookup_unix_name's fstatat), so the folders looked up are remembered here by device and inode, and a
+ * descriptor without a record takes the path of the folder with its identity, checked again before use. */
+enum {SEEN_DIRECTORIES=256};
+static struct {dev_t dev;ino_t ino;char path[PATH_BYTES];} seen[SEEN_DIRECTORIES];
+static unsigned seen_count,seen_next;
+static pthread_mutex_t seen_lock=PTHREAD_MUTEX_INITIALIZER;
+static void seen_directory(const struct stat *st,const char *path)
+{
+    if(!st->st_ino || strnlen(path,PATH_BYTES)>=PATH_BYTES) return;  /* no identity, no record (W110) */
+    pthread_mutex_lock(&seen_lock);
+    unsigned i=0;
+    while(i<seen_count && (seen[i].dev!=st->st_dev || seen[i].ino!=st->st_ino)) ++i;
+    if(i==seen_count) {
+        if(seen_count<SEEN_DIRECTORIES) i=seen_count++;
+        else {i=seen_next;seen_next=(seen_next+1)%SEEN_DIRECTORIES;}
+    }
+    seen[i].dev=st->st_dev;seen[i].ino=st->st_ino;strcpy(seen[i].path,path);
+    pthread_mutex_unlock(&seen_lock);
+}
+static int seen_path(const struct stat *st,char *out)
+{
+    int found=0;
+    if(!st->st_ino) return -1;
+    pthread_mutex_lock(&seen_lock);
+    for(unsigned i=0;i<seen_count && !found;++i)
+        if(seen[i].dev==st->st_dev && seen[i].ino==st->st_ino) {strcpy(out,seen[i].path);found=1;}
+    pthread_mutex_unlock(&seen_lock);
+    struct stat again;
+    if(found && (pw_wine_stat(out,&again) || again.st_dev!=st->st_dev || again.st_ino!=st->st_ino)) found=0;
+    return found?0:-1;
+}
+
 /* The canonical path of an open directory. W048: a descriptor that arrived by SCM_RIGHTS
  * (every handle the in-process server passes to a thread, and pw_wine_dup since W033)
  * has no record of its own, so NtQueryDirectoryFile's fchdir failed with ENOTSUP and
@@ -370,6 +532,7 @@ static int directory_path(int fd,const struct stat *st,char *out)
             strcpy(out,records[i].path);found=1;
         }
     pthread_mutex_unlock(&lock);
+    if(!found && !seen_path(st,out)) found=1;   /* PoP D.7: a descriptor from the title's server */
     return found?0:-1;
 }
 /* W050: Wine's lookup_unix_name tries one fstatat(root_fd, "<prefix>/dosdevices/c:/")
@@ -402,7 +565,12 @@ int pw_wine_fchdir(int side,int fd)
     return pw_wine_chdir(side,path);
 }
 int pw_wine_path_stat(int side,const char *path,struct stat *out,int follow)
-{char full[PATH_BYTES];if(resolve(side,path,full)) return -1;return follow?pw_wine_stat(full,out):pw_wine_lstat(full,out);}
+{
+    char full[PATH_BYTES];if(resolve(side,path,full)) return -1;
+    int rc=follow?pw_wine_stat(full,out):pw_wine_lstat(full,out);
+    if(!rc && S_ISDIR(out->st_mode)) {int saved=errno;seen_directory(out,full);errno=saved;}   /* PoP D.7 */
+    return rc;
+}
 int pw_wine_mkdir(int side,const char *path,mode_t mode)
 {char full[PATH_BYTES];return resolve(side,path,full)?-1:mkdir(full,mode);}
 int pw_wine_unlink(int side,const char *path)

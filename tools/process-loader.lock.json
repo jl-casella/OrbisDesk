@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "sdk": {
+    "version": "v0.9",
+    "source_commit": "1a85cb5a8ea12dc2dcfbcc878700d0d097245de7",
+    "url": "https://github.com/ps4-payload-dev/sdk/releases/download/v0.9/ps4-payload-sdk.zip",
+    "sha256": "3190e88255a72161e5ce2f22a8ae8f638a2c5a9d1ff1e0209ed692d36b4d9ec5"
+  },
+  "sdk_source": {
+    "commit": "1a85cb5a8ea12dc2dcfbcc878700d0d097245de7",
+    "url": "https://codeload.github.com/ps4-payload-dev/sdk/tar.gz/1a85cb5a8ea12dc2dcfbcc878700d0d097245de7",
+    "sha256": "f1aadc552d49d8eb019ed728e9a6cce347ace485325f9cc31e207d5c39f940cb"
+  },
+  "elfldr": {
+    "commit": "a4817404f5cb2d5c177b05cd5e4548b74e6c2725",
+    "url": "https://codeload.github.com/ps4-payload-dev/elfldr/tar.gz/a4817404f5cb2d5c177b05cd5e4548b74e6c2725",
+    "sha256": "9d351ad25c57bc63f15d0a3ecbd9b7e5c45317d08e593d61d56a71dbb003c81c"
+  }
+}

@@ -7,6 +7,9 @@ W114. Pinned checkouts in games.lock.json, compiled unchanged with llvm-mingw in
   cards.dll, which cardlib loads at run time. Solitaire and cardlib are public domain,
   Spider is GPL-2.0, cards.dll LGPL-2.1-or-later: source and build commands go in
   games-source.tar.gz. Only ReactOS's version/manifest resource includes are empty stubs.
+  The archive stays in out/games and is not shipped (2026-11-20: 93 MB of the console's runtime). Each release's
+  <tag>-third-party-sources.tar carries the pinned ReactOS revision (third-party-sources.lock.json,
+  tools/ci/release.py), and this script, which writes the stub includes, is in the repository at the tag.
 Output: out/games/ and manifest.json with sha256.
 """
 import argparse,hashlib,json,pathlib,shutil,subprocess,tarfile
@@ -79,13 +82,13 @@ ReactOS {locks['reactos']['repository']} revision {commit}
 sol.exe: ReactOS Solitaire (Klondike), public domain (J Brown cardlib example).
 spider.exe: ReactOS Spider Solitaire, GPL-2.0 (ReactOS-COPYING.txt).
 cards.dll: ReactOS cards, LGPL-2.1-or-later (ReactOS-COPYING.LIB.txt); images: cards-images-COPYING.txt.
-Corresponding source and build commands for the ReactOS files: games-source.tar.gz.
+Corresponding source: ReactOS revision {commit} in the release's <tag>-third-party-sources.tar
+(repositories/reactos-games-*.tar.gz), built by tools/build-games.py in OrbisDesk's repository at the release tag.
 '''
 (out/'games-README.txt').write_text(readme)
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 PROGRAMS=('sol.exe','spider.exe','cards.dll')
-NOTICES=('ReactOS-COPYING.txt','ReactOS-COPYING.LIB.txt','cards-images-COPYING.txt','games-README.txt',
-         'games-source.tar.gz')
+NOTICES=('ReactOS-COPYING.txt','ReactOS-COPYING.LIB.txt','cards-images-COPYING.txt','games-README.txt')
 used=('reactos',)
 licenses=dict(locks['reactos']['licenses'])
 manifest={'schema_version':1,'sources':{k:{'repository':locks[k]['repository'],'commit':locks[k]['commit']} for k in used},

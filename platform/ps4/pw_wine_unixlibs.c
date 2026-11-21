@@ -25,8 +25,14 @@ extern const void *pw_nsi_unix_call_funcs[],*pw_nsi_unix_call_wow64_funcs[];
 /* W180 (phase 9): crypt32's Unix side, without GnuTLS or a CA bundle (platform/ps4/pw_crypt32_unix.c,
  * tools/build-unixlibs-ps4.py); without it crypt32.dll, and every xul.dll through wintrust, failed */
 extern const void *pw_crypt32_unix_call_funcs[],*pw_crypt32_unix_call_wow64_funcs[];
+/* MangoJuice: dwrite's Unix side on the boot ELF's FreeType (platform/ps4/pw_dwrite_unix.c,
+ * tools/build-unixlibs-ps4.py); MSYS2's harfbuzz, and through it GTK, imports DWrite.dll */
+extern const void *pw_dwrite_unix_call_funcs[],*pw_dwrite_unix_call_wow64_funcs[];
 /* W178 (phase 7): xinput's Unix side, the console's pad as controller 0 (tools/build-xinput-hw.py) */
 extern const void *pw_xinput_unix_call_funcs[],*pw_xinput_unix_call_wow64_funcs[];
+/* alpha-1 (run-0165): "pwguest", kernelbase's calls at a guest's end that reach win32u's Unix side: the Vulkan
+ * device memory an ended guest left is freed (tools/build-win32u-ps4.py, tools/build-guest-hw.py) */
+extern const void *pw_guest_unix_call_funcs[],*pw_guest_unix_call_wow64_funcs[];
 /* The pad comes from the hardware launcher (native/hw_pad.c). An ELF without it has no pad:
  * xinput's pad_init then fails and xinput keeps its HID path. */
 __attribute__((weak)) int pw_wine_pad_available(void)
@@ -46,6 +52,13 @@ __attribute__((weak)) void pw_wine_set_rumble(unsigned int left,unsigned int rig
 __attribute__((weak)) void pw_wine_pad_profile(const char *exe,int load)
 {
     (void)exe;(void)load;
+}
+/* 04.31: the world (64 or 32) a guest starts in, for the overlay's RENDERER (native/hw_overlay.c, through xinput's Unix
+ * library, tools/build-xinput-hw.py); create-fself refuses an undefined weak reference, so an ELF without the overlay
+ * (bootstrap.elf) gets this, and no overlay to tell */
+__attribute__((weak)) void pw_wine_pad_program_bits(const char *exe,int bits)
+{
+    (void)exe;(void)bits;
 }
 /* HID stack: winebus's Unix side with the console's pad as an Xbox 360 HID gamepad
  * (tools/build-hidstack-hw.py, native/winebus_orbis.c). Without hw_pad.c its bus init fails. */
@@ -88,7 +101,9 @@ int pw_wine_static_unixlib(const char *path,int wow,const void **funcs,PwUnixLib
         {"nsi.so",pw_nsi_unix_call_funcs,pw_nsi_unix_call_wow64_funcs,NULL},
         {"xinput1_3.so",pw_xinput_unix_call_funcs,pw_xinput_unix_call_wow64_funcs,NULL},
         {"crypt32.so",pw_crypt32_unix_call_funcs,pw_crypt32_unix_call_wow64_funcs,NULL},
-        {"winebus.so",pw_winebus_unix_call_funcs,NULL,NULL}};
+        {"dwrite.so",pw_dwrite_unix_call_funcs,pw_dwrite_unix_call_wow64_funcs,NULL},
+        {"winebus.so",pw_winebus_unix_call_funcs,NULL,NULL},
+        {"pwguest.so",pw_guest_unix_call_funcs,pw_guest_unix_call_wow64_funcs,NULL}};
     const char *base=path?strrchr(path,'/'):NULL;
     base=base?base+1:path;
     if(!base) return 0;

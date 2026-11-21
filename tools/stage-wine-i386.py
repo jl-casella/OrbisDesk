@@ -45,6 +45,8 @@ X64_TARGETS=('mmdevapi','dsound','msacm32','avifil32','shfolder')
 # W261 (W259/W260: games found Wine's DLLs missing one at a time): every other module of the pinned tree a Windows
 # program could import, absent from both views, for each view. Left out, with the reason: W261_LEFT_OUT.
 W261_I386=(
+    # Wine Mono (tools/stage-wine-mono.py): .NET programs load through mscoree (PES 2014's settings.exe, run-0163)
+    'mscoree.dll', 'mscorwks.dll',
     'acledit.dll', 'aclui.dll', 'activeds.dll', 'actxprxy.dll', 'adsldp.dll', 'adsldpc.dll', 'amsi.dll',
     'amstream.dll', 'apphelp.dll', 'atl.dll', 'atl100.dll', 'atl110.dll', 'atl80.dll', 'atl90.dll', 'atlthunk.dll',
     'atmlib.dll', 'authz.dll', 'avrt.dll', 'bcryptprimitives.dll', 'bluetoothapis.dll', 'browseui.dll', 'cards.dll',
@@ -114,6 +116,7 @@ W261_I386=(
     # W303: the 32-bit Gecko (xul.dll) imports it; earlier sealed prefixes had it in syswow64
     'userenv.dll',)
 W261_X64=(
+    'mscoree.dll', 'mscorwks.dll',  # Wine Mono (tools/stage-wine-mono.py)
     'acledit.dll', 'aclui.dll', 'activeds.dll', 'actxprxy.dll', 'adsldp.dll', 'adsldpc.dll', 'amsi.dll',
     'amstream.dll', 'apphelp.dll', 'atl.dll', 'atl100.dll', 'atl110.dll', 'atl80.dll', 'atl90.dll', 'atlthunk.dll', 'atmlib.dll',
     'authz.dll', 'avicap32.dll', 'bcryptprimitives.dll', 'bluetoothapis.dll', 'browseui.dll', 'cdosys.dll',
@@ -190,8 +193,6 @@ W261_LEFT_OUT={
          'wineps.drv', 'winprint.dll', 'xpsprint.dll',),
     'its Unix side (.so) is not in the Orbis ELF (platform/ps4/pw_wine_unixlibs.c)':
         ('ctapi32.dll', 'dwrite.dll', 'kerberos.dll', 'msv1_0.dll', 'odbc32.dll', 'qcap.dll', 'winedmo.dll',),
-    'needs Wine Mono, not staged':
-        ('mscoree.dll', 'mscorwks.dll',),
     '16-bit Windows support; no 16-bit layer here':
         ('olethk32.dll', 'vdmdbg.dll', 'w32skrnl.dll', 'wow32.dll',),
     'API set schema: the 64-bit one comes from out/wine-pe64; not loaded as a DLL by programs':

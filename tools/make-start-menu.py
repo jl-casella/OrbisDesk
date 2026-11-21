@@ -27,15 +27,17 @@ MENU={
                     ('Game Controllers','control.exe','Test the controller (XInput)','joy.cpl',SYS+'joy.cpl')],
 }
 # W090: the GPU test programs in C:\orbis, each with its icon from tools/make-icons.py (copied
-# to C:\orbis\icons by build-wine-hardware.py), and the MangoHud configuration in Notepad.
+# to C:\orbis\icons by build-wine-hardware.py), and MangoJuice for the MangoHud settings.
 # Items: name, full target path, description, arguments, icon.
 ORBIS='C:\\orbis\\'
+MANGOJUICE='C:\\Program Files\\MangoJuice\\'
 GRAPHICS=[('glxgears',ORBIS+'glxgears.exe','OpenGL gears through Zink and Vulkan','',ORBIS+'icons\\glxgears.ico'),
           ('vkcube',ORBIS+'vkcube.exe','Vulkan cube (Vulkan-Tools)','',ORBIS+'icons\\vkcube.ico'),
           ('vkspin',ORBIS+'vkspin64.exe','Vulkan spinning triangle','',ORBIS+'icons\\vkspin64.ico'),
-          ('MangoHud Config',SYS+'notepad.exe','Edit the MangoHud overlay settings',
-           # W092: %APPDATA% follows the registry's shell folders, C:\users\orbis since alpha-1 (build-wine-hardware.py)
-           'C:\\users\\orbis\\AppData\\Roaming\\MangoHud\\MangoHud.conf',ORBIS+'icons\\mangohud.ico')]
+          # MangoJuice (tools/build-mangojuice-hw.py, docs/MANGOJUICE.md) replaces "MangoHud Config", which
+          # opened %APPDATA%\MangoHud\MangoHud.conf in Notepad; its icon is drawn from MangoJuice's own SVG
+          ('MangoJuice',MANGOJUICE+'bin\\mangojuice.exe','MangoHud overlay settings (MangoJuice)','',
+           MANGOJUICE+'mangojuice.ico')]
 # W177 (phase 9): Programs/Internet. SeaMonkey 2.53 is the browser (the user's choice; it replaced
 # Pale Moon, W177-W215, whose shortcuts build-wine-hardware.py deletes on the console). It is not in
 # the package: the shortcut expects the user's own copy in C:\Program Files\SeaMonkey and passes a

@@ -338,8 +338,30 @@ extern int sceKernelAllocateDirectMemory( long start, long end, size_t size, siz
 extern int sceKernelMapDirectMemory( void **addr, size_t size, int prot, int flags, long offset, size_t align );
 extern int sceKernelReleaseDirectMemory( long offset, size_t size );
 extern size_t sceKernelGetDirectMemorySize( void );
-static struct pw_direct { char *base; size_t size; long offset; } pw_directs[8192];
+/* flexible reserve: 32768 records (was 8192): small commits take direct memory too once the flexible pool is
+ * low (pw_flexible_low), one record per run of 16 KiB pages. */
+static struct pw_direct { char *base; size_t size; long offset; } pw_directs[32768];
 static unsigned int pw_direct_count;
+
+/* OrbisDesk (docs/SEAMONKEY_FLEXIBLE_MEMORY.md): SeaMonkey's heavy pages ran the title's flexible memory dry (W224/W225:
+ * "commit_backing ... flexible map=0x80020016", then "map_view anon mmap error Invalid argument" and
+ * a NULL write in ucrtbase). The pool is ~390 MB for the whole title, and Wine's libc, wineserver
+ * and Mesa can only use it. Below PW_FLEXIBLE_RESERVE free, Wine's commits and views of any size
+ * take direct memory (~4.6 GB), so the rest stays for what has no other memory. One query of the
+ * kernel per call. */
+#define PW_FLEXIBLE_RESERVE (64u << 20)
+static int pw_flexible_low(void)
+{
+    extern int sceKernelAvailableFlexibleMemorySize( size_t *size );
+    static unsigned int logged;
+    size_t flexible = 0;
+
+    if (sceKernelAvailableFlexibleMemorySize( &flexible ) || flexible >= PW_FLEXIBLE_RESERVE) return 0;
+    if (logged++ < 8)
+        ERR( "PWVM flexible low: %zu bytes free, under the %u reserve; direct memory instead (%u)\\n",
+             flexible, PW_FLEXIBLE_RESERVE, logged );
+    return 1;
+}
 
 /* OrbisDesk W220, a diagnostic: C:\\orbis\\nodirect.txt turns direct memory off for the title, so
  * every commit takes the flexible path as before W175 (W217/W218: SeaMonkey and Pale Moon ran on
@@ -435,6 +457,20 @@ static void pw_direct_release( void *start, size_t size )
     }
 }
 
+/* OrbisDesk alpha-1 (run-0185): the direct memory Wine's commits hold now, for win32u's guest memory lines
+ * (tools/build-win32u-ps4.py). A terminated guest's large commits stay until their range is released. */
+__attribute__((visibility("default"))) unsigned long long pw_vm_direct_bytes( unsigned int *runs )
+{
+    unsigned long long bytes = 0;
+    unsigned int i;
+
+    mutex_lock( &virtual_mutex );
+    for (i = 0; i < pw_direct_count; i++) bytes += pw_directs[i].size;
+    *runs = pw_direct_count;
+    mutex_unlock( &virtual_mutex );
+    return bytes;
+}
+
 /* OrbisDesk W172: see tools/build-audio-ps4.py. virtual_mutex is held by the caller.
  * A commit of 1 MiB or more takes direct memory (W175, pw_direct_map). Otherwise, and when that
  * fails, each page Wine has as uncommitted is checked: a page counts as backed only when the region
@@ -450,13 +486,34 @@ static void pw_commit_backing( void *base, size_t size, int unix_prot )
     char *page = ROUND_ADDR( base, host_page_mask );
     char *end = (char *)ROUND_SIZE( 0, (char *)base + size, host_page_mask );
 
-    if (size >= 0x100000)
+    if (size >= 0x100000 || pw_flexible_low())  /* flexible reserve: any size once the flexible pool is low */
     {
         unsigned int runs = 0, run_failures = 0;
-        char *p, *run = NULL;
+        char *p, *run = NULL, *region_lo = NULL, *region_hi = NULL;
+        BOOL region_direct = FALSE;
         for (p = page; ; p += host_page_size)
         {
             BOOL open = p < end && !(get_host_page_vprot( p ) & VPROT_COMMITTED);
+            /* flexible reserve: a page decommitted inside direct memory keeps it (pw_decommit_host); a run is
+             * mapped only over pages without it. One query per kernel region. */
+            if (open && (p < region_lo || p >= region_hi))
+            {
+                memset( &info, 0, sizeof(info) );
+                if (!sceKernelVirtualQuery( p, 0, &info, sizeof(info) ) &&
+                    (char *)info.start <= p && p < (char *)info.end)
+                {
+                    region_lo = info.start;
+                    region_hi = info.end;
+                    region_direct = (info.flags & 0x2) != 0;
+                }
+                else
+                {
+                    region_lo = p;
+                    region_hi = p + host_page_size;
+                    region_direct = FALSE;
+                }
+            }
+            if (open && region_direct) open = FALSE;
             if (open && !run) run = p;
             if (!open && run)
             {
@@ -578,6 +635,70 @@ static void pw_decommit_partial( char *base, size_t size )
             ERR( "PWVM decommit_partial host=%p range=%p-%p zeroed=%u\\n", host, start, stop, zeroed );
     }
 }
+
+/* OrbisDesk, flexible reserve: the record of direct memory that contains addr, or NULL; with next, the lowest
+ * record start in (addr, limit), or limit. */
+static struct pw_direct *pw_direct_find( char *addr, char *limit, char **next )
+{
+    unsigned int i;
+
+    *next = limit;
+    for (i = 0; i < pw_direct_count; i++)
+    {
+        struct pw_direct *d = &pw_directs[i];
+        if (d->base <= addr && addr < d->base + d->size) return d;
+        if (d->base > addr && d->base < *next) *next = d->base;
+    }
+    return NULL;
+}
+
+/* OrbisDesk, flexible reserve: whole host pages of a decommit. mozjemalloc (SeaMonkey) maps each 1 MiB chunk
+ * committed, which takes direct memory (W184), decommits everything after the chunk's header at once
+ * and commits runs of a few pages as it needs them. Giving the direct memory back here
+ * (pw_rereserve) left those commits under 1 MiB, so they took flexible memory: the whole malloc
+ * heap moved to the ~390 MB pool and a heavy page used it up (W224/W225). Pages under our direct
+ * memory now keep it: the 4 KiB pages Wine has committed are zeroed (Windows hands a page committed
+ * again out zeroed, W222) and the range becomes PROT_NONE, so an access faults as on Windows. A
+ * commit finds them backed (pw_commit_backing: flags bit 1); a release gives the memory back
+ * (unmap_area). Other pages are re-reserved as before. virtual_mutex is held by the caller. */
+static void pw_decommit_host( char *start, size_t size )
+{
+    static unsigned int logged, failed;
+    char *end = start + size, *p = start;
+
+    while (p < end)
+    {
+        char *next, *stop, *page;
+        struct pw_direct *d = pw_direct_find( p, end, &next );
+        int dirty = 0;
+
+        if (!d)
+        {
+            pw_rereserve( p, next - p );
+            p = next;
+            continue;
+        }
+        stop = d->base + d->size < end ? d->base + d->size : end;
+        for (page = p; page < stop && !dirty; page += page_size)
+            dirty = (get_page_vprot( page ) & VPROT_COMMITTED) != 0;
+        if (dirty && mprotect( p, stop - p, PROT_READ | PROT_WRITE ))
+        {
+            /* not writable: give it back instead, as before the flexible reserve */
+            if (failed++ < 8)
+                ERR( "PWVM decommit_host %p-%p mprotect errno %d; released instead\\n", p, stop, errno );
+            pw_rereserve( p, stop - p );
+            p = stop;
+            continue;
+        }
+        if (dirty)
+            for (page = p; page < stop; page += page_size)
+                if (get_page_vprot( page ) & VPROT_COMMITTED) memset( page, 0, page_size );
+        mprotect( p, stop - p, PROT_NONE );
+        if (logged++ < 8)
+            ERR( "PWVM decommit_host %p-%p keeps direct memory (zeroed=%d)\\n", p, stop, dirty );
+        p = stop;
+    }
+}
 #endif
 
 /***********************************************************************
@@ -619,7 +740,7 @@ text=substitute(text,'''void *anon_mmap_alloc( size_t size, int prot )
 # too, the allocation returns STATUS_NO_MEMORY with a line in the log.
 text=substitute(text,'''        size_t unmap_size, view_size = host_size + align_mask + 1;''','''        size_t unmap_size, view_size = host_size + align_mask + 1;
 #ifdef __ORBIS__
-        int pw_backing_prot = (unix_prot && view_size >= 0x100000) ? unix_prot : 0;
+        int pw_backing_prot = (unix_prot && (view_size >= 0x100000 || pw_flexible_low())) ? unix_prot : 0;  /* flexible reserve */
 #endif''','virtual.c')
 text=substitute(text,'''            if ((ptr = anon_mmap_alloc( view_size, unix_prot )) == MAP_FAILED)''','''#ifdef __ORBIS__
             if ((ptr = anon_mmap_alloc( view_size, pw_backing_prot ? PROT_NONE : unix_prot )) == MAP_FAILED)
@@ -704,7 +825,7 @@ text=substitute(text,'''        anon_mmap_fixed( start, (char *)area_end - (char
 #endif''','virtual.c')
 text=substitute(text,'''    if (host_start < host_end) anon_mmap_fixed( host_start, host_end - host_start, PROT_NONE, 0 );''','''#ifdef __ORBIS__
     pw_decommit_partial( base, size );  /* W222 */
-    if (host_start < host_end) pw_rereserve( host_start, host_end - host_start );
+    if (host_start < host_end) pw_decommit_host( host_start, host_end - host_start );  /* flexible reserve */
 #else
     if (host_start < host_end) anon_mmap_fixed( host_start, host_end - host_start, PROT_NONE, 0 );
 #endif''','virtual.c')

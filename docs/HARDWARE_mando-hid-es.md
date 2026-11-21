@@ -311,6 +311,67 @@ Queda abierto:
 - el posible mando doble en juegos SDL2 con HID genérico, sin probar;
 - la pestaña Windows.Gaming.Input de joy.cpl, en espera.
 
+## 04.26: tipo de mando por programa
+
+La configuración de PES 2013 y la pestaña XInput de `joy.cpl` no listaban ningún mando XInput. Desde W213 el mando es un gamepad HID genérico (1209:5057), salvo que exista `C:\orbis\padhid-xinput.txt`. Sin el hijo HID `&IG_`, los programas que clasifican los dispositivos por su ruta no encuentran un mando XInput, aunque la API de XInput sirve el mando 0.
+
+La entrada CONTROL del overlay ahora es por programa, como LÍMITE FPS y GENERAR CUADROS:
+
+- Opciones: GENÉRICO, XBOX 360, XBOX ONE, DUALSENSE. X guarda la elección para el último programa abierto que sigue abierto, en `C:\orbis\overlay.ini`: `pad.<exe>=generic`, `x360`, `xone` o `dualsense`. Sin un programa abierto, X sólo muestra un aviso.
+- Un programa sin línea recibe el gamepad genérico, así que la razón de W213 se mantiene por defecto: los juegos Unity conservan la emulación de teclas y los perfiles del mando. Mientras exista `C:\orbis\padhid-xinput.txt`, un programa sin línea recibe Xbox 360. El archivo queda como ese valor por defecto global; ya no fuerza a todos los programas.
+- El overlay escribe el tipo del último programa abierto (sin ninguno, el valor por defecto) en `C:\orbis\padtype.txt`: al arrancar, cada vez que ese programa cambia y con X. Log: `PWOVERLAY control type=<tipo> program=<exe> saved=1 errno=0 why=boot|start|exit|menu`.
+- winebus lee `padtype.txt` unas 4 veces por segundo. Si cambia, quita el dispositivo y agrega el nuevo, como en W236: `PWHID pad type change generic-hid -> xinput: removing the device`. `x360` y `xone` son los dispositivos Xbox con `&IG_`; `generic` es 1209:5057. Lee `padhid-xinput.txt` sólo si falta `padtype.txt` (un ELF sin el overlay).
+- xinput y dinput no cambian: leen `padtype.txt` una vez por segundo; `xone` los hace Xbox One, cualquier otro valor Xbox 360. El mando 0 de XInput y el dispositivo de DirectInput están en todos los modos, como en W213.
+- La elección global de 04.25 (`padtype.txt` con `x360`, `xone` o `dualsense`) no se conserva: el overlay reescribe el archivo al arrancar.
+
+Sin verificar:
+
+- Un juego lee sus dispositivos al arrancar. El overlay cambia el tipo cuando el programa arranca y winebus reemplaza el dispositivo en una fracción de segundo; un juego que enumera antes sigue viendo el tipo anterior. En ese caso, reiniciá el juego.
+- El modo juego de hw_pad.c sigue siendo global: un programa en modo Xbox que consulta XInput lo enciende mientras corre.
+
+Prueba en consola:
+
+1. PES 2013: abrir el overlay (L3+R3), CONTROL, XBOX 360, X. El log tiene `PWOVERLAY control pad.pes2013.exe=x360 saved=1` y `PWHID pad type change generic-hid -> xinput`. Reiniciar el juego: su configuración de mandos lista el mando XInput.
+2. `joy.cpl`: con un programa en XBOX 360 al frente, la pestaña XInput muestra el mando 0. Con el escritorio al frente, el gamepad genérico.
+3. Un juego Unity sin línea (The Lost Forest): `PWHID pad bus init ... mode=generic-hid`, y las teclas del perfil siguen moviendo al personaje.
+4. Cerrar PES 2013: el tipo vuelve al del programa anterior o a genérico (`why=exit`).
+
+## 04.28: un cambio de tipo perdía el dispositivo nuevo
+
+En la prueba en consola de 04.27 (W303 run-0246), el `settings.exe` de PES 2013 configurado en XBOX 360 seguía listando sólo el "Orbis Pad" de DirectInput, y su página XInput estaba vacía. El overlay guardó y aplicó bien la elección. En el siguiente arranque de `settings.exe` el log tiene `PWOVERLAY control type=x360 program=settings.exe ... why=start`; `PWPAD guest profile=settings.exe none` es el perfil de teclas del mando (`C:\orbis\padmaps`), no el tipo de mando. El tipo volvió a genérico al cerrarse `settings.exe` (`why=exit`), como corresponde.
+
+La falla estaba en winebus, después de `PWHID pad bus init vid=045e pid=028e mode=xinput`: el dispositivo nuevo nunca arrancaba (no hay `PWHID pad device started`, ni winexinput, ni dispositivo `&IG_`). Pasaba en cada cambio que salía de un dispositivo ya arrancado, fuera cual fuera el tipo nuevo: los 7 cambios así de run-0246, y el cambio a DualSense de W238. Los cambios que salían de un dispositivo que nunca arrancó funcionaban; por eso Xbox One y DualSense parecían andar después de un Xbox 360 perdido.
+
+Causa: winebus desvincula dos veces un dispositivo quitado, una por el evento de quitado del bus y otra con `IRP_MN_REMOVE_DEVICE`. `list_remove` no reinicia la entrada, así que la segunda desvinculación reescribía los vecinos viejos. Con el mando como único dispositivo, eso vaciaba otra vez la lista y descartaba el dispositivo agregado entre medio. ntoskrnl nunca lo veía. Un dispositivo que nunca arrancó no recibe `IRP_MN_REMOVE_DEVICE`, así que no hay segunda desvinculación.
+
+Arreglo: `tools/build-hidstack-hw.py` superpone el `main.c` de winebus. `bus_unlink_hid_device` reinicia la entrada, así que una segunda desvinculación no cambia nada, y registra `PWHID winebus unlink again ignored device=... vid=... pid=...` cuando ocurre. El error está en el winebus de Wine. Aquí sólo lo expone el cambio de tipo, porque el mando de la consola nunca se desconecta de otra forma.
+
+La API de XInput no tenía que ver: `xinput1_3` en el `settings.exe` de 32 bits sirve el mando 0 desde el mando de la consola (`PWPAD game_mode=1` justo después de cargarse). La página XInput clasifica los dispositivos de DirectInput por su ruta HID. Sin un dispositivo Xbox arrancado no había ruta `&IG_` que encontrar.
+
+Prueba en consola:
+
+1. Con `settings.exe` en XBOX 360, iniciarlo. El log tiene `why=start` con `type=x360`, luego `PWHID pad type change generic-hid -> xinput`, `PWHID winebus unlink again ignored ... pid=5057`, `PWHID pad device started` y el `open_driver ... Services\xinput` de winexinput. La página XInput de la pestaña Controller lista el mando. Si no, cerrar y volver a abrir `settings.exe` (puede haber listado sus dispositivos antes del cambio).
+2. En el overlay, cambiar varias veces entre XBOX 360, XBOX ONE, DUALSENSE y GENÉRICO. Cada cambio registra `PWHID pad device started`.
+3. Cerrar `settings.exe`: `why=exit`, el tipo vuelve a genérico y arranca el dispositivo genérico.
+
+## 04.30: el tipo está listo antes de que arranque el programa
+
+En la prueba en consola de 04.29 (W303 run-0255), el `settings.exe` de PES 2013 con XBOX 360 guardado seguía mostrando vacía la página XInput al arrancar. Cambiar a XBOX 360 en el overlay con el programa abierto movía el mando a la lista XInput. O sea que XInput, la clasificación `&ig_` de DirectInput y el cambio en sí funcionaban. El arranque llegaba tarde: el overlay escribe el tipo cuando el programa arranca (`why=start`), pero winebus lee `padtype.txt` sólo unas 4 veces por segundo, y después PnP instala y arranca el dispositivo. `settings.exe` ya había listado sus dispositivos.
+
+Ahora el arranque de un programa espera al dispositivo. kernelbase avisa del arranque antes del punto de entrada del programa. El overlay aplica el tipo, le pide a winebus que lo lea en su próximo sondeo (8 ms) y espera hasta que winebus tenga arrancado el dispositivo de ese tipo: como mucho 2 s, y después 0,3 s más para los dispositivos HID `&IG_` de winexinput.
+
+- Log: `PWOVERLAY control wait program=<exe> kind=<n> ready=1 ms=<espera> settle_ms=300`.
+- Sin cambio de tipo no hay espera ni línea.
+- `ready=0` significa que pasaron los 2 s; el programa arranca igual.
+- Un ELF sin winebus registra una vez `PWOVERLAY control wait unavailable` y no espera.
+
+Límites:
+
+- El hilo que arranca el programa espera: con un cambio de tipo, el lanzamiento desde el escritorio se detiene hasta 2,3 s.
+- xinput y dinput releen `padtype.txt` como mucho una vez por segundo. Una elección Xbox One puede llegar al id de producto de DirectInput hasta 1 s después que a winebus.
+
+Prueba en consola: con XBOX 360 guardado para `settings.exe`, iniciarlo. El log tiene `why=start`, el cambio de tipo, `PWHID pad device started` y luego `PWOVERLAY control wait ... ready=1`. La página XInput lista el mando sin cambiar nada en el overlay.
+
 ## Riesgos
 
 - Es la primera vez que corre `ntoskrnl.exe` dentro del proceso del título. Su `DllMain` instala un manejador vectorizado de excepciones (`instr.c`) que emula instrucciones privilegiadas de drivers. Para cualquier otra excepción devuelve "seguir buscando", pero se ejecuta antes que los manejadores de los juegos (Mono usa violaciones de acceso).

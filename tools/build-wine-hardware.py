@@ -89,6 +89,11 @@ for stage in ('vert','frag'):
 # with FLAT instructions (hw_sink_gpu.c pipeline_init)
 run([vk/'host-tools/bin/glslang','-V','--target-env','vulkan1.1','-DPOOL_ONLY','--vn','screen_frag_pool',
      '-o',shader_dir/'screen_frag_pool.h',sink_gpu_dir/'screen.frag'])
+# Frame generation (docs/FRAME_GENERATION.md): its compute passes, precompiled like the sink's shaders (no GLSL
+# compiler at run time); hw_sink_gpu.c includes framegen.inc.c, which includes these headers
+for fg_pass in ('capture','coarse','fine','blend'):
+    run([vk/'host-tools/bin/glslang','-V','--target-env','vulkan1.1','--vn','fg_'+fg_pass+'_comp',
+         '-o',shader_dir/('fg_'+fg_pass+'_comp.h'),sink_gpu_dir/('fg_'+fg_pass+'.comp')])
 sink_gpu=work/'hw_sink_gpu.o';run([*vk_flags,'-I'+str(shader_dir),'-c',sink_gpu_dir/'hw_sink_gpu.c','-o',sink_gpu])
 cxx_libs=[]
 for name in ('libc++.a','libc++abi.a'):
@@ -181,6 +186,26 @@ for replaced,entry in world_build['replaces'].items():
     if sha(ROOT/entry['object'])!=entry['sha256']:raise SystemExit('wow64 world object changed after its build: '+entry['object'])
     if command.count(str(ROOT/replaced))!=1:raise SystemExit('Expected one '+replaced+' in the link')
     command=[str(ROOT/entry['object']) if arg==str(ROOT/replaced) else arg for arg in command]
+# Wine's client server.c uses writev for requests with data. Redirect just that object
+# so every Wine client uses bounded writes, including the title's HID thread (run-0147).
+request_client=ROOT/'build/wow64-world-ps4/server.o'
+request_client_chunked=work/'server-request-chunks.o'
+request_writer_source=ROOT/'platform/ps4/pw_wine_request_write.c'
+request_writer=work/'pw_wine_request_write.o'
+if command.count(str(request_client))!=1:
+    raise SystemExit('Expected exactly one Wine client request object in the link')
+def undefined_symbols(obj):
+    listing=subprocess.check_output(['llvm-nm-19','--undefined-only',str(obj)],text=True)
+    return {line.split()[-1] for line in listing.splitlines() if line.strip()}
+original_imports=undefined_symbols(request_client)
+if 'writev' not in original_imports:
+    raise SystemExit('Wine client object no longer calls writev')
+run(['llvm-objcopy-19','--redefine-sym=writev=pw_wine_request_writev',request_client,request_client_chunked])
+if undefined_symbols(request_client_chunked)!=(original_imports-{'writev'})|{'pw_wine_request_writev'}:
+    raise SystemExit('Unexpected Wine client imports after request writer substitution')
+run([*flags,'-c',request_writer_source,'-o',request_writer])
+command[command.index(str(request_client))]=str(request_client_chunked)
+command[1:1]=[str(request_writer)]
 # Keep the proven library search order: build/wine-boot/lib/libc.a must win over the SDK
 # libc.a, whose readlink/lstat are raw FreeBSD syscalls (ENOSYS for W001 on hardware).
 # The Steam client inside the title (tools/build-steam-hosted.py): one object whose only globals are
@@ -189,7 +214,7 @@ steam_build=json.loads((ROOT/'build/steam-hosted/manifest.json').read_text())
 steam_object=ROOT/steam_build['object']
 if sha(steam_object)!=steam_build['object_sha256']:raise SystemExit('Steam object differs from its build')
 command[1:1]=[str(steam_object)]
-command[1:1]=['--wrap=exit','--wrap=_exit','--wrap=sceKernelDebugOutText','--wrap=write','--wrap=vfprintf','--wrap=fprintf','--wrap=fputs','--wrap=fwrite',str(wrapper),str(pad),str(overlay_obj)];command+=['-lSceSysmodule','-lSceSystemService','-lScePad','-lSceUserService','-lSceRtc','-lSceAudioOut']
+command[1:1]=['--wrap=exit','--wrap=_exit','--wrap=sceKernelDebugOutText','--wrap=write','--wrap=vfprintf','--wrap=fprintf','--wrap=fputs','--wrap=fwrite',str(wrapper),str(pad),str(overlay_obj)];command+=['-lSceSysmodule','-lSceSystemService','-lScePad','-lSceUserService','-lSceRtc','-lSceAudioOut','-lSceNet']
 run(command)
 def symbols(elf,flag):
     listing=subprocess.run(['llvm-nm-14',flag,str(elf)],capture_output=True,text=True,check=True).stdout
@@ -202,9 +227,41 @@ with (work/'build.log').open('a') as log:subprocess.run([str(sdk/'bin/linux/crea
     '-out=wine.oelf','--eboot',str(app.relative_to(work)/'eboot.bin'),'--paid','0x3800000000000011'],
     cwd=work,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
 (work/'wine.exec.oelf').write_bytes(set_exec_type(work/'wine.oelf',app/'eboot.bin'))
+# Phase B / P014 (separate-process research): the slim Wine child, bundled at /app0/pop-wine-join.elf. Built
+# with the PS4 payload SDK (like elfldr's own samples) so the GoldHEN resident loader's ELF path runs it;
+# the eboot's PWSEP watcher (native/pop_loader_spawn.h) sends it to the loader and it joins THIS title's
+# in-process wineserver by path (native/process_p014_child.c). Loader-dependent substrate, not shippable.
+PAYLOAD_SDK=ROOT/'.deps/process-loader/sdk/ps4-payload-sdk'
+sep_child_elf=app/'pop-wine-join.elf'
+subprocess.run([str(PAYLOAD_SDK/'bin/orbis-clang'),'-Wall','-O2','-ffile-prefix-map=%s=.'%ROOT,
+                '-I',str(ROOT/'native'),'-o',str(sep_child_elf),str(ROOT/'native/process_p014_child.c')],
+               cwd=ROOT,env=dict(os.environ,PS4_PAYLOAD_SDK=str(PAYLOAD_SDK)),check=True)
+# PoP D.7 (hardware 2026-11-13: after a console reboot separate programs failed until the loader was sent from a PC):
+# the resident loader the title sends to GoldHEN BinLoader (127.0.0.1:9090) when it does not answer
+# (native/pop_loader_spawn.h). The same verified build tools/start-process-loader.py sends (tools/build-process-loader.py,
+# pinned by tools/process-loader.lock.json), with its GPL-3.0-or-later corresponding source next to it.
+loader_dir=ROOT/'out/process-loader'
+loader_manifest=json.loads((loader_dir/'manifest.json').read_text())
+loader_raw=(loader_dir/'elfldr.elf').read_bytes()
+if hashlib.sha256(loader_raw).hexdigest()!=loader_manifest['artifacts']['elfldr.elf']['sha256']:
+    raise SystemExit('out/process-loader/elfldr.elf differs from its manifest')
+(app/'elfldr.elf').write_bytes(loader_raw)
+shutil.copyfile(loader_dir/'upstream-source.tar.gz',app/'elfldr-source.tar.gz')
 # Stage the same sealed prefix without DOS links: PS4 applications cannot use symbolic
 # links, so pw_wine_fs serves c: and z: from a fixed mount table.
 data=work/'runtime';data.mkdir(exist_ok=True)
+# PoP (2026-11-20): Wine for separate processes, the PRX native/process_p014_child.c loads from
+# /data/orbisdesk/pop-wine-child.prx. It used to go up only with tools/upload-pop-separate.py, so no package carried
+# it: after a clean install the child found none and showed its P015 test window instead of the program. It is
+# built here from this link command (tools/build-pop-wine-child.py) and installed with the runtime.
+import importlib.util
+pop_spec=importlib.util.spec_from_file_location('pop_wine_child_builder',ROOT/'tools/build-pop-wine-child.py')
+pop_builder=importlib.util.module_from_spec(pop_spec);pop_spec.loader.exec_module(pop_builder)
+pop_builder.build_wine_prx(command,{'client_object':str(request_client_chunked.relative_to(ROOT)),
+    'client_object_sha256':sha(request_client_chunked),'writer_object':str(request_writer.relative_to(ROOT)),
+    'writer_object_sha256':sha(request_writer)})
+(data/'orbisdesk').mkdir(exist_ok=True)
+shutil.copyfile(pop_builder.WORK/'pop-wine-child.prx',data/'orbisdesk/pop-wine-child.prx')
 prefix=data/'wine-prefix';prefix.mkdir(exist_ok=True)
 package=ROOT/'reports/increment15/prefix-package'
 wine_commit=json.loads((ROOT/'build/wine-boot/report.json').read_text())['wine_commit']
@@ -390,6 +447,12 @@ shutil.copyfile(work/'fileio32.exe',prefix/'drive_c/orbis/fileio32.exe')
 subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-mwindows','-Wl,--no-insert-timestamp',str(ROOT/'fixtures/win32/wow64probe.c'),
                 '-o',str(work/'wow64probe64.exe')],check=True)
 shutil.copyfile(work/'wow64probe64.exe',prefix/'drive_c/orbis/wow64probe64.exe')
+# SeaMonkey flexible memory: SeaMonkey's allocations without the browser (fixtures/win32/jitmem.c): mozjemalloc's chunks
+# decommitted and committed again, small views and SpiderMonkey's executable memory, results in
+# C:\orbis\jitmem-result.txt (docs/SEAMONKEY_FLEXIBLE_MEMORY.md).
+subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-Wall','-mwindows','-Wl,--no-insert-timestamp',
+                str(ROOT/'fixtures/win32/jitmem.c'),'-o',str(work/'jitmem64.exe')],check=True)
+shutil.copyfile(work/'jitmem64.exe',prefix/'drive_c/orbis/jitmem64.exe')
 # B1 (pe32-en-explorer-plan.md P5): C:\windows\syswow64\orbis32host.exe, the image of the 32-bit
 # world's PEB (fixtures/win32/orbis32host.c: ps4_guest32_start runs a 32-bit program on a WoW64 thread
 # of explorer), and C:\orbis\wow64world64.exe, the 64-bit guest that creates the world and runs
@@ -412,11 +475,21 @@ for compiler,name in (('x86_64-w64-mingw32-gcc','d3d11test64.exe'),('i686-w64-mi
     subprocess.run([compiler,'-O2','-mwindows','-Wl,--no-insert-timestamp',str(ROOT/'fixtures/win32/d3d11test.c'),
                     '-o',str(work/name),'-ld3d11','-ldxgi','-luuid'],check=True)
     shutil.copyfile(work/name,prefix/'drive_c/orbis'/name)
+# Phase B / P014: a desktop EXE seeded to the "separate" execution mode (user.reg above). Launching it from
+# the desktop routes through kernelbase's PW_EXEC_SEPARATE path (tools/build-guest-hw.py), which spawns the
+# separate-process child that joins this wineserver and logs the PWSEP shared-object confirmation.
+subprocess.run(['x86_64-w64-mingw32-gcc','-O2','-mwindows','-Wl,--no-insert-timestamp',
+                str(ROOT/'fixtures/win32/separate_probe.c'),'-o',str(work/'separate_probe64.exe')],check=True)
+shutil.copyfile(work/'separate_probe64.exe',prefix/'drive_c/orbis/separate_probe64.exe')
 # W181: pad key profiles for keyboard-only games (native/hw_pad.c reads C:\orbis\padmaps\<exe>.ini when
 # the launcher runs that program); SuperMarioKart.exe's maps the pad to its arrows, space and Enter.
+# 04.36: the overlay's KEY MAPPING edits these on the console (tools/console_state.py keeps the user's copy across
+# updates); C:\orbis\padmaps-default holds the shipped ones, which its DEFAULT action restores (native/hw_overlay.c).
 (prefix/'drive_c/orbis/padmaps').mkdir(exist_ok=True)
+(prefix/'drive_c/orbis/padmaps-default').mkdir(exist_ok=True)
 for profile in sorted((ROOT/'fixtures/padmaps').glob('*.ini')):
     shutil.copyfile(profile,prefix/'drive_c/orbis/padmaps'/profile.name)
+    shutil.copyfile(profile,prefix/'drive_c/orbis/padmaps-default'/profile.name)
 # W174 (phase 8): networking as a Windows program sees it (fixtures/win32/nettest.c), 64-bit (guest)
 # and 32-bit; each run appends its steps to C:\orbis\net-result.txt.
 for compiler,name in (('x86_64-w64-mingw32-gcc','nettest64.exe'),('i686-w64-mingw32-gcc','nettest32.exe')):
@@ -543,6 +616,16 @@ for arch,windows in (('x86_64','system32'),('x86','syswow64')):
     for relative,digest in gecko['trees'][arch]['files'].items():
         target=prefix/'drive_c/windows'/windows/'gecko'/gecko['version']/relative;target.parent.mkdir(parents=True,exist_ok=True)
         copy_verified(ROOT/'out/wine-gecko'/arch/relative,target,digest)
+# Wine Mono 11.3.0 (tools/stage-wine-mono.py) in C:\windows\mono\mono-2.0, the first place mscoree looks
+# (dlls/mscoree/metahost.c get_mono_path_local), with its licences next to it. About 277 MB.
+mono=json.loads((ROOT/'out/wine-mono/manifest.json').read_text())
+if mono['builder_sha256']!=sha(ROOT/'tools/stage-wine-mono.py'):raise SystemExit('Wine Mono differs from its stager')
+for relative,digest in mono['files'].items():
+    target=prefix/'drive_c/windows/mono/mono-2.0'/relative;target.parent.mkdir(parents=True,exist_ok=True)
+    copy_verified(ROOT/'out/wine-mono/mono-2.0'/relative,target,digest)
+for relative,digest in mono['licenses'].items():
+    target=prefix/'drive_c/windows/mono/licenses'/relative;target.parent.mkdir(parents=True,exist_ok=True)
+    copy_verified(ROOT/'out/wine-mono/licenses'/relative,target,digest)
 # DVD (dvd-plan.md): VLC 3.0.24 x64 (tools/stage-vlc.py) in C:\Program Files\VLC, about 56 MiB (W243); its
 # shortcuts are make-start-menu.py's Programs/Multimedia. Not stripped (the loop below does not
 # look in Program Files). plugins.dat is made on the console ("VLC plugin cache") and survives uploads.
@@ -561,6 +644,8 @@ for target in (data/'wine/lib/wine/x86_64-windows/taskmgr.exe',prefix/'drive_c/w
 # pinned one in both places; W180's winecfg froze applying a theme.
 winecfg=json.loads((ROOT/'out/winecfg-hw/manifest.json').read_text())
 if winecfg['builder_sha256']!=sha(ROOT/'tools/build-winecfg-hw.py'):raise SystemExit('winecfg differs from its builder')
+for source,digest in winecfg.get('input_sha256',{}).items():
+    if sha(ROOT/source)!=digest:raise SystemExit('winecfg input changed: '+source)
 for target in (data/'wine/lib/wine/x86_64-windows/winecfg.exe',prefix/'drive_c/windows/system32/winecfg.exe'):
     copy_verified(ROOT/'out/winecfg-hw'/winecfg['winecfg']['path'],target,winecfg['winecfg']['sha256'])
 # W174 (phase 8): the hardware nsi.dll (tools/build-nsi-hw.py): the network tables from libSceNetCtl
@@ -601,7 +686,10 @@ for name in games['system32']+games['notices']:
     copy_verified(ROOT/'out/games'/games['files'][name]['path'],prefix/'drive_c/windows/system32'/name,games['files'][name]['sha256'])
 # W052: ntdll and kernelbase that run 64-bit GUI programs as guests of this process
 # (tools/build-guest-hw.py), in the library directory and wherever the prefix has a copy.
-for name,e in json.loads((ROOT/'out/guest-hw/manifest.json').read_text())['modules'].items():
+guest64=json.loads((ROOT/'out/guest-hw/manifest.json').read_text())
+for source,digest in guest64.get('input_sha256',{}).items():
+    if sha(ROOT/source)!=digest:raise SystemExit('guest DLL input changed: '+source)
+for name,e in guest64['modules'].items():
     for target in (data/'wine/lib/wine/x86_64-windows'/name,prefix/'drive_c/windows/system32'/name):
         if target.parent.is_dir() and (target.exists() or target.parent.name=='x86_64-windows'):
             copy_verified(ROOT/'out/guest-hw'/e['path'],target,e['sha256'])
@@ -610,6 +698,8 @@ for name,e in json.loads((ROOT/'out/guest-hw/manifest.json').read_text())['modul
 # in a 64-bit process (tools/build-wow64-world-ps4.py); a relaunched 32-bit program keeps the stock ones.
 guest32=json.loads((ROOT/'out/guest-hw-i386/manifest.json').read_text())
 if guest32['builder_sha256']!=sha(ROOT/'tools/build-guest-hw.py'):raise SystemExit('i386 guest DLLs differ from their builder')
+for source,digest in guest32.get('input_sha256',{}).items():
+    if sha(ROOT/source)!=digest:raise SystemExit('i386 guest DLL input changed: '+source)
 (data/'wine/lib/wine/i386-guest').mkdir(parents=True,exist_ok=True)
 for name,e in guest32['modules'].items():
     copy_verified(ROOT/'out/guest-hw-i386'/e['path'],data/'wine/lib/wine/i386-guest'/name,e['sha256'])
@@ -733,12 +823,13 @@ system_text+=('\n[Software\\\\Wow6432Node\\\\Khronos\\\\Vulkan\\\\Drivers] 17933
               '"C:\\\\windows\\\\syswow64\\\\winevulkan.json"=dword:00000000\n'
               '\n[Software\\\\Wow6432Node\\\\Khronos\\\\Vulkan\\\\ImplicitLayers] 1793390636\n#time=1dd68a9cb52bf36\n'
               '"C:\\\\windows\\\\syswow64\\\\MangoHud.x86.json"=dword:%08x\n' % (0 if mangohud_enabled else 1))
+# 04.26: also Valve's text files (.vdf, .acf) and .nfo, which games ship (GTA IV's installscript.vdf).
 # W112: the pinned Wine maps HKCR to Machine\\Software\\Classes, without
 # merging the user's Classes key. ShellExecute must see these real associations.
 for key,value in [('Software\\Classes\\OrbisDesk.Text\\shell\\open\\command',
                    '"C:\\windows\\system32\\notepad.exe" "%1"')]+[
         ('Software\\Classes\\'+ext,'OrbisDesk.Text')
-        for ext in ('.txt','.log','.ini','.cfg','.conf','.json','.md','.csv','.xml')]:
+        for ext in ('.txt','.log','.ini','.cfg','.conf','.json','.md','.csv','.xml','.vdf','.acf','.nfo')]:
     escaped=key.replace('\\','\\\\')
     if '['+escaped+']' in system_text:
         # Preserve existing Wine associations, e.g. .ini -> inifile -> Notepad.
@@ -878,9 +969,11 @@ text+='\n[Software\\\\Wine\\\\Drivers] 1793390636\n#time=1dd68a9cb52bf36\n"Audio
 # loader, MangoHud, Gecko's adapter query); system32\dxgi.dll is DXVK's (see the DXVK block).
 if '[Software\\\\Wine\\\\AppDefaults\\\\explorer.exe\\\\DllOverrides]' in text:raise SystemExit('user.reg: unexpected explorer.exe DllOverrides')
 text+='\n[Software\\\\Wine\\\\AppDefaults\\\\explorer.exe\\\\DllOverrides] 1793390636\n#time=1dd68a9cb52bf36\n"dxgi"="builtin"\n'
-# W190: the 64-bit Direct3D 11 test needs DXVK's dxgi, which only a title running alone gets.
-if '[Software\\\\Wine\\\\AppDefaults\\\\d3d11test64.exe]' in text:raise SystemExit('user.reg: unexpected d3d11test64.exe AppDefaults')
-text+='\n[Software\\\\Wine\\\\AppDefaults\\\\d3d11test64.exe] 1793390636\n#time=1dd68a9cb52bf36\n"OrbisRunsAlone"="Y"\n'
+# d3d11test64.exe now works as a desktop guest. Do not seed an exclusive execution rule.
+# Phase B / P014: seed separate_probe64.exe to the "separate" execution mode so launching it from the
+# desktop exercises the PW_EXEC_SEPARATE path (tools/build-guest-hw.py), which spawns the separate-process
+# child that joins this wineserver. ps4_execution_mode reads AppDefaults\<base>\OrbisExecutionMode (HKCU).
+text+='\n[Software\\\\Wine\\\\AppDefaults\\\\separate_probe64.exe] 1793390636\n#time=1dd68a9cb52bf36\n"OrbisExecutionMode"="separate"\n'
 # W045: a dark scheme through the system colours (the prefix's Colors key is empty, so Wine
 # used its classic grey). Light text on every dark face: buttons and taskbar, menus,
 # captions, windows, tooltips; blue selection with white text.
@@ -1023,6 +1116,14 @@ with zipfile.ZipFile(seamonkey_zip) as archive:
         target=seamonkey_dir.joinpath(*parts[1:]);target.parent.mkdir(parents=True,exist_ok=True)
         with archive.open(member) as source,target.open('wb') as out_file:shutil.copyfileobj(source,out_file)
 if not (seamonkey_dir/'seamonkey.exe').is_file():raise SystemExit('SeaMonkey archive has no seamonkey.exe')
+# 04.19 (docs/SEAMONKEY_GPU.md): GPU compositing through OpenGL (Mesa WGL/Zink). layers.prefer-opengl is a default
+# preference in SeaMonkey's own defaults/pref, not in user.js, so turning it off in about:config stays across starts
+# and uploads (prefs.js is the console's); user.js keeps Direct3D 11 blocked.
+(seamonkey_dir/'defaults/pref').mkdir(parents=True,exist_ok=True)
+(seamonkey_dir/'defaults/pref/orbisdesk-gpu.js').write_text((ROOT/'fixtures/browser/seamonkey-gpu.js').read_text())
+# 04.30: the GPU and WebGL switches are defaults in orbisdesk-gpu.js; this autoconfig file (named there) clears, once per
+# profile, the values user.js saved in prefs.js up to 04.29
+(seamonkey_dir/'orbisdesk.cfg').write_text((ROOT/'fixtures/browser/seamonkey-orbisdesk.cfg').read_text())
 # W303: VLC opened without the Start menu's options (from WFM, a file association) asks its first-run privacy
 # question on a clean install; the answer the shortcuts give (--no-qt-privacy-ask, no network metadata), as VLC
 # writes it. (The DVD Player shortcut closing at once without a disc is W246's --play-and-exit, not this.)
@@ -1040,6 +1141,16 @@ mangohud_conf.parent.mkdir(parents=True,exist_ok=True)
 mangohud_conf.write_text('# MangoHud settings (OrbisDesk). Save and restart OrbisDesk to apply.\n'
                          '# Options: https://github.com/flightlessmango/MangoHud#hud-configuration\n'
                          'fps\nframetime\nframe_timing=1\ncpu_stats\ngpu_stats\nram\nposition=top-left\n')
+# MangoJuice (docs/MANGOJUICE.md, tools/build-mangojuice-hw.py): the MangoHud settings GUI, GTK4 drawn by cairo,
+# in C:\Program Files\MangoJuice (not stripped below, as VLC); the Start menu's Graphics Tools > MangoJuice opens it.
+# It rewrites the file above, which is only the clean-install default: updates keep the console's copy
+# (console_state.CONSOLE_OWNED_FILES).
+mangojuice=json.loads((ROOT/'out/mangojuice-hw/manifest.json').read_text())
+if mangojuice['builder_sha256']!=sha(ROOT/'tools/build-mangojuice-hw.py'):raise SystemExit('MangoJuice differs from its builder')
+if mangojuice['lock_sha256']!=sha(ROOT/'mangojuice.lock.json'):raise SystemExit('MangoJuice differs from its lock')
+for relative,e in mangojuice['files'].items():
+    target=prefix/'drive_c/Program Files'/relative;target.parent.mkdir(parents=True,exist_ok=True)
+    copy_verified(ROOT/'out/mangojuice-hw'/relative,target,e['sha256'])
 # W284 (W281: NFS U2's second start had no music: its timer outlived the program and killed winmm's timer thread):
 # winmm.dll that removes a timer whose function is gone or faults (tools/build-winmm-hw.py). After every other
 # staging, so it replaces the host copies in the builtin folders and the prefix.
@@ -1076,7 +1187,9 @@ from wine_product_seeds import declaration
 # (and the two W302's prefix had: apisetschema.dll, which out/wine-pe64 provides and the prefix preflight requires
 # in system32 (native/wine_prefix_probe.c, dll-pe64; W303's first final build stopped with rc 95 without it), and
 # newdev.dll)
-KEPT_LEFT_OUT={'appwiz.cpl','desk.cpl','inetcpl.cpl','joy.cpl','apisetschema.dll','newdev.dll'}
+# dwrite.dll: its Unix side is now in the ELF (tools/build-unixlibs-ps4.py, platform/ps4/pw_dwrite_unix.c), and
+# MangoJuice's harfbuzz and pangowin32 import it; a copy only in the builtin folder still failed (run-0061).
+KEPT_LEFT_OUT={'appwiz.cpl','desk.cpl','inetcpl.cpl','joy.cpl','apisetschema.dll','newdev.dll','dwrite.dll'}
 left_out_removed=[]
 for reason,names in declaration(ROOT/'tools/stage-wine-i386.py','W261_LEFT_OUT').items():
     for folder in (('system32',) if reason.startswith('x86_64 only') else ('system32','syswow64')):
@@ -1085,6 +1198,32 @@ for reason,names in declaration(ROOT/'tools/stage-wine-i386.py','W261_LEFT_OUT')
             if name.lower() in KEPT_LEFT_OUT or not target.is_file():continue
             target.unlink();left_out_removed.append(folder+'/'+name)
 print(json.dumps({'left_out_removed':len(left_out_removed)}))
+# MangoJuice's Windows DLLs from Wine, and theirs in turn (api-ms-win-* resolve through the apiset), after the
+# removals above and in system32 only: run-0060 had DWrite.dll nowhere, and run-0061 had it only in the builtin
+# folder (the loop above had removed system32's), and both times harfbuzz, cairo and GTK did not load.
+def pe_imports(path):
+    """Names in the import and delay-import tables of a PE32+ (Wine's own DELAYIMPORTS bind lazily, not here)."""
+    blob=path.read_bytes();pe=struct.unpack_from('<I',blob,0x3c)[0]
+    count=struct.unpack_from('<H',blob,pe+6)[0];optional=pe+24;size=struct.unpack_from('<H',blob,pe+20)[0]
+    if struct.unpack_from('<H',blob,optional)[0]!=0x20b:return set()
+    sections=[struct.unpack_from('<IIII',blob,optional+size+40*i+8) for i in range(count)]
+    def at(rva):return next((raw+rva-va for vsize,va,rsize,raw in sections if va<=rva<va+max(vsize,rsize)),None)
+    names=set()
+    for directory,entry_size,field in ((1,20,12),(13,32,4)):
+        rva=struct.unpack_from('<I',blob,optional+112+8*directory)[0];offset=at(rva) if rva else None
+        while offset is not None and blob[offset:offset+entry_size]!=bytes(entry_size):
+            name=at(struct.unpack_from('<I',blob,offset+field)[0])
+            if name is not None:names.add(blob[name:blob.index(b'\0',name)].decode().lower())
+            offset+=entry_size
+    return names
+system32={p.name.lower():p for p in (windows/'system32').iterdir()}
+needed={dll:'mangojuice' for dll in mangojuice['system_imports']};pending=list(needed);missing=[]
+while pending:
+    dll=pending.pop()
+    if dll.startswith(('api-ms-win-','ext-ms-win-')):continue
+    if dll not in system32:missing.append('%s (needed by %s)'%(dll,needed[dll]));continue
+    for name in pe_imports(system32[dll])-needed.keys():needed[name]=dll;pending.append(name)
+if missing:raise SystemExit('MangoJuice imports DLLs system32 lacks: '+', '.join(sorted(missing)))
 I386_PROGRAMS=('explorer','rundll32','svchost','winedevice')
 subprocess.run(['make','-j8',*[f'programs/{p}/i386-windows/{p}.exe' for p in I386_PROGRAMS]],
                cwd=ROOT/'.deps/wine/runtime/build',capture_output=True,text=True,check=True)
@@ -1135,10 +1274,40 @@ for module in sorted(p for p in data.rglob('*') if p.is_file()):
             temporary.replace(module);stripped['identity'].append(str(module.relative_to(data)));break
         temporary.unlink(missing_ok=True)
 print(json.dumps({'identity_stripped':len(stripped['identity'])}))
+# 2026-11-20 (the clean CI install of 04.32 measured 1651 MB in /data): each PS4 build of a Wine module goes
+# to lib/wine and, the same bytes, to the prefix's system32 or syswow64 (155 modules, 93 MB twice). Wine's
+# loader takes a builtin from lib/wine first and, when lib/wine has none, the prefix's copy, which carries the
+# builtin marker: most modules already load that way (find_builtin_dll's "cannot find builtin library" lines).
+# So the lib/wine copy of a module whose prefix copy is identical goes. ntdll stays in lib/wine: the Unix loader
+# maps it from there, and native/pop_wine_child.c opens lib/wine/x86_64-windows/ntdll.dll by path. comctl32_v6
+# stays too: Wine loads it by that name only from the builtin folder (see its staging above), so a prefix copy
+# (a reused local runtime folder had one) must never stand in for it.
+KEEP_LIBRARY_COPY={'ntdll.dll','apisetschema.dll','comctl32_v6.dll'}  # opened only from lib/wine
+# A module whose Unix library is linked into the ELF stays too: platform/ps4/pw_wine_unixlibs.c finds
+# it by the unix_path Wine sets only for a builtin loaded from lib/wine. 04.42 and 04.43 loaded win32u
+# from system32 with no Unix side ("PWBOOT static_unixlib .../win32u.so" never logged): conhost crashed
+# in gdi32 at desktop start and the start hung at WINE SERVER READY.
+import re
+UNIXLIB_STEMS={n.lower() for n in re.findall(r'\{"([A-Za-z0-9_]+)\.so"',(ROOT/'platform/ps4/pw_wine_unixlibs.c').read_text())}
+if 'win32u' not in UNIXLIB_STEMS: raise SystemExit('pw_wine_unixlibs.c: no static Unix library table')
+def keep_library_copy(name):
+    name=name.lower();return name in KEEP_LIBRARY_COPY or name.rsplit('.',1)[0] in UNIXLIB_STEMS
+library_copies_removed=[]
+for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
+    for module in sorted((data/'wine/lib/wine'/arch).iterdir()):
+        twin=prefix/'drive_c/windows'/windows/module.name
+        if (module.is_file() and not keep_library_copy(module.name) and twin.is_file()
+                and twin.read_bytes()==module.read_bytes()):
+            module.unlink();library_copies_removed.append(module.relative_to(data).as_posix())
+print(json.dumps({'library_copies_removed':len(library_copies_removed),
+                  'mb':round(sum((prefix/'drive_c/windows'/('system32' if p.split('/')[3]=='x86_64-windows' else 'syswow64')/p.split('/')[-1]).stat().st_size
+                                 for p in library_copies_removed)/2**20,1)}))
 # W170: the console keeps /data/wine-prefix between builds and the upload only adds files, so a
 # file a build stops shipping stays. W168's shortcut in the common Desktop showed File Manager
 # twice next to W169's one in the user's Desktop. upload-hardware.py deletes these paths.
 obsolete_files=['wine-prefix/drive_c/users/Public/Desktop/File Manager.lnk',
+    # MangoJuice replaces the "MangoHud Config" shortcut, which opened MangoHud.conf in Notepad (W090-W303)
+    'wine-prefix/drive_c/ProgramData/Microsoft/Windows/Start Menu/Graphics Tools/MangoHud Config.lnk',
     # W179 (phase 9): iexplore cannot run in one process (it registers a local COM server, which
     # needs rpcss); W177 shipped its Start menu shortcut, which W179 no longer makes.
     'wine-prefix/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Internet/Internet Explorer.lnk',
@@ -1160,22 +1329,48 @@ obsolete_files+=['wine-prefix/drive_c/Program Files/VLC/'+name for name in vlc['
 obsolete_files.append('wine-prefix/drive_c/windows/system32/libcdio.dll')
 # W303: the applets removed above, on a console a W303 package installed before
 obsolete_files+=['wine-prefix/drive_c/windows/'+folder+'/'+name for folder in ('system32','syswow64') for name in REMOVED_APPLETS]
+# 2026-11-20: what this build stops shipping to make the runtime smaller, on a console an earlier build installed.
+# Wine Mono's development tools and reference assemblies (tools/stage-wine-mono.py dropped_paths)...
+obsolete_files+=['wine-prefix/drive_c/windows/mono/mono-2.0/'+relative for relative in mono['dropped_paths']]
+# ...the games' 93 MB source archive (tools/build-games.py: the release's third-party sources carry it)...
+obsolete_files.append('wine-prefix/drive_c/windows/system32/games-source.tar.gz')
+# ...and the lib/wine copies removed above. One left behind would win over the prefix's newer copy.
+obsolete_files+=library_copies_removed
+# The same holds for a lib/wine copy that an older build (alpha 1, W303 before 2026-11-20) shipped under a name
+# this build never puts there: for every module of system32 and syswow64 with no lib/wine copy in this build, its
+# lib/wine path is obsolete too (an absent file is fine). lib/wine holds only what the package ships.
+for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
+    for module in sorted((prefix/'drive_c/windows'/windows).iterdir()):
+        library='wine/lib/wine/%s/%s'%(arch,module.name)
+        if (module.is_file() and not keep_library_copy(module.name)
+                and not (data/library).exists() and library not in obsolete_files):
+            obsolete_files.append(library)
+# A runtime folder kept from an earlier local build may still hold what this one no longer ships (a clean CI
+# workspace never does): it goes before the inventory, so it is neither shipped nor both shipped and obsolete.
+stale_removed=0
+for path in obsolete_files:
+    if (data/path).is_file():(data/path).unlink();stale_removed+=1
+print(json.dumps({'stale_runtime_files_removed':stale_removed}))
 # The runtime's inventory (also the manifest's, below) and what the console must drop
 runtime_directories=[p.relative_to(data).as_posix() for p in sorted(data.rglob('*')) if p.is_dir()]
 runtime_files={p.relative_to(data).as_posix():{'sha256':sha(p),'bytes':p.stat().st_size} for p in sorted(data.rglob('*')) if p.is_file()}
+OBSOLETE_ROOTS=('wine-prefix/','wine/lib/wine/')  # the same roots native/hw_install.h and upload-hardware.py accept
 for path in obsolete_files:
-    if not path.startswith('wine-prefix/') or '..' in path.split('/') or path in runtime_files:
-        raise SystemExit('obsolete file must be an unshipped wine-prefix path: '+path)
+    if not path.startswith(OBSOLETE_ROOTS) or '..' in path.split('/') or path in runtime_files:
+        raise SystemExit('obsolete file must be an unshipped wine-prefix or wine/lib/wine path: '+path)
 user_reg_reset=[]   # CONSOLE_OWNED keys this build takes from its own user.reg once (tools/console_state.py)
 # alpha-1: the runtime travels inside OrbisDesk.pkg as /app0/runtime, and the launcher installs it into
 # /data on the first start of each build (native/hw_install.c), with install.json as its contract:
 # the same rules tools/upload-hardware.py applies over FTP. --runtime-outside-package keeps the old
 # split (a 35 MB package and an FTP-uploaded runtime) for quick development builds.
-from console_state import CONSOLE_OWNED
+from console_state import CONSOLE_OWNED,CONSOLE_OWNED_FILES
+for path in CONSOLE_OWNED_FILES:
+    if path not in runtime_files:raise SystemExit('console-owned file not in the runtime: '+path)
 install={'schema_version':1,'build':HW_BUILD_ID,'app_version':args.app_version,'state_root':'/data/orbisdesk',
     'writable':['wine-prefix','wine-home'],'directories':runtime_directories,
     'files':[[path,e['sha256'],e['bytes']] for path,e in runtime_files.items()],
-    'obsolete_files':obsolete_files,'console_owned':list(CONSOLE_OWNED),'user_reg_reset':user_reg_reset,
+    'obsolete_files':obsolete_files,'console_owned':list(CONSOLE_OWNED),'console_owned_files':list(CONSOLE_OWNED_FILES),
+    'user_reg_reset':user_reg_reset,
     'host_profile':host_profiles[0].name,'bytes':sum(e['bytes'] for e in runtime_files.values())}
 install_json=work/'install.json'
 install_json.write_text(json.dumps(install,indent=1,ensure_ascii=False)+'\n',encoding='utf-8')
@@ -1186,6 +1381,7 @@ def install_line(kind,value):
 install_text='ORBISDESK-INSTALL 1\n'+install_line('B',HW_BUILD_ID)+install_line('H',host_profiles[0].name)+install_line('T',str(install['bytes']))
 install_text+=''.join(install_line('W',w) for w in install['writable'])
 install_text+=''.join(install_line('K',k) for k in CONSOLE_OWNED)+''.join(install_line('R',k) for k in user_reg_reset)
+install_text+=''.join(install_line('P',p) for p in CONSOLE_OWNED_FILES)
 install_text+=''.join(install_line('D',d) for d in runtime_directories)
 install_text+=''.join(install_line('F','%s %d %s'%(e['sha256'],e['bytes'],path)) for path,e in runtime_files.items())
 install_text+=''.join(install_line('O',o) for o in obsolete_files)
@@ -1246,13 +1442,33 @@ for name in ('src/cpu_win32.cpp','src/hud_elements.cpp','src/orbis_metrics.h','s
     if name not in overlay_proof['sources']:raise SystemExit('W303 native metrics source missing from build proof: '+name)
 if overlay_proof['sources']['src/orbis_telemetry.h']!=sha(ROOT/'platform/ps4/pw_telemetry.h'):
     raise SystemExit('MangoHud/native telemetry schemas differ')
+# 04.20: both MangoHud builds show frame generation's frames on screen in their FPS row (patch-mangohud-orbis-framegen.py),
+# from the version 2 telemetry this native side answers; a HUD built before it would keep showing the game's 30
+for label,proof,tree in (('x64',overlay_proof,'mangohud-win'),('i386',hud32,'mangohud-win-i386')):
+    for name in ('src/hud_elements.cpp','src/orbis_framegen.h','src/orbis_telemetry.h'):
+        if name not in proof['sources']:raise SystemExit('MangoHud '+label+' frame generation source missing from build proof: '+name)
+    if 'OrbisDesk 04.20: frame generation frames on screen' not in (vk/'src'/tree/'src/hud_elements.cpp').read_text():
+        raise SystemExit('MangoHud '+label+' was built without the frame generation FPS row (build-mangohud.sh)')
+    if proof['sources']['src/orbis_telemetry.h']!=sha(ROOT/'platform/ps4/pw_telemetry.h'):
+        raise SystemExit('MangoHud '+label+'/native telemetry schemas differ')
+    # 04.26 (run-0234): the GPU name without std::regex (patch-mangohud-gpu-name.py)
+    if 'OrbisDesk 04.26: GPU name without std::regex' not in (vk/'src'/tree/'src/file_utils.cpp').read_text():
+        raise SystemExit('MangoHud '+label+' was built with std::regex in the GPU name (build-mangohud.sh)')
+    # 04.26 (04.25: "RAM 859.8 GiB", MiB labelled GiB): patch-mangohud-win-memory.py
+    if 'OrbisDesk 04.26: RAM in GiB' not in (vk/'src'/tree/'src/memory_win32.cpp').read_text():
+        raise SystemExit('MangoHud '+label+' was built with its RAM row in MiB (build-mangohud.sh)')
 manifest['mangohud']={'library_sha256':vulkan_files['libMangoHud.dll'],
     'enabled':mangohud_enabled,'implicit_layer_registry_dword':0 if mangohud_enabled else 1,
     'sampling':'frame','fps_metrics':'frame','config_watcher':False,'config_apply':'restart OrbisDesk',
     'patched_vulkan_source_sha256':sha(overlay_source),
     'fix':'shared UI protected; joins and downstream teardown outside UI lock; service synchronous sent messages while joining',
     'build_proof':overlay_proof,
-    'hardware_validation':'pending','cpu_gpu_telemetry_changed':True,'metric_labels':['CPU','GPU']}
+    'hardware_validation':'pending','cpu_gpu_telemetry_changed':True,'metric_labels':['CPU','GPU'],
+    'excluded_programs':['seamonkey.exe'],  # 04.26: no MangoHud layer (tools/build-guest-hw.py ps4_guest_no_hud)
+    'show_hide':'Shift+F12 held until a Vulkan present (0.25-3 s); in front while the window in front last presented',
+    'framegen_fps_row':{'telemetry_version':2,'value':'frames on screen, real plus generated','superscript':'FG',
+                        'match':'swapchain size equals the followed image','frametime_graph_limiter_logs':'MangoHud own',
+                        'physical_validation':'pending'}}
 for source in (ROOT/'tools/vk-h0/build-mangohud.sh',ROOT/'tools/vk-h0/build-mangohud-i386.sh',ROOT/'tools/vk-h0/build-vulkan-loader-i386.sh',ROOT/'tools/vk-h0/patch-mangohud-shared-process.py',ROOT/'tools/vk-h0/patch-mangohud-teardown.py',ROOT/'tools/vk-h0/patch-mangohud-frame-sampling.py'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
 manifest['shell_diagnostics']={'build':'W303','purpose':'locate Start failure after guest window/thread teardown',
@@ -1269,32 +1485,38 @@ manifest['experiment']={'kind':'DOSBox Pure interpreted PE64 guest with GDI and 
     'not_a_validated_fix':True}
 for source in (ROOT/'tools/build-explorer-hw.py',ROOT/'tools/build-guest-hw.py'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
-manifest['native_telemetry']={'abi_version':1,'query_class':'0x50573454','cpu':'getrusage SELF user + kernel / wall / initial affinity capacity',
+manifest['native_telemetry']={'abi_version':1,'framegen_abi_version':2,'query_class':'0x50573454','cpu':'getrusage SELF user + kernel / wall / initial affinity capacity',
     'gpu':'union of title GFX submission timestamps in Crema queue order','build':telemetry_build,
     'physical_validation':'pending','standard_windows_cpu_classes_modified':['SystemProcessorPerformanceInformation','SystemPerformanceInformation.IdleTime']}
 manifest['task_manager']={'build':taskmgr,'runtime_differences':['taskmgr.exe','ntdll unix system.o'],
     'cpu':'title process busy/(capacity*wall), same source as the HUD; not system-wide',
     'processes':'Wine processes only; guests share the explorer process','physical_validation':'pending'}
 manifest['source_hashes']['tools/build-taskmgr-hw.py']=sha(ROOT/'tools/build-taskmgr-hw.py')
+for source in ('tools/build-mangojuice-hw.py','mangojuice.lock.json'):  # MangoJuice
+    manifest['source_hashes'][source]=sha(ROOT/source)
 manifest['source_hashes']['tools/build-winecfg-hw.py']=sha(ROOT/'tools/build-winecfg-hw.py')  # W182
 manifest['source_hashes']['tools/build-dxgi-hw.py']=sha(ROOT/'tools/build-dxgi-hw.py')  # W192
 manifest['source_hashes']['platform/ps4/pw_wine_threads.c']=sha(ROOT/'platform/ps4/pw_wine_threads.c')  # W195
 manifest['source_hashes']['tools/build-nsi-hw.py']=sha(ROOT/'tools/build-nsi-hw.py')  # W174 (phase 8)
+manifest['source_hashes']['tools/stage-wine-mono.py']=sha(ROOT/'tools/stage-wine-mono.py')  # Wine Mono
 for source in ('tools/stage-wine-gecko.py','tools/stage-mshtml-hw.py','fixtures/win32/webview.c','fixtures/web/index.html',
-               'fixtures/browser/seamonkey-user.js'):  # W177 (phase 9); SeaMonkey replaced Pale Moon
+               'fixtures/browser/seamonkey-user.js','fixtures/browser/seamonkey-gpu.js',
+               'fixtures/browser/seamonkey-orbisdesk.cfg'):  # W177 (phase 9); SeaMonkey replaced Pale Moon; 04.19 GPU
     manifest['source_hashes'][source]=sha(ROOT/source)
 manifest['source_hashes']['tools/build-bcrypt-x64.py']=sha(ROOT/'tools/build-bcrypt-x64.py')  # W179 (phase 9)
 for source in ('fixtures/win32/winecfgcpl.c','fixtures/win32/winecfgcpl.rc'):  # W179
     manifest['source_hashes'][source]=sha(ROOT/source)
 for source in (ROOT/'native/telemetry.c',ROOT/'platform/ps4/pw_telemetry.h',ROOT/'tools/build-telemetry-ps4.py',
-               ROOT/'tools/vk-h0/patch-crema-telemetry.py',ROOT/'tools/vk-h0/patch-mangohud-orbis-metrics.py'):
+               ROOT/'tools/vk-h0/patch-crema-telemetry.py',ROOT/'tools/vk-h0/patch-mangohud-orbis-metrics.py',
+               ROOT/'tools/vk-h0/patch-mangohud-orbis-framegen.py',ROOT/'tools/vk-h0/patch-mangohud-gpu-name.py',
+               ROOT/'tools/vk-h0/patch-mangohud-win-memory.py'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
 manifest['file_manager']={'drive_discovery':'real GetFileAttributesW roots in PS4 guest mode',
     'enumeration':'validated find handle; no archive-bit requirement; PWFM errors and counts',
     'wfm_build':json.loads((ROOT/'out/wfm/manifest.json').read_text()),
     'guest_build':json.loads((ROOT/'out/guest-hw/manifest.json').read_text()),
     'open_dispatch':'copied WM_COPYDATA request queued on Explorer desktop thread; ShellExecuteEx NOASYNC',
-    'text_associations':['.txt','.log','.ini','.cfg','.conf','.json','.md','.csv','.xml'],
+    'text_associations':['.txt','.log','.ini','.cfg','.conf','.json','.md','.csv','.xml','.vdf','.acf','.nfo'],
     'association_hive':'HKLM Software Classes (HKCR in pinned Wine)',
     'directory_rename':'real syscall and cached directory/cwd repair; native fs object overridden explicitly',
     'filesystem_object_sha256':sha(fs_override),
@@ -1308,13 +1530,23 @@ manifest['file_manager']={'drive_discovery':'real GetFileAttributesW roots in PS
     'physical_validation':'pending'}
 for source in (ROOT/'platform/ps4/pw_dirent_record.h',ROOT/'native/wine_dirent_record_check.c',ROOT/'tools/build-wfm.py',ROOT/'tools/patch-wfm-files.py',ROOT/'tools/wfm-operations.h',ROOT/'tools/wfm-debug.h',ROOT/'tools/build-wine-delete-server.py',ROOT/'tools/build-wine-directory-ps4.py',ROOT/'tools/build-explorer-hw.py',
                ROOT/'tools/patch-explorer-open.py',ROOT/'platform/ps4/pw_shell_open.h',
-               ROOT/'native/hw_sink_gpu/hw_sink_gpu.c',ROOT/'native/hw_sink_gpu/screen.vert',ROOT/'native/hw_sink_gpu/screen.frag'):
+               ROOT/'native/hw_sink_gpu/hw_sink_gpu.c',ROOT/'native/hw_sink_gpu/screen.vert',ROOT/'native/hw_sink_gpu/screen.frag',
+               ROOT/'native/hw_sink_gpu/framegen.inc.c',ROOT/'native/hw_sink_gpu/fg_common.glsl',
+               ROOT/'native/hw_sink_gpu/fg_capture.comp',ROOT/'native/hw_sink_gpu/fg_coarse.comp',
+               ROOT/'native/hw_sink_gpu/fg_fine.comp',ROOT/'native/hw_sink_gpu/fg_blend.comp',
+               ROOT/'platform/ps4/pw_fps_limit.h',ROOT/'platform/ps4/pw_framegen_sched.h'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
 manifest['dos_runtime']=dos
 for source in ('native/dos_audio.c','native/doshost_win32.c','platform/ps4/pw_dos_audio.h','tools/explorer-dos.h','tools/build-dos-runtime.py','dos.lock.json'):
     manifest['source_hashes'][source]=sha(ROOT/source)
 manifest['product']={'name':'OrbisDesk','slug':'orbisdesk','state_root':'/data/orbisdesk',
     'upgrade_identity_preserved':True,'legacy_evidence_unchanged':True}
+manifest['request_writer']={
+    'client_object':str(request_client_chunked.relative_to(ROOT)),
+    'client_object_sha256':sha(request_client_chunked),
+    'writer_object':str(request_writer.relative_to(ROOT)),
+    'writer_object_sha256':sha(request_writer)}
+manifest['source_hashes'][str(request_writer_source.relative_to(ROOT))]=sha(request_writer_source)
 for source in ('platform/ps4/pw_brand.h','tools/project_brand.py','tools/orbis_package.py'):
     manifest['source_hashes'][source]=sha(ROOT/source)
 (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')

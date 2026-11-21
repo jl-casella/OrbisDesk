@@ -150,24 +150,48 @@ static NTSTATUS pad_profile( void *args )
     return STATUS_SUCCESS;
 }
 
+/* 04.31: the world a program starts in, for the overlay's RENDERER (native/hw_overlay.c, 32-bit programs only): a
+ * guest's launch calls through this table from a 64-bit kernelbase, through the WoW64 one from a 32-bit kernelbase
+ * (tools/build-guest-hw.py ps4_guest_pad_profile). Weak: an ELF without the overlay. */
+extern void pw_wine_pad_program_bits( const char *exe, int bits ) __attribute__((weak));
+static NTSTATUS pad_profile_bits( void *args, int bits )
+{
+    struct xinput_profile_params *params = args;
+
+    params->exe[sizeof(params->exe) - 1] = 0;
+    if (params->load && params->exe[0] && params->exe[0] != '<' && pw_wine_pad_program_bits)
+        pw_wine_pad_program_bits( params->exe, bits );
+    return pad_profile( args );
+}
+
+static NTSTATUS pad_profile64( void *args )
+{
+    return pad_profile_bits( args, 64 );
+}
+
 const unixlib_entry_t __wine_unix_call_funcs[] =
 {
     pad_init,
     pad_state,
     pad_rumble,
-    pad_profile,
+    pad_profile64,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
 
 #ifdef _WIN64
 
+static NTSTATUS pad_profile32( void *args )
+{
+    return pad_profile_bits( args, 32 );
+}
+
 const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 {
     pad_init,
     pad_state,
     pad_rumble,
-    pad_profile,
+    pad_profile32,
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );

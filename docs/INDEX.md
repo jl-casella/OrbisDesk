@@ -162,6 +162,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [HARDWARE_W228.md](HARDWARE_W228.md) — W228: ROOT mode and USB drives as units
 - [HARDWARE_W284.md](HARDWARE_W284.md) — OrbisDesk: package with a clean name (W284)
 - [HARDWARE_W285_W288.md](HARDWARE_W285_W288.md) — W285–W288: guest audio streams, GPU log folder, GRAPHICS menu and MangoHud on wined3d
+- [HARDWARE_guest-gpu-memory.md](HARDWARE_guest-gpu-memory.md) — GPU memory of guests that end inside explorer
 - [HARDWARE_mando-hid.md](HARDWARE_mando-hid.md) — Command as a HID gamepad (Wine HID stack within the process)
 - [HARDWARE_mando-juegos-analisis.md](HARDWARE_mando-juegos-analisis.md) — Command for games after W195: analysis (draft, no code changes)
 
@@ -220,6 +221,23 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 ## Other public notes
 
 - [CI.md](CI.md) — Running CI and measuring the platform matrix
+- [DESKTOP_BACKGROUND.md](DESKTOP_BACKGROUND.md) — Desktop background dialog: your own pictures as wallpaper (draft)
+- [FPS_LIMIT.md](FPS_LIMIT.md) — FPS limit (per program)
+- [FRAME_GENERATION.md](FRAME_GENERATION.md) — Frame generation (experimental)
+- [MANAGE_INSTALLATION.md](MANAGE_INSTALLATION.md) — Manage installation
+- [MANGOJUICE.md](MANGOJUICE.md) — MangoJuice: the MangoHud settings program
+- [OVERLAY_MENU.md](OVERLAY_MENU.md) — The L3+R3 overlay menu (04.31)
+- [POP_SEPARATE_PROCESS.md](POP_SEPARATE_PROCESS.md) — Separate Windows processes (PoP phases B–D)
+- [PROCESS_FAMILY_PROBES.md](PROCESS_FAMILY_PROBES.md) — Process-family probes for fixed-base launchers
 - [RELEASES.md](RELEASES.md) — Product builds, releases and the development branch
 - [RELEASE_LICENSES.md](RELEASE_LICENSES.md) — Release licenses (alpha-1)
 - [RELEASE_TRACES.md](RELEASE_TRACES.md) — Release traces: one switch for alpha-1
+- [RUNTIME_SIZE.md](RUNTIME_SIZE.md) — Runtime size
+- [SEAMONKEY_DESCRIPTORS.md](SEAMONKEY_DESCRIPTORS.md) — SeaMonkey and the title's file descriptors
+- [SEAMONKEY_FILE_LOCKS.md](SEAMONKEY_FILE_LOCKS.md) — SeaMonkey, SQLite and byte-range file locks
+- [SEAMONKEY_FLEXIBLE_MEMORY.md](SEAMONKEY_FLEXIBLE_MEMORY.md) — SeaMonkey and the flexible memory pool
+- [SEAMONKEY_GPU.md](SEAMONKEY_GPU.md) — SeaMonkey GPU compositing
+- [SEAMONKEY_RESPONSIVENESS.md](SEAMONKEY_RESPONSIVENESS.md) — SeaMonkey responsiveness on the console
+- [SHADER_CACHE.md](SHADER_CACHE.md) — Shader compiles, frame time and the disk shader cache
+- [WARCRAFT3.md](WARCRAFT3.md) — Warcraft III 1.07: Storm's static imports and the AVI intro movies
+- [WINE_MONO.md](WINE_MONO.md) — Wine Mono: .NET programs

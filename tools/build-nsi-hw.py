@@ -20,8 +20,13 @@ sceNetCtlGetInfo:
 - IPv4 routes: 127.0.0.0/8, the console's subnet and the default route to its gateway;
 - IPv6: the loopback address only, no routes (the console's IPv6 settings are not read).
 Link speeds and traffic counters are not known and stay 0. Any other table (TCP/UDP endpoints,
-statistics, neighbours, IP interface parameters, change notifications) returns
-ERROR_NOT_SUPPORTED with an ERR line, as does every table when libSceNetCtl cannot be read.
+statistics, neighbours, IP interface parameters) returns ERROR_NOT_SUPPORTED with an ERR line,
+as does every table when libSceNetCtl cannot be read.
+
+Change notifications (NotifyAddrChange, CancelIPChangeNotify): a request stays pending until the
+console settings differ from those read when it was made; they are read every 2 seconds, by the
+calling thread for a synchronous request and by a watcher thread for OVERLAPPED ones. Until 04.33
+these failed at once, and callers that retry (Chromium in libcef) asked twice a second.
 """
 import hashlib,json,pathlib,shutil,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1]
@@ -505,12 +510,202 @@ revise('nsi.c','''    if (params->unk) FIXME( "unknown parameter %#lx.\\n", para
 
     if (device == INVALID_HANDLE_VALUE) return GetLastError();''','''    if (params->unk) FIXME( "unknown parameter %#lx.\\n", params->unk );
 
-    if (device == INVALID_HANDLE_VALUE)
+    if (device == INVALID_HANDLE_VALUE) return console_change_request( params );  /* OrbisDesk */''',
+       'Change notifications without the device: pending until the console settings change.')
+
+# Change notifications without nsiproxy.sys. Until 04.33 they failed at once with
+# ERROR_NOT_SUPPORTED, and callers that retry (Chromium's NetworkChangeNotifierWin in libcef,
+# Left 4 Dead 2 run-0266) asked again every 500 ms for the whole session.
+revise('nsi.c','''DWORD WINAPI NsiCancelChangeNotification( OVERLAPPED *ovr )
+{''','''static DWORD console_change_cancel( OVERLAPPED *ovr );  /* OrbisDesk, below */
+
+DWORD WINAPI NsiCancelChangeNotification( OVERLAPPED *ovr )
+{''','The device-less cancel is defined with the requests.')
+revise('nsi.c','''    if (!ovr) return ERROR_NOT_FOUND;
+    if (!CancelIoEx(''','''    if (!ovr) return ERROR_NOT_FOUND;
+    if (get_nsi_device( TRUE ) == INVALID_HANDLE_VALUE) return console_change_cancel( ovr );  /* OrbisDesk */
+    if (!CancelIoEx(''','CancelIPChangeNotify without the device.')
+revise('nsi.c','''DWORD WINAPI NsiRequestChangeNotification( DWORD unk,''','''/* OrbisDesk: change notifications without nsiproxy.sys (tools/build-nsi-hw.py).
+ * nsiproxy completes a request when the host reports a change of the table. Nothing reports
+ * changes of the console's settings, so they are read again (sceNetCtlGetInfo) every
+ * CONSOLE_CHANGE_POLL_MS and a request completes when they differ from those read when it was
+ * made: a new address, netmask, gateway, MTU, MAC or interface type, or the address going away.
+ * A synchronous request waits in its own thread; an OVERLAPPED one is completed by a watcher
+ * thread that runs while any request is pending. CancelIPChangeNotify completes it with
+ * STATUS_CANCELLED. Any table asked for is answered from the same settings, as the console
+ * tables are. */
+#define CONSOLE_CHANGE_POLL_MS 2000
+#define CONSOLE_STATUS_CANCELLED ((NTSTATUS)0xc0000120)
+
+struct console_change
+{
+    struct console_change *next;
+    OVERLAPPED *ovr;
+    struct console base;  /* the settings when the request was made */
+};
+
+static CRITICAL_SECTION console_change_cs;
+static CRITICAL_SECTION_DEBUG console_change_cs_debug =
+{
+    0, 0, &console_change_cs,
+    { &console_change_cs_debug.ProcessLocksList, &console_change_cs_debug.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": console_change_cs") }
+};
+static CRITICAL_SECTION console_change_cs = { &console_change_cs_debug, -1, 0, 0, 0, 0 };
+static struct console_change *console_changes;  /* pending OVERLAPPED requests */
+static HANDLE console_change_thread;
+static HANDLE console_change_object;            /* the handle given back, signalled on completion */
+
+static void console_change_finish( OVERLAPPED *ovr, NTSTATUS status )
+{
+    MEMORY_BASIC_INFORMATION info;
+    HANDLE event;
+
+    /* A guest that ended without cancelling leaves its request here; when its memory is gone the
+       completion is dropped instead of written. */
+    if (!VirtualQuery( ovr, &info, sizeof(info) ) || info.State != MEM_COMMIT || (info.Protect & PAGE_GUARD)
+        || !(info.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
     {
-        /* OrbisDesk phase 8: nothing reports changes of the console's settings */
-        ERR( "PWNSI change notifications are not provided without nsiproxy.sys\\n" );
-        return ERROR_NOT_SUPPORTED;
-    }''','Change notifications without the device: an error with a trace.')
+        ERR( "PWNSI change request %p is no longer in writable memory, not completed\\n", ovr );
+        return;
+    }
+    event = (HANDLE)((ULONG_PTR)ovr->hEvent & ~(ULONG_PTR)1);
+    ovr->InternalHigh = 0;
+    ovr->Internal = status;
+    if (event) SetEvent( event );
+    if (console_change_object) SetEvent( console_change_object );
+}
+
+static DWORD WINAPI console_change_watch( void *arg )
+{
+    struct console *now = malloc( sizeof(*now) );
+    struct console_change *entry, **ptr, *done;
+
+    for (;;)
+    {
+        Sleep( CONSOLE_CHANGE_POLL_MS );
+        EnterCriticalSection( &console_change_cs );
+        if (!console_changes) break;  /* leaves with the lock held */
+        LeaveCriticalSection( &console_change_cs );
+        if (!now || console_read( now )) continue;
+
+        done = NULL;
+        EnterCriticalSection( &console_change_cs );
+        for (ptr = &console_changes; (entry = *ptr);)
+        {
+            if (memcmp( &entry->base, now, sizeof(*now) ))
+            {
+                *ptr = entry->next;
+                entry->next = done;
+                done = entry;
+            }
+            else ptr = &entry->next;
+        }
+        LeaveCriticalSection( &console_change_cs );
+        while ((entry = done))
+        {
+            done = entry->next;
+            ERR( "PWNSI change: the console settings changed, request %p completed\\n", entry->ovr );
+            console_change_finish( entry->ovr, 0 /* STATUS_SUCCESS */ );
+            free( entry );
+        }
+    }
+    CloseHandle( console_change_thread );
+    console_change_thread = NULL;
+    LeaveCriticalSection( &console_change_cs );
+    free( now );
+    return 0;
+}
+
+static DWORD console_change_request( struct nsi_request_change_notification_ex *params )
+{
+    static LONG reported;
+    struct console_change *entry;
+    struct console *now;
+    HANDLE event;
+    DWORD err;
+
+    if (!(entry = calloc( 1, sizeof(*entry) ))) return ERROR_OUTOFMEMORY;
+    if ((err = console_read( &entry->base )))
+    {
+        free( entry );
+        return err;
+    }
+    if (!InterlockedExchange( &reported, 1 ))
+        ERR( "PWNSI change notifications without nsiproxy.sys: the console settings are read every %u ms "
+             "(first request: module %s table %lu, %s)\\n", CONSOLE_CHANGE_POLL_MS,
+             debugstr_guid( &params->module->Guid ), (ULONG)params->table, params->ovr ? "overlapped" : "synchronous" );
+
+    if (!params->ovr)  /* synchronous: returns when the settings change, as on Windows */
+    {
+        if (!(now = malloc( sizeof(*now) )))
+        {
+            free( entry );
+            return ERROR_OUTOFMEMORY;
+        }
+        for (;;)
+        {
+            Sleep( CONSOLE_CHANGE_POLL_MS );
+            if (!console_read( now ) && memcmp( now, &entry->base, sizeof(*now) )) break;
+        }
+        ERR( "PWNSI change: the console settings changed, synchronous request completed\\n" );
+        free( now );
+        free( entry );
+        return ERROR_SUCCESS;
+    }
+
+    entry->ovr = params->ovr;
+    event = (HANDLE)((ULONG_PTR)params->ovr->hEvent & ~(ULONG_PTR)1);
+    if (event) ResetEvent( event );
+    params->ovr->InternalHigh = 0;
+    params->ovr->Internal = STATUS_PENDING;
+
+    EnterCriticalSection( &console_change_cs );
+    if (!console_change_object) console_change_object = CreateEventW( NULL, TRUE, FALSE, NULL );
+    /* a watcher that ended without clearing itself, e.g. with the guest that started it */
+    if (console_change_thread && WaitForSingleObject( console_change_thread, 0 ) != WAIT_TIMEOUT)
+    {
+        CloseHandle( console_change_thread );
+        console_change_thread = NULL;
+    }
+    if (!console_change_thread
+        && !(console_change_thread = CreateThread( NULL, 0, console_change_watch, NULL, 0, NULL )))
+    {
+        err = GetLastError();
+        LeaveCriticalSection( &console_change_cs );
+        params->ovr->Internal = 0;
+        free( entry );
+        ERR( "PWNSI change watcher not started, error %lu\\n", err );
+        return err;
+    }
+    entry->next = console_changes;
+    console_changes = entry;
+    LeaveCriticalSection( &console_change_cs );
+
+    if (params->handle) *params->handle = console_change_object;
+    return ERROR_IO_PENDING;
+}
+
+static DWORD console_change_cancel( OVERLAPPED *ovr )
+{
+    struct console_change *entry = NULL, **ptr;
+
+    EnterCriticalSection( &console_change_cs );
+    for (ptr = &console_changes; *ptr; ptr = &(*ptr)->next)
+        if ((*ptr)->ovr == ovr)
+        {
+            entry = *ptr;
+            *ptr = entry->next;
+            break;
+        }
+    LeaveCriticalSection( &console_change_cs );
+    if (!entry) return ERROR_NOT_FOUND;
+    console_change_finish( ovr, CONSOLE_STATUS_CANCELLED );
+    free( entry );
+    return ERROR_SUCCESS;
+}
+
+DWORD WINAPI NsiRequestChangeNotification( DWORD unk,''','Pending change requests, the watcher and cancel.')
 
 results={}
 for arch in ARCHS:

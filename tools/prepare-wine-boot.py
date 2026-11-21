@@ -211,6 +211,44 @@ revise('server/unicode.c','#elif defined (__FreeBSD__) || defined(__DragonFly__)
 revise('server/sock.c','#include "request.h"', '#include "request.h"\n#ifdef __ORBIS__\n#undef SO_ATTACH_FILTER /* No Linux BPF on the PS4 socket API. */\n#endif')
 revise('server/mapping.c','    host_page_mask = sysconf( _SC_PAGESIZE ) - 1;', '#ifdef __ORBIS__\n    host_page_mask = 0x3fff;\n#else\n    host_page_mask = sysconf( _SC_PAGESIZE ) - 1;\n#endif')
 revise('server/request.c','    if (st.st_uid != getuid())\n        fatal_error( "%s is not owned by you\\n", config_dir );', '#ifndef __ORBIS__ /* The title prefix has no meaningful Unix owner identity. */\n    if (st.st_uid != getuid())\n        fatal_error( "%s is not owned by you\\n", config_dir );\n#endif')
+# OrbisDesk PoP Phase B: WINE_INPROCESS_SERVER creates no socket file, so a separate native process cannot
+# reach the server by path. The title listens on <server dir>/socket (native/pop_loader_spawn.h) and hands
+# each accepted connection to the server thread through the same channel connect_inprocess_client uses.
+# The pw_wine prefix keeps the symbol out of link-wine-boot.py's pwserver_ namespacing.
+revise('server/request.c','''    close( pair[0] );
+    return pair[1];
+}
+#endif
+''','''    close( pair[0] );
+    return pair[1];
+}
+
+/* hand an already-connected socket (accepted from another native process) to the server thread as a new
+ * client, exactly like the server end of connect_inprocess_client; the caller keeps and closes its fd */
+__attribute__((visibility("default"))) int pw_wine_server_adopt_client( int fd )
+{
+    char dummy = 0;
+    struct iovec vec = { &dummy, 1 };
+    union { struct cmsghdr header; char buffer[CMSG_SPACE( sizeof(int) )]; } control;
+    struct msghdr msg;
+    struct cmsghdr *cmsg;
+
+    if (client_channel == -1 || fd < 0) return -1;
+    memset( &msg, 0, sizeof(msg) );
+    memset( &control, 0, sizeof(control) );
+    msg.msg_iov = &vec;
+    msg.msg_iovlen = 1;
+    msg.msg_control = &control;
+    msg.msg_controllen = CMSG_SPACE( sizeof(int) );
+    cmsg = CMSG_FIRSTHDR( &msg );
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN( sizeof(int) );
+    memcpy( CMSG_DATA( cmsg ), &fd, sizeof(int) );
+    return sendmsg( client_channel, &msg, 0 ) == 1 ? 0 : -1;
+}
+#endif
+''')
 revise('dlls/ntdll/unix/loader.c','    if (!dladdr( init_paths, &info ) || !(ntdll_dir = realpath_dirname( info.dli_fname )))\n        fatal_error( "cannot get path to ntdll.so\\n" );', '''#ifdef __ORBIS__
     const char *directory = getenv( "WINE_PS4_NTDLL_DIR" );
     if (!directory || directory[0] != '/') fatal_error( "WINE_PS4_NTDLL_DIR must locate the staged Unix runtime\\n" );
@@ -708,6 +746,87 @@ revise('server/ptrace.c','''        ret = tkill( thread->unix_pid, thread->unix_
         ret = tkill( thread->unix_pid, thread->unix_tid, sig );
         if (ret == -1 && errno == ENOSYS) ret = kill( thread->unix_pid, sig );
 #endif''')
+# OrbisDesk 04.25 (run-0224, run-0229: SeaMonkey ran the title out of descriptors at open=798 and 837, about 500 of
+# them pipe ends; docs/SEAMONKEY_DESCRIPTORS.md). The in-process server shares the title's one descriptor table, so a
+# Wine thread costs seven: its request, reply and wait pipes, four ends kept by the thread and three by the server.
+# A thread made by NtCreateThreadEx now carries its requests and its replies on one Unix socket pair instead of two
+# pipes: the thread keeps one end, the server the other, five descriptors a thread instead of seven. The server end is
+# made non-blocking here (the console may refuse fcntl on a socket; pw_wine_socket_nonblock falls back to SO_NBIO);
+# when that fails, the thread gets the pipes as before and the socket pair is not tried again. A process's first thread
+# (made by the server) keeps its pipes. The thread tells the server with reply_fd -2 in init_thread
+# (tools/build-wine-delete-server.py), and keeps its wait pipe.
+revise('dlls/ntdll/unix/thread.c','''/***********************************************************************
+ *           pthread_exit_wrapper
+ */''','''#ifdef __ORBIS__
+#include <sys/socket.h>
+extern int pw_wine_socket_nonblock( int fd );
+/* OrbisDesk 04.25: a new thread's requests and replies on one socket pair (tools/prepare-wine-boot.py) */
+static int pw_thread_request_socket( int fd[2] )
+{
+    static int disabled;
+
+    if (disabled) return -1;
+    if (socketpair( AF_UNIX, SOCK_STREAM, 0, fd ) == -1)
+    {
+        fprintf( stderr, "PWTHREAD request_socket off: socketpair errno=%d\\n", errno );
+        disabled = 1;
+        return -1;
+    }
+    if (pw_wine_socket_nonblock( fd[0] ) == -1)
+    {
+        fprintf( stderr, "PWTHREAD request_socket off: nonblock errno=%d\\n", errno );
+        close( fd[0] );
+        close( fd[1] );
+        disabled = 1;
+        return -1;
+    }
+    fcntl( fd[0], F_SETFD, FD_CLOEXEC );
+    fcntl( fd[1], F_SETFD, FD_CLOEXEC );
+    return 0;
+}
+#endif
+
+/***********************************************************************
+ *           pthread_exit_wrapper
+ */''')
+revise('dlls/ntdll/unix/thread.c','''    close( data->reply_fd );
+    close( data->request_fd );''','''    if (data->reply_fd != data->request_fd) close( data->reply_fd );  /* OrbisDesk 04.25: one socket */
+    close( data->request_fd );''')
+revise('dlls/ntdll/unix/thread.c','''    if (server_pipe( request_pipe ) == -1)''','''#ifdef __ORBIS__
+    if (pw_thread_request_socket( request_pipe ) == -1 && server_pipe( request_pipe ) == -1)
+#else
+    if (server_pipe( request_pipe ) == -1)
+#endif''')
+revise('dlls/ntdll/unix/server.c','''    if (server_pipe( reply_pipe ) == -1) server_protocol_perror( "pipe" );
+    if (server_pipe( data->wait_fd ) == -1) server_protocol_perror( "pipe" );
+    wine_server_send_fd( reply_pipe[1] );''','''#ifdef __ORBIS__
+    {
+        /* OrbisDesk 04.25: a request socket (thread.c pw_thread_request_socket) also carries the replies; reply_fd -2
+         * tells the server (server/thread.c init_thread) */
+        struct stat st;
+
+        if (!fstat( data->request_fd, &st ) && S_ISSOCK( st.st_mode ))
+        {
+            if (server_pipe( data->wait_fd ) == -1) server_protocol_perror( "pipe" );
+            wine_server_send_fd( data->wait_fd[1] );
+            data->reply_fd = data->request_fd;
+            return -2;
+        }
+    }
+#endif
+    if (server_pipe( reply_pipe ) == -1) server_protocol_perror( "pipe" );
+    if (server_pipe( data->wait_fd ) == -1) server_protocol_perror( "pipe" );
+    wine_server_send_fd( reply_pipe[1] );''')
+# The server watches one descriptor for both: a request (POLLIN) while no reply is pending, the rest of a reply
+# (POLLOUT) while one is. Setting the other fd's events after its own would undo them when both are one.
+revise('server/request.c','''            set_fd_events( thread->request_fd, POLLIN );
+            set_fd_events( thread->reply_fd, 0 );''','''            set_fd_events( thread->request_fd, POLLIN );
+            if (thread->reply_fd != thread->request_fd)  /* OrbisDesk 04.25: one socket */
+                set_fd_events( thread->reply_fd, 0 );''')
+revise('server/request.c','''            set_fd_events( current->reply_fd, POLLOUT );
+            set_fd_events( current->request_fd, 0 );''','''            set_fd_events( current->reply_fd, POLLOUT );
+            if (current->reply_fd != current->request_fd)  /* OrbisDesk 04.25: one socket */
+                set_fd_events( current->request_fd, 0 );''')
 # W018: stopped inside alloc_virtual_heap; record every placement attempt.
 revise('dlls/ntdll/unix/virtual.c','''        ret = anon_mmap_fixed( (char *)end - size, size, PROT_READ | PROT_WRITE, 0 );
         if (ret == MAP_FAILED) continue;''','''#ifdef __ORBIS__

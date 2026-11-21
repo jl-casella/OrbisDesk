@@ -28,9 +28,9 @@ for folder in (work,out):
     if folder.exists():shutil.rmtree(folder)
 shutil.copytree(SOURCE/'dlls/dinput',overlay)
 revisions=[]
-def revise(old,new,why):
-    target=overlay/'dinput.c';text=target.read_text()
-    if text.count(old)!=1:raise SystemExit('Unexpected context in dinput.c: '+old[:60])
+def revise(old,new,why,name='dinput.c'):
+    target=overlay/name;text=target.read_text()
+    if text.count(old)!=1:raise SystemExit('Unexpected context in %s: %s'%(name,old[:60]))
     target.write_text(text.replace(old,new));revisions.append(why)
 
 (overlay/'joystick_pad.c').write_text(r'''/*
@@ -586,19 +586,67 @@ hid_source.write_text(hid_text.replace(hid_old,hid_old+'''    /* OrbisDesk (HID 
 '''))
 revisions.append('joystick_hid.c: skip the pad\'s HID gamepad from winebus, listed by joystick_pad.c.')
 
-# the pinned build's commands: dinput.c changed, and joystick_pad.c compiled like joystick_hid.c
+# PoP D.5 (hardware 2026-11-13: Prince of Persia ended by the overlay's Salir kept its exclusive mouse acquired; dinput's
+# thread, process-wide in explorer since W281, kept its low-level hook eating the desktop's input, which looked frozen).
+# Programs share explorer's process, so a program's end neither ends this thread nor releases its devices: a device
+# whose cooperative window is gone (its program ended) is released, as a process's end releases its devices on
+# Windows. The thread looks every 500 ms while devices are acquired.
+revise('''static DWORD WINAPI dinput_thread_proc( void *params )
+{''','''/* OrbisDesk (PoP D.5): devices whose cooperative window is gone, their program ended, are released */
+static DWORD orphans_checked;  /* when the input thread last looked */
+static BOOL dinput_unacquire_orphans(void)
+{
+    struct dinput_device *impl, *next;
+    BOOL any = FALSE;
+
+    EnterCriticalSection( &dinput_hook_crit );
+    LIST_FOR_EACH_ENTRY_SAFE( impl, next, &acquired_device_list, struct dinput_device, entry )
+    {
+        if (!impl->win || IsWindow( impl->win )) continue;
+        ERR( "PWINPUT device %p of window %p, gone: released\\n", impl, impl->win );
+        dinput_device_internal_unacquire( &impl->IDirectInputDevice8W_iface, STATUS_UNACQUIRED );
+        any = TRUE;
+    }
+    LeaveCriticalSection( &dinput_hook_crit );
+    return any;
+}
+
+static DWORD WINAPI dinput_thread_proc( void *params )
+{''','dinput_main.c: the devices of a window that is gone are released (PoP D.5).','dinput_main.c')
+revise('''    while (state.running && (ret = MsgWaitForMultipleObjectsEx( state.events_count, state.events, INFINITE, QS_ALLINPUT, 0 )) <= state.events_count)
+    {
+        if (ret < state.events_count)''','''    while (state.running && ((ret = MsgWaitForMultipleObjectsEx( state.events_count, state.events,
+                                                                  state.devices_count ? 500 : INFINITE, QS_ALLINPUT,
+                                                                  0 )) <= state.events_count || ret == WAIT_TIMEOUT))
+    {
+        /* OrbisDesk (PoP D.5): every 500 ms, whatever woke the thread (d16 on hardware: the pad device's 8 ms
+         * read event kept it awake, so the timeout alone never came) */
+        if (GetTickCount() - orphans_checked >= 500)
+        {
+            orphans_checked = GetTickCount();
+            if (dinput_unacquire_orphans())
+            {
+                SendMessageW( di_em_win, INPUT_THREAD_NOTIFY, NOTIFY_REFRESH_DEVICES, 0 );
+                continue;
+            }
+        }
+        if (ret == WAIT_TIMEOUT) continue;
+        if (ret < state.events_count)''','dinput_main.c: the input thread looks for them every 500 ms while devices are acquired (PoP D.5).','dinput_main.c')
+
+# the pinned build's commands: dinput.c and dinput_main.c changed, and joystick_pad.c compiled like joystick_hid.c
 targets=['dlls/%s/%s-windows/%s.dll'%(m,a,m) for m in MODULES for a in ARCHES]
-dry=subprocess.run(['make','-n','-W','../../source/dlls/dinput/dinput.c','-W','../../source/dlls/dinput/joystick_hid.c',*targets],
+dry=subprocess.run(['make','-n','-W','../../source/dlls/dinput/dinput.c','-W','../../source/dlls/dinput/joystick_hid.c',
+                    '-W','../../source/dlls/dinput/dinput_main.c',*targets],
                    cwd=BUILD,capture_output=True,text=True,check=True).stdout.replace('\\\n',' ')
 commands=[]
 for line in dry.splitlines():
     if 'dlls/dinput' not in line or line.startswith('make'):continue
-    for name in ('dinput.c','joystick_hid.c'):
+    for name in ('dinput_main.c','dinput.c','joystick_hid.c'):
         line=line.replace('../../source/dlls/dinput/'+name,str(overlay/name))
     # only what is compiled here moves to build/: the other objects are the pinned build's own
     for m in MODULES:
         for a in ARCHES:
-            for name in ('dinput.o','joystick_hid.o','%s.dll'%m):
+            for name in ('dinput_main.o','dinput.o','joystick_hid.o','%s.dll'%m):
                 line=line.replace('dlls/%s/%s-windows/%s'%(m,a,name),str(work/m/a/name))
     if 'joystick_hid.c' in line and ' -c ' in line:
         commands.append(line)

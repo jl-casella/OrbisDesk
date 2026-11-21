@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <poll.h>
 #include <orbis/libkernel.h>
 /* SDK Net.h omits these prototypes. Target ABI: Orbis epoll events are 24
  * bytes; IN=1, OUT=2, ERR=8, HUP=16. Reference: shadPS4 net_types.h/net.cpp. */
@@ -32,6 +33,21 @@ static int failure(void) {errno=*sceNetErrnoLoc();if(!errno) errno=EIO;return -1
  * with EINVAL, and with Pale Moon as a guest of explorer every server poll failed: no request was
  * read any more and the desktop stopped. Past 256 the events buffer is on the heap. */
 #define PW_POLL_MAX 4096
+/* PoP D.7 (hardware 2026-11-13: after a session closed by force with a separate process running, every next
+ * start aborted inside this function's sceNetEpoll calls, in the wineserver's first poll, until the console
+ * restarted; the separate process had ended, the console's process list showed). The separate process has
+ * waited with the kernel's own poll() since P017 (native/pop_wine_child.c); the title now does the same, and
+ * keeps the per-call sceNetEpoll below only if the kernel refuses poll(). Not proven: which libnet state the
+ * per-call epolls leave behind. */
+#ifdef PW_WINE_POLL_NET_ONLY
+/* The CI service probes (tools/ci/build-services.py) run on the shadPS4 fork, which has no libkernel poll (its
+ * import is an emulator stub that returns 0, run 44632875991: "Stub: poll (nid: ku7D4q1Y9PI)"). That build
+ * waits through the sceNetEpoll path below from the start, the path this file takes when the kernel refuses
+ * poll(); the kernel's poll is checked on hardware only. */
+static int kernel_poll_state=-1;
+#else
+static int kernel_poll_state;   /* 0 untried, 1 works, -1 refused */
+#endif
 int pw_wine_poll(struct pollfd *fds,nfds_t count,int timeout)
 {
     if(count>PW_POLL_MAX) {
@@ -58,6 +74,25 @@ int pw_wine_poll(struct pollfd *fds,nfds_t count,int timeout)
         if(timeout<0) {errno=ENOTSUP;return -1;}
         if(timeout && sceKernelUsleep((unsigned)timeout*1000)) {errno=EINTR;return -1;}
         return 0;
+    }
+    if(kernel_poll_state>=0) {
+        int r=poll(fds,count,timeout);
+        if(r>=0 || errno==EINTR) {
+            if(!kernel_poll_state) {
+                char text[96];
+                kernel_poll_state=1;
+                snprintf(text,sizeof(text),"PWNET kernel_poll first_result=%d count=%u\n",r,(unsigned)count);
+                sceKernelDebugOutText(0,text);
+            }
+            return r;
+        }
+        int e=errno;
+        if(e==ENOSYS || e==EOPNOTSUPP || e==EPERM) {
+            char text[96];
+            kernel_poll_state=-1;
+            snprintf(text,sizeof(text),"PWNET kernel_poll_refused errno=%d\n",e);
+            sceKernelDebugOutText(0,text);
+        } else if(e!=EINVAL) {errno=e;return r;}
     }
     pthread_once(&once,initialize);if(initialization<0) return failure();
     PwNetEvent stack_events[256],*events=stack_events;
@@ -241,7 +276,9 @@ ssize_t pw_wine_recvmsg(int fd,struct msghdr *destination,int flags)
     ssize_t result=kernel_recvmsg(fd,&wire,kernel);int saved=errno;
     if(result<0 && saved!=EAGAIN) trace("recvmsg","kernel",saved,&wire);
     if(result>=0) {
-        int reported=0,unknown=wire.flags;
+        /* PS4 echoes the requested nonblocking mode in msg_flags (P002 hardware).
+         * It is not a received-message event. Unrequested bits still fail below. */
+        int reported=0,unknown=wire.flags & ~(kernel & KERNEL_MSG_DONTWAIT);
         for(unsigned i=0;i<sizeof(received_flags)/sizeof(received_flags[0]);++i)
             if(unknown&received_flags[i].kernel) {reported|=received_flags[i].sdk;unknown&=~received_flags[i].kernel;}
         if(unknown || wire.controllen>destination->msg_controllen) {saved=ENOTSUP;result=-1;trace("recvmsg","flags",saved,&wire);}

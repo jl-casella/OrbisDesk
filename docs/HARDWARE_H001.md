@@ -5,7 +5,9 @@
 
 [English](HARDWARE_H001.md) | [Español](HARDWARE_H001-es.md)
 
-User-indicated destination: PS4 Pro Baikal, firmware 12.52, GoldHEN, FTP `192.168.68.107:2121`. The server responded as GoldHEN FTP v2. 2 and allowed anonymous access to `/data/pkg`. This verifies the connection, not the compatibility of the runtime on hardware.
+**Firmware correction (2026-11-11):** the user confirmed that the test console is a PS4 Pro Baikal running **12.50**, not 12.52. References to their console in this document are corrected; original logs and manifests retain the earlier reported value. Do not attribute these tests to 12.52 hardware.
+
+User-indicated destination: PS4 Pro Baikal, firmware 12.50, GoldHEN, FTP `192.168.68.107:2121`. The server responded as GoldHEN FTP v2. 2 and allowed anonymous access to `/data/pkg`. This verifies the connection, not the compatibility of the runtime on hardware.
 
 The package **OrbisDesk Hardware Check H001**, Title ID `ORBW00001`, is a native OpenOrbis application independent of Wine. It is installed with Package Installer and opened from the PS4 menu. It's not sent to the BinLoader as payload.
 
