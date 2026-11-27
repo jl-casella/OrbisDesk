@@ -24,7 +24,7 @@ static char current[2][PATH_BYTES]={"/","/"};
 /* Directories keep their canonical path for openat/fchdir. Files keep the path and
  * open flags they were opened with, so a descriptor can be reopened when dup is
  * refused (PS4 applications get EPERM from dup, W010 on hardware). */
-static struct {int used,fd,directory,flags;char path[PATH_BYTES];} records[FD_RECORDS];
+static struct {int used,fd,directory,flags,side,duplicated;char path[PATH_BYTES];} records[FD_RECORDS];
 static int directory_path(int fd,const struct stat *st,char *out);
 /* PS4 applications cannot read or create symbolic links (readlink: ENOSYS on
  * hardware). The prefix's DOS drive links are a fixed mount table instead: every
@@ -290,7 +290,47 @@ static void descriptor_report(void)
     char counters[512];kernel_counters(counters,sizeof(counters));
     fprintf(stderr,"PWFS kernel_files%s\n",counters);  /* 04.24 */
 }
-static void open_trace(const char *path,int fd)
+/* 04.90: a weak default, not a weak undefined reference: the bootstrap link has no Wine client and
+ * create-fself rejects an unresolved symbol. The client's strong definition replaces it in the title. */
+__attribute__((weak)) void pw_wine_fd_cache_snapshot(unsigned *retained,unsigned *peak,unsigned *bypasses,unsigned *limit)
+{
+    *retained=*peak=*bypasses=*limit=~0u;
+}
+/* Called only at the first EMFILE/ENFILE with lock held. The cache snapshot is
+ * atomic and never acquires the client's fd_cache_mutex: that client may be
+ * waiting for this server's open to return. Records describe adapter origin,
+ * not exclusive ownership of an open-file description shared through SCM_RIGHTS. */
+static void descriptor_pressure(const char *path,int side,int flags)
+{
+    unsigned used=0,live=0,stale=0,client=0,server=0,dups=0,game=0,ipc=0;
+    for(unsigned i=0;i<FD_RECORDS;i++) if(records[i].used) {
+        ++used;
+        if(fcntl(records[i].fd,F_GETFD)==-1) {++stale;continue;}
+        ++live;
+        if(records[i].side==1) ++server; else ++client;
+        if(records[i].duplicated) ++dups;
+        if(strstr(records[i].path,"/orbisdesk/steam-games/")) ++game;
+        if(strstr(records[i].path,"/.wineserver/") || strstr(records[i].path,"/orbisdesk/process-")) ++ipc;
+    }
+    fprintf(stderr,"PWFS pressure side=%d flags=%#x tracked=%u/%u live=%u unqueryable=%u origin_client=%u origin_server=%u dup_records=%u game=%u ipc_files=%u\n",
+            side,flags,used,(unsigned)FD_RECORDS,live,stale,client,server,dups,game,ipc);
+    {
+        unsigned retained,peak,bypasses,limit;
+        pw_wine_fd_cache_snapshot(&retained,&peak,&bypasses,&limit);
+        if(limit!=~0u)
+            fprintf(stderr,"PWFS cache_snapshot retained=%u peak=%u budget_bypasses=%u limit=%u\n",retained,peak,bypasses,limit);
+        else fprintf(stderr,"PWFS cache_snapshot unavailable\n");
+    }
+#ifdef __ORBIS__
+    /* Read-only control probe, not a retry of the requested open. In particular
+     * it never repeats O_CREAT/O_TRUNC, changes a returned status or closes a
+     * live application handle. Raw kernel flags are deliberately 0. */
+    int probe=sceKernelOpen(path,0,0),close_rc=0;
+    if(probe>=0) close_rc=sceKernelClose(probe);
+    fprintf(stderr,"PWFS kernel_open_control flags=0 result=%#x close_rc=%#x original_flags=%#x\n",probe,close_rc,flags);
+#endif
+}
+static void open_trace(int side,const char *path,int flags,int fd)
 {
     static unsigned disc_opens,descriptor_failures;
     static int high_mark=128;
@@ -307,7 +347,7 @@ static void open_trace(const char *path,int fd)
     if(fd<0 && (saved==EMFILE || saved==ENFILE)) {
         unsigned n=__atomic_add_fetch(&descriptor_failures,1,__ATOMIC_RELAXED);
         if(n<=16) fprintf(stderr,"PWFS open_failed errno=%d n=%u path=%s\n",saved,n,path);
-        if(n==1) descriptor_report();
+        if(n==1) {descriptor_report();descriptor_pressure(path,side,flags);}
     }
     errno=saved;
 }
@@ -317,7 +357,7 @@ int pw_wine_open(int side,const char *path,int flags,...)
     if(flags&O_CREAT) {va_list args;va_start(args,flags);mode=va_arg(args,int);va_end(args);}
     if(resolve(side,path,full)) return -1;
     pthread_mutex_lock(&lock);
-    int fd=open(full,flags,mode);open_trace(full,fd);if(fd<0) {pthread_mutex_unlock(&lock);return -1;}
+    int fd=open(full,flags,mode);open_trace(side,full,flags,fd);if(fd<0) {pthread_mutex_unlock(&lock);return -1;}
     struct stat st;
     if(!pw_wine_fstat(fd,&st) && S_ISDIR(st.st_mode)) {
         char canonical[PATH_BYTES];
@@ -325,6 +365,7 @@ int pw_wine_open(int side,const char *path,int flags,...)
         int stored=0;
         for(unsigned i=0;i<FD_RECORDS;++i) if(!records[i].used) {
             records[i].used=1;records[i].fd=fd;records[i].directory=1;records[i].flags=O_RDONLY|O_DIRECTORY;
+            records[i].side=side;records[i].duplicated=0;
             strcpy(records[i].path,canonical);stored=1;break;
         }
         if(!stored) {close(fd);pthread_mutex_unlock(&lock);errno=EMFILE;return -1;}
@@ -332,6 +373,7 @@ int pw_wine_open(int side,const char *path,int flags,...)
         /* Best effort: without a free record the descriptor simply cannot be reopened. */
         for(unsigned i=0;i<FD_RECORDS;++i) if(!records[i].used) {
             records[i].used=1;records[i].fd=fd;records[i].directory=0;
+            records[i].side=side;records[i].duplicated=0;
             records[i].flags=flags&~(O_CREAT|O_EXCL|O_TRUNC);strcpy(records[i].path,full);break;
         }
     }
@@ -455,7 +497,7 @@ int pw_wine_dup(int fd)
     if(copy>=0 && found>=0) {
         int stored=0;
         for(unsigned i=0;i<FD_RECORDS;i++) if(!records[i].used) {
-            records[i]=records[found];records[i].fd=copy;stored=1;break;
+            records[i]=records[found];records[i].fd=copy;records[i].duplicated=1;stored=1;break;
         }
         if(!stored && records[found].directory) {close(copy);copy=-1;errno=EMFILE;}
     }

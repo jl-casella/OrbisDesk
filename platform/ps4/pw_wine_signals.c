@@ -295,6 +295,15 @@ int pw_wine_native_signals_enable(char *detail,size_t size)
     return 0;
 }
 int pw_wine_native_signals_active(void) {return raw_mode;}
+/* 04.52: never send a thread quit until Wine's actual raw SIGQUIT handler is
+ * installed. Reading the current action also excludes a later SIG_DFL/IGN. */
+int pw_wine_thread_quit_ready(void)
+{
+    struct sigaction action;PwHandler handler;
+    if(!raw_mode||pw_wine_sigaction(SIGQUIT,NULL,&action))return 0;
+    memcpy(&handler,&action.__sa_handler,sizeof(handler));
+    return !special(handler)&&handler==handlers[to_orbis_signal(SIGQUIT)];
+}
 /* W195: pw_wine_thread_kill (pw_wine_threads.c) sends the server's SDK-numbered signal */
 int pw_wine_orbis_signal(int signal) {return to_orbis_signal(signal);}
 /* W137: the proven ntdll object has no native WoW64 signal protocol: it reports none (0).

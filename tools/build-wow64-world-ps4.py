@@ -28,6 +28,7 @@ these objects in place of those ones. Run after tools/build-env-ps4.py, build-si
 build-telemetry-ps4.py, build-audio-ps4.py and build-wine-directory-ps4.py.
 """
 import hashlib,json,pathlib,re,shutil,subprocess
+from wine_guest_quiesce import patch_thread
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 UNIX=ROOT/'.deps/wine/ps4-unix';SOURCE=ROOT/'.deps/wine/source'
 work=ROOT/'build/wow64-world-ps4';include=work/'include'
@@ -63,6 +64,10 @@ for unit,entry in entries.items():
     if uses.search(source.read_text()):raise SystemExit(unit+'.c reads the WoW64 state too; add it to this builder')
 
 texts={unit:source.read_text() for unit,(source,_) in units.items()}
+# 04.59: rebuild from the proven boot input; never edit generated sources/manifests.
+from wine_fd_pressure import patch_server, patch_cache_budget
+texts['server'] = patch_cache_budget(patch_server(texts['server']))
+
 def replace(unit,old,new):
     if texts[unit].count(old)!=1:raise SystemExit('%s.c context changed: %s'%(unit,old[:70]))
     texts[unit]=texts[unit].replace(old,new,1)
@@ -919,6 +924,8 @@ replace('server','''void process_exit_wrapper( int status )
              (unsigned int)HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ) );  /* OrbisDesk W255 */
     close( fd_socket );''')
 
+texts['thread']=patch_thread(texts['thread'])
+shutil.copyfile(ROOT/'platform/ps4/pw_thread_quiesce.h',include/'pw_thread_quiesce.h')
 objects={};inputs={}
 for unit,(source,replaced) in sorted(units.items()):
     command=entries[unit]['command']
@@ -933,6 +940,8 @@ for unit,(source,replaced) in sorted(units.items()):
     objects[rel(replaced)]={'object':rel(obj),'sha256':sha(obj)}
     inputs[rel(source)]=sha(source)
 report={'wine_commit':base['wine_commit'],'header_sha256':sha(include/'unix_private.h'),
+        'fd_pressure_sources':{'tools/wine_fd_pressure.py':sha(ROOT/'tools/wine_fd_pressure.py')},
+        'quiescence_sources':{name:sha(ROOT/name) for name in ('tools/wine_guest_quiesce.py','platform/ps4/pw_thread_quiesce.h')},
         'original_header_sha256':sha(SOURCE/'dlls/ntdll/unix/unix_private.h'),'inputs':inputs,'replaces':objects,
         'sources':{unit:sha(work/(unit+'.c')) for unit in units},'builder_sha256':sha(pathlib.Path(__file__))}
 (work/'report.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps({'replaces':len(objects)}))

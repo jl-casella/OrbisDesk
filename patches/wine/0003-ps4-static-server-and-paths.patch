@@ -253,7 +253,141 @@
      apple_main_thread();
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -1416,6 +1416,16 @@
+@@ -1062,6 +1062,29 @@
+ #define FD_CACHE_ENTRIES     128
+ 
+ static union fd_cache_entry *fd_cache[FD_CACHE_ENTRIES];
++#ifdef __ORBIS__
++/* 04.61: the in-process server already owns each live file. Bound client copies
++ * independently of fd numbering; a file above the budget uses needs_close.
++ * Existing cached copies stay valid until the normal NtClose/DuplicateHandle.
++ * Each native client namespace has its own budget. */
++enum { PW_FILE_FD_CACHE_LIMIT = 64 };
++static unsigned int pw_cached_file_fds;
++/* Lock-free diagnostics: pw_wine_open may run on the server while a client
++ * holds fd_cache_mutex waiting for that server. Never take that mutex here. */
++static unsigned int pw_fd_diag_retained, pw_fd_diag_peak, pw_fd_diag_bypasses;
++void pw_wine_fd_cache_snapshot( unsigned int *retained, unsigned int *peak, unsigned int *bypasses, unsigned int *limit );
++void pw_wine_fd_cache_snapshot( unsigned int *retained, unsigned int *peak, unsigned int *bypasses, unsigned int *limit )
++{
++    *retained = __atomic_load_n( &pw_fd_diag_retained, __ATOMIC_RELAXED );
++    *peak = __atomic_load_n( &pw_fd_diag_peak, __ATOMIC_RELAXED );
++    *bypasses = __atomic_load_n( &pw_fd_diag_bypasses, __ATOMIC_RELAXED );
++    *limit = PW_FILE_FD_CACHE_LIMIT;
++}
++static int pw_file_fd_type( enum server_fd_type type )
++{
++    return type == FD_TYPE_FILE || type == FD_TYPE_DIR;
++}
++#endif
+ static union fd_cache_entry fd_cache_initial_block[FD_CACHE_BLOCK_SIZE];
+ 
+ static inline unsigned int handle_to_index( HANDLE handle, unsigned int *entry )
+@@ -1083,6 +1106,20 @@
+     unsigned int entry, idx = handle_to_index( handle, &entry );
+     union fd_cache_entry cache;
+ 
++#ifdef __ORBIS__
++    if (pw_file_fd_type( type ) && pw_cached_file_fds >= PW_FILE_FD_CACHE_LIMIT)
++    {
++        static int logged;
++        __atomic_fetch_add( &pw_fd_diag_bypasses, 1, __ATOMIC_RELAXED );
++        if (!logged)
++        {
++            logged = 1;
++            fprintf( stderr, "PWFS fd_cache budget=%u: further file copies use needs_close\n",
++                     (unsigned int)PW_FILE_FD_CACHE_LIMIT );
++        }
++        return FALSE;
++    }
++#endif
+     if (entry >= FD_CACHE_ENTRIES)
+     {
+         FIXME( "too many allocated handles, not caching %p\n", handle );
+@@ -1108,6 +1145,15 @@
+     cache.s.options = options;
+     cache.data = interlocked_xchg64( &fd_cache[entry][idx].data, cache.data );
+     assert( !cache.s.fd );
++#ifdef __ORBIS__
++    if (pw_file_fd_type( type ))
++    {
++        ++pw_cached_file_fds;
++        __atomic_store_n( &pw_fd_diag_retained, pw_cached_file_fds, __ATOMIC_RELAXED );
++        if (pw_cached_file_fds > __atomic_load_n( &pw_fd_diag_peak, __ATOMIC_RELAXED ))
++            __atomic_store_n( &pw_fd_diag_peak, pw_cached_file_fds, __ATOMIC_RELAXED );
++    }
++#endif
+     return TRUE;
+ }
+ 
+@@ -1149,7 +1195,18 @@
+     {
+         union fd_cache_entry cache;
+         cache.data = interlocked_xchg64( &fd_cache[entry][idx].data, 0 );
+-        if (cache.s.type != FD_TYPE_INVALID) fd = cache.s.fd - 1;
++        if (cache.s.type != FD_TYPE_INVALID)
++        {
++            fd = cache.s.fd - 1;
++#ifdef __ORBIS__
++            if (cache.s.fd && pw_file_fd_type( cache.s.type ))
++            {
++                assert( pw_cached_file_fds );
++                --pw_cached_file_fds;
++                __atomic_store_n( &pw_fd_diag_retained, pw_cached_file_fds, __ATOMIC_RELAXED );
++            }
++#endif
++        }
+     }
+ 
+     return fd;
+@@ -1191,19 +1248,45 @@
+                 if ((fd = wine_server_receive_fd( &fd_handle )) != -1)
+                 {
+                     assert( wine_server_ptr_handle(fd_handle) == handle );
++#ifdef __ORBIS__
++                    if (reply->cacheable && fd >= 512 && (reply->type == FD_TYPE_FILE || reply->type == FD_TYPE_DIR))
++                    {
++                        static int logged;
++                        if (!__atomic_exchange_n( &logged, 1, __ATOMIC_RELAXED )) fprintf( stderr, "PWFS fd_cache off fd=%d type=%d: kept uncached from here\n", fd, reply->type );
++                        *needs_close = 1;
++                    }
++                    else
++#endif
+                     *needs_close = (!reply->cacheable ||
+                                     !add_fd_to_cache( handle, fd, reply->type,
+                                                       reply->access, reply->options ));
+                 }
+                 else ret = STATUS_TOO_MANY_OPENED_FILES;
+             }
+-            else if (reply->cacheable)
++            else if (reply->cacheable
++#ifdef __ORBIS__
++                     && ret != STATUS_TOO_MANY_OPENED_FILES
++                     && ret != STATUS_NO_MEMORY && ret != STATUS_INSUFFICIENT_RESOURCES
++#endif
++                     )
+             {
+                 add_fd_to_cache( handle, ret, FD_TYPE_INVALID, 0, 0 );
+             }
+         }
+         SERVER_END_REQ;
+     }
++#ifdef __ORBIS__
++    if (ret == STATUS_TOO_MANY_OPENED_FILES || ret == STATUS_NO_MEMORY || ret == STATUS_INSUFFICIENT_RESOURCES)
++    {
++        static unsigned int failures;
++        if (failures < 16)
++        {
++            ++failures;
++            fprintf( stderr, "PWFS fd_lookup_failed status=%#x handle=%p cached_files=%u budget=%u\n",
++                     (unsigned int)ret, (void *)handle, pw_cached_file_fds, (unsigned int)PW_FILE_FD_CACHE_LIMIT );
++        }
++    }
++#endif
+     server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
+ 
+ done:
+@@ -1416,6 +1499,16 @@
   */
  static int connect_inprocess_server(void)
  {
@@ -270,7 +404,7 @@
      Dl_info info;
      char *dir = NULL, *module_path, *nls_dir, *p;
      void *module;
-@@ -1455,6 +1465,7 @@
+@@ -1455,6 +1548,7 @@
      free( module_path );
      free( nls_dir );
      return fd;
@@ -278,7 +412,7 @@
  }
  
  
-@@ -1651,6 +1662,21 @@
+@@ -1651,6 +1745,21 @@
      ss.ss_flags = 0;
      sigaltstack( &ss, NULL );
  
