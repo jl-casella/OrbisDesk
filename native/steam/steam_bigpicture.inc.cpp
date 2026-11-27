@@ -5,6 +5,8 @@
 // emulator, move, uninstall, sign out) plus Play, which starts a game exactly as its Desktop shortcut does,
 // through Explorer. Logs carry events and counts, never a game or the account.
 
+#include "../../platform/ps4/pw_steamstub_profile.h"
+
 #ifdef STEAM_UI_HOSTED
 #include <orbis/Rtc.h>
 #endif

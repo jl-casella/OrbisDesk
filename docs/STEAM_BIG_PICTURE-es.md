@@ -71,8 +71,7 @@ Desde la revisión aprobada el 2026-11-26, Triángulo en la página de cualquier
 | --- | --- | --- | --- |
 | Direct | El exe del juego con sus propios archivos de Steam | Nunca; en un juego con SteamStub dice que Jugar queda apagado | Juegos sin Steam API ni SteamStub |
 | Steam API emulator | El exe con el `steam_api(64).dll` de gbe_fork en lugar del del juego | El juego no tiene DLL `steam_api` (o su registro necesita un Verify) | Juegos que usan Steam API |
-| Full emulation (ColdClient) | El loader ColdClient de gbe_fork, que arranca el exe | No hay exe utilizable, o faltan los archivos de ColdClient | Alternativa experimental |
-| ColdClient + SteamStub compatibility | El loader más el complemento de inicio por EXE | Sin SteamStub, EXE válido o componentes de compatibilidad | Variantes de inicio SteamStub soportadas (experimental) |
+| Full emulation (ColdClient) | El loader ColdClient de gbe_fork, que arranca el exe | No hay exe utilizable, o faltan los archivos de ColdClient | Juegos con SteamStub (experimental) |
 
 Un juego conserva el modo que usa: el modo se lee del estado propio del juego (el registro del emulador, la elección de ColdClient en su carpeta), y el recomendado solo se marca (RECOMMENDED; el que está en uso, CURRENT). Un modo que no aplica sigue en la lista, atenuado, con su motivo, y el cursor lo saltea. Elegir ColdClient pregunta antes, con el segundo lanzador del juego cuando su carpeta muestra uno: para el de Rockstar, que su lanzador comprueba la propiedad con los servidores de Steam, que ningún emulador pasa, así que a lo sumo un modo sin conexión del lanzador podría seguir. Nada en OrbisDesk intenta saltear esa comprobación. El cambio pasa por los caminos que ya existen (activar y restaurar el emulador, la elección y el perfil de ColdClient); una restauración que falla no bloquea el cambio: el registro del emulador se borra y Verify vuelve a poner los archivos de Steam. La elección además se escribe en `.orbisdesk-launch-mode.txt` en la carpeta del juego (se mueve con el juego). Después se reescriben el plan de arranque y los accesos directos: un juego que arranca por el loader recibe el acceso directo del lanzador (`steam-open.exe --play`), cualquier otro el del exe, así Jugar, los accesos directos y `steam://run` arrancan lo mismo. La línea LAUNCH MODE de la página nombra el modo, y el recomendado cuando el usuario eligió otro. Cuando un juego arrancado desde Jugar se cierra en menos de 30 segundos, en cualquier modo, un diálogo ofrece "Choose another mode". Registro: `PWSTEAM launch_mode app=… mode=direct|api|coldclient recommended=… source=user|default` al abrir el menú y después de un cambio, `launch_mode set app=… mode=… saved=… shortcut_launcher=…` y `play ended mode=… started=… ended=… seconds=…`.
 
@@ -99,18 +98,6 @@ Cargar la biblioteca le pide a Steam tres cosas seguidas (los juegos de la cuent
 - Un archivo cortado o dañado se ignora y la biblioteca carga como antes, con "LOADING THE LIBRARY...".
 
 El registro solo tiene cuentas: `PWSTEAM library cache hit owned=… windows=…` o `cache none`, `library refresh start threaded=…`, `library refresh end complete=… canceled=… ms=…`, `library refresh applied games=… changed=…` y `library cache write=…`.
-
-## Compatibilidad experimental con SteamStub al iniciar
-
-El menú de modos de inicio también ofrece **ColdClient + SteamStub compatibility** para juegos con SteamStub. Las elecciones existentes de ColdClient mantienen apagado el modo adicional: debe seleccionarse explícitamente y aplica al próximo inicio del EXE elegido. Jugar, los accesos de Escritorio/Inicio y `steam://run` usan la misma elección guardada y plan. Volver a otro modo retira el marcador de compatibilidad del EXE seleccionado.
-
-El productor integrado compila `orbisdesk_steamstub_x86.dll` y `orbisdesk_steamstub_x64.dll` desde la fuente fijada de gbe, con controles de contexto por invitado, escrituras verificadas y restauración de hooks. Wine carga el complemento antes de la entrada del EXE con el contexto de su invitado, o después de inicializar el loader en un proceso Wine separado. El EXE del juego en disco queda intacto. Los componentes ausentes, marcadores inválidos e instancias superpuestas fallan visiblemente. Los launchers del editor y las comprobaciones de propiedad en línea siguen siendo independientes y no los proporciona este modo.
-
-`/data/orbisdesk/steamstub-startup.log` registra `armed`, `matched`, `write_failed` y resultados de restauración. Alice superó su bloqueo inicial con este modo en la build física 04.87 (corridas 0205/0206), pero luego se cerró. Esto restaura solo esa compatibilidad de inicio: no afirma que esta integración de Alpha 3 ni una partida completa estén validadas en hardware. La investigación posterior de memoria y sus diagnósticos quedan fuera del cambio.
-
-`tests/test_steamstub_launch_mode_host.py` prueba el menú real y los planes: valores anteriores de ColdClient, activación explícita, limpieza del marcador, rollback al fallar el guardado y componentes ausentes.
-
-`tests/test_steamstub_startup_host.py` prueba el helper real con fixtures PE32/PE64 en un prefijo privado de Wine host. Un `.bind` privado opcional comprueba reconocimiento y restauración de hooks sin ejecutar el código del juego; los binarios de juegos no son fixtures del repositorio. La build conserva la atribución LGPL de gbe y el aviso MIT de Detours incluido.
 
 ## Juegos no-Steam
 
