@@ -1067,6 +1067,7 @@ int main(void)
     fchmod(log_fd,0644);
     {extern int pw_native_log_fd;pw_native_log_fd=log_fd;}  /* W253: platform/ps4/pw_wine_signals.c's lost-signal line */
     note(HW_BUILD " entered_launcher log=%s\n",path);
+    note(HW_BUILD " app_version=" HW_VERSION " release=" HW_RELEASE "\n");
     redirect_stderr();
     {pthread_t sync_thread;int sync_rc=pthread_create(&sync_thread,NULL,log_sync,NULL);note(HW_BUILD " log_sync rc=%d\n",sync_rc);}
     install_crash_handler();
