@@ -1507,50 +1507,177 @@ revise('dlls/win32u/class.c','''        return &builtin_procs32[proc - winproc_a
     return proc;
 }
 ''','A global class both worlds register runs its own proc in each (run-0221).')
+# GTA IV launcher (04.65, run-0030 of 20261124T135505Z): the Rockstar Games Launcher installer runs vc_redist.x86
+# (WiX Burn, 32-bit world) after the 64-bit installer thread had loaded the 64-bit riched20/Msftedit, which
+# registered RichEdit20W & co. as global classes of the process. The 32-bit riched20's DllMain registers them
+# again, the server refuses (one class per name and process), DllMain returns FALSE ("Initialization of
+# Riched20.dll failed") and Burn exits 1114. A global class the 64-bit side registered and whose 32-bit proc the
+# world now keeps (run-0221) is therefore a successful registration for the 32-bit DLL: it gets the class atom.
+# Its 32-bit unregistration (the DLL's detach) only drops that shadow; before, it destroyed the 64-bit side's
+# class (W068).
 revise('dlls/win32u/class.c','''static WINDOWPROC builtin_procs32[NTUSER_NB_PROCS];
 ''','''static WINDOWPROC builtin_procs32[NTUSER_NB_PROCS];
 /* alpha-1 (run-0221): the 32-bit procs of global classes the 64-bit side registered first, by winproc index */
 static WINDOWPROC class_procs32[MAX_WINPROCS];
+/* 04.65 (run-0030): the 32-bit registration of that class succeeded as a shadow of the 64-bit side's class */
+static UINT class_shadow32[MAX_WINPROCS];  /* 04.68: a count per winproc index */
 ''','A global class both worlds register runs its own proc in each (run-0221).')
 revise('dlls/win32u/class.c','''/***********************************************************************
  *	     NtUserRegisterClassExWOW   (win32u.@)
  */''','''/* alpha-1 (run-0221): a 32-bit thread registered a global class that the 64-bit side had registered with a
  * 64-bit proc (comctl32 v6's Edit, Button, Static... of explorer, wfm or another 64-bit guest). The server
- * refused it (ERROR_CLASS_ALREADY_EXISTS); the 32-bit world's threads get the proc of their own DLL instead */
-static void pw_world_class_proc32( HINSTANCE instance, UNICODE_STRING *name, WNDPROC wndproc, UINT style )
+ * refused it (ERROR_CLASS_ALREADY_EXISTS); the 32-bit world's threads get the proc of their own DLL instead.
+ * 04.65 (run-0030): the registration then succeeds with the existing class's atom, as riched20's DllMain
+ * requires; any other refusal keeps the registration's own error */
+/* 04.66 (run-0045 of 20261124T190700Z: vc_redist.x86's riched20 still failed, and no line above was logged):
+ * why a 32-bit global class registration that failed got no shadow */
+static void pw_world_class_skip( UNICODE_STRING *name, const char *why, DWORD error, ULONG_PTR a, ULONG_PTR b )
 {
+    static unsigned int logged;
+
+    if (logged++ >= 64) return;
+    /* 04.82 (W303 run-0145/0147): %#lx, not %#Ix. The Unix side's musl printf stops at %I, so the line kept no
+     * newline; the lines piled up in the thread's debug buffer until it overflowed, and Wine aborts the title then
+     * (ntdll/unix/debug.c, append_output) */
+    ERR( "PWWOW win32u: global class %s no shadow: %s (error %u, %#lx/%#lx)\\n", debugstr_us(name), why,
+         (unsigned int)error, (unsigned long)a, (unsigned long)b );
+}
+
+/* 04.67 (run-0049 of 20261124T204552Z: "RichEdit20W no shadow: existing proc below 4 GiB"): the 64-bit riched20
+ * is mapped below 4 GiB, so an address under 4 GiB says nothing about a proc's world. A proc is the 64-bit
+ * side's when it lies above 4 GiB or in an x86-64 image */
+static BOOL pw_proc_is_64bit( const void *proc )
+{
+    MEMORY_BASIC_INFORMATION info;
+    const IMAGE_DOS_HEADER *dos;
+    const IMAGE_NT_HEADERS *nt;
+
+    if (!proc) return FALSE;
+    if ((ULONG_PTR)proc >> 32) return TRUE;
+    if (NtQueryVirtualMemory( NtCurrentProcess(), proc, MemoryBasicInformation, &info, sizeof(info), NULL ) ||
+        info.Type != MEM_IMAGE || !info.AllocationBase)
+        return FALSE;
+    dos = info.AllocationBase;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return FALSE;
+    nt = (const IMAGE_NT_HEADERS *)((const char *)dos + dos->e_lfanew);
+    return nt->Signature == IMAGE_NT_SIGNATURE && nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64;
+}
+
+static ATOM pw_world_class_proc32( HINSTANCE instance, UNICODE_STRING *name, WNDPROC wndproc, UINT style )
+{
+    DWORD error = RtlGetLastWin32Error();
     struct object_lock lock = OBJECT_LOCK_INIT;
     const class_shm_t *class_shm;
     WINDOWPROC *ours, *theirs;
     ULONG_PTR existing = 0;
     NTSTATUS status;
     CLASS *class;
+    ATOM atom = 0;
     UINT index;
 
-    if (!have_procs32 || !NtCurrentTeb()->WowTebOffset || !(style & CS_GLOBALCLASS)) return;
-    if (RtlGetLastWin32Error() != ERROR_CLASS_ALREADY_EXISTS) return;
-    if (!(ours = get_winproc_ptr( wndproc )) || ours == WINPROC_PROC16) return;
-    if (((ULONG_PTR)ours->procA | (ULONG_PTR)ours->procW) >> 32) return;
-    if (!(class = find_class( instance, name ))) goto done;
+    if (!have_procs32 || !NtCurrentTeb()->WowTebOffset || !(style & CS_GLOBALCLASS)) return 0;
+    if (error != ERROR_CLASS_ALREADY_EXISTS)
+    {
+        pw_world_class_skip( name, "other error", error, (ULONG_PTR)instance, 0 );
+        RtlSetLastWin32Error( error );
+        return 0;
+    }
+    if (!(ours = get_winproc_ptr( wndproc )) || ours == WINPROC_PROC16)
+    {
+        pw_world_class_skip( name, "no proc of ours", error, (ULONG_PTR)wndproc, (ULONG_PTR)ours );
+        goto done;
+    }
+    if (((ULONG_PTR)ours->procA | (ULONG_PTR)ours->procW) >> 32)
+    {
+        pw_world_class_skip( name, "our proc is above 4 GiB", error, (ULONG_PTR)ours->procA, (ULONG_PTR)ours->procW );
+        goto done;
+    }
+    if (!(class = find_class( instance, name )))
+    {
+        pw_world_class_skip( name, "existing class not found", error, (ULONG_PTR)instance, 0 );
+        goto done;
+    }
+    while ((status = get_shared_class( class, &lock, &class_shm )) == STATUS_PENDING)
+    {
+        existing = class_shm->info.wndproc;
+        atom = class_shm->info.atom;
+    }
+    release_class_ptr( class );
+    if (status || !(theirs = get_winproc_ptr( (WNDPROC)existing )) || theirs == WINPROC_PROC16)
+    {
+        pw_world_class_skip( name, "existing proc unreadable", status, existing, 0 );
+        goto done;
+    }
+    index = theirs - winproc_array;
+    if (index < NTUSER_NB_PROCS || theirs == ours)  /* user32's builtin classes: W236 */
+    {
+        pw_world_class_skip( name, "builtin or same proc", index, (ULONG_PTR)theirs->procA, (ULONG_PTR)theirs->procW );
+        goto done;
+    }
+    if (!pw_proc_is_64bit( theirs->procA ) && !pw_proc_is_64bit( theirs->procW ))  /* not a 64-bit proc (04.67) */
+    {
+        pw_world_class_skip( name, "existing proc not 64-bit", index, (ULONG_PTR)theirs->procA, (ULONG_PTR)theirs->procW );
+        goto done;
+    }
+    pthread_mutex_lock( &winproc_lock );
+    class_procs32[index] = *ours;
+    if (atom) class_shadow32[index]++;
+    pthread_mutex_unlock( &winproc_lock );
+    ERR( "PWWOW win32u: global class %s is the 64-bit side's (proc %p/%p); 32-bit threads get %p/%p, atom %04x\\n",
+         debugstr_us(name), theirs->procA, theirs->procW, ours->procA, ours->procW, atom );
+    if (!atom)
+    {
+        pw_world_class_skip( name, "existing class has no atom", error, existing, 0 );
+        goto done;
+    }
+    RtlSetLastWin32Error( 0 );
+    return atom;
+done:
+    RtlSetLastWin32Error( ERROR_CLASS_ALREADY_EXISTS );  /* the registration's own error, unchanged */
+    return 0;
+}
+
+/* 04.65 (run-0030): a 32-bit thread unregisters a global class whose registration was a shadow of the 64-bit
+ * side's class (the 32-bit riched20's detach). Only the shadow goes; the 64-bit side keeps its class */
+static BOOL pw_world_class_unshadow32( HINSTANCE instance, UNICODE_STRING *name )
+{
+    struct object_lock lock = OBJECT_LOCK_INIT;
+    const class_shm_t *class_shm;
+    WINDOWPROC *theirs;
+    ULONG_PTR existing = 0;
+    NTSTATUS status;
+    CLASS *class;
+    BOOL shadowed;
+    UINT index;
+
+    if (!have_procs32 || !NtCurrentTeb()->WowTebOffset) return FALSE;
+    if (!(class = find_class( instance, name ))) return FALSE;
+    if (is_local_class( class ))
+    {
+        release_class_ptr( class );
+        return FALSE;
+    }
     while ((status = get_shared_class( class, &lock, &class_shm )) == STATUS_PENDING)
         existing = class_shm->info.wndproc;
     release_class_ptr( class );
-    if (status || !(theirs = get_winproc_ptr( (WNDPROC)existing )) || theirs == WINPROC_PROC16) goto done;
+    if (status || !(theirs = get_winproc_ptr( (WNDPROC)existing )) || theirs == WINPROC_PROC16) return FALSE;
     index = theirs - winproc_array;
-    if (index < NTUSER_NB_PROCS || theirs == ours) goto done;  /* user32's builtin classes: W236 */
-    if (!(((ULONG_PTR)theirs->procA | (ULONG_PTR)theirs->procW) >> 32)) goto done;  /* not a 64-bit proc */
+    if (index < NTUSER_NB_PROCS) return FALSE;
     pthread_mutex_lock( &winproc_lock );
-    class_procs32[index] = *ours;
+    /* 04.68 (run-0052 of 20261124T214208Z): RichEdit20W and RichEdit50W share one proc, so one winproc index; a
+     * count per index keeps the second class's shadow (and its 32-bit proc) after the first goes */
+    if ((shadowed = class_shadow32[index] != 0) && !--class_shadow32[index])
+        memset( &class_procs32[index], 0, sizeof(class_procs32[index]) );
     pthread_mutex_unlock( &winproc_lock );
-    ERR( "PWWOW win32u: global class %s is the 64-bit side's (proc %p/%p); 32-bit threads get %p/%p\\n",
-         debugstr_us(name), theirs->procA, theirs->procW, ours->procA, ours->procW );
-done:
-    RtlSetLastWin32Error( ERROR_CLASS_ALREADY_EXISTS );  /* the registration's own error, unchanged */
+    if (shadowed)
+        ERR( "PWWOW win32u: global class %s: the 32-bit side's shadow is unregistered; the 64-bit class stays\\n",
+             debugstr_us(name) );
+    return shadowed;
 }
 
 /***********************************************************************
  *	     NtUserRegisterClassExWOW   (win32u.@)
- */''','A global class both worlds register runs its own proc in each (run-0221).')
+ */''','A global class both worlds register runs its own proc in each (run-0221); its 32-bit registration succeeds as a shadow (04.65, run-0030).')
 revise('dlls/win32u/class.c','''failed:
     user_unlock();
     NtUserDestroyCursor( icon_internal, 0 );
@@ -1558,11 +1685,41 @@ revise('dlls/win32u/class.c','''failed:
     return 0;
 ''','''failed:
     user_unlock();
-    pw_world_class_proc32( instance, name, wndproc, wc->style );  /* run-0221 */
+    atom = pw_world_class_proc32( instance, name, wndproc, wc->style );  /* run-0221, 04.65 */
     NtUserDestroyCursor( icon_internal, 0 );
     free( class );
-    return 0;
-''','A global class both worlds register runs its own proc in each (run-0221).')
+    return atom;
+''','A global class both worlds register runs its own proc in each (run-0221); its 32-bit registration succeeds as a shadow (04.65, run-0030).')
+revise('dlls/win32u/class.c','''    get_desktop_window();
+
+    user_lock();
+
+    SERVER_START_REQ( destroy_class )''','''    get_desktop_window();
+
+    /* 04.65 (run-0030): the 32-bit side's shadow of a 64-bit global class goes without destroying the class */
+    if (pw_world_class_unshadow32( instance, name ))
+    {
+        *menu_name = NULL;
+        return TRUE;
+    }
+
+    user_lock();
+
+    SERVER_START_REQ( destroy_class )''','A 32-bit shadow of a 64-bit global class is unregistered without destroying the class (04.65, run-0030).')
+# 04.68 (run-0052 of 20261124T214208Z): vc_redist.x86's Burn failed with 0x80070583 "Failed to load theme controls",
+# user32's WIN_CreateWindowEx answer when GetClassInfoEx finds no class; which class a 32-bit thread asked for
+revise('dlls/win32u/class.c','''    if (!(class = find_class( instance, name ))) return 0;
+''','''    if (!(class = find_class( instance, name )))
+    {
+        static unsigned int logged;
+        extern int pw_trace_enabled( void );  /* routine misses: traces only (platform/ps4/pw_trace.h) */
+
+        if (NtCurrentTeb()->WowTebOffset && pw_trace_enabled() && logged++ < 32)
+            ERR( "PWWOW win32u: 32-bit thread %04x: no class %s for instance %p\\n",
+                 (int)HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ), debugstr_us(name), instance );
+        return 0;
+    }
+''','A 32-bit thread that finds no window class logs its name (04.68, run-0052).')
 # (2) Whatever proc is still 64-bit (a 64-bit-only global class, W239's "Wine IME") never reaches 32-bit code
 #     through CallWindowProc or DispatchMessage either: the thread gets its own DefWindowProc, the behaviour
 #     W239 gives the callback path. Before, wow64win cut it to 32 bits and user32 jumped there.

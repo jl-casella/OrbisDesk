@@ -28,6 +28,10 @@ extern const void *pw_crypt32_unix_call_funcs[],*pw_crypt32_unix_call_wow64_func
 /* MangoJuice: dwrite's Unix side on the boot ELF's FreeType (platform/ps4/pw_dwrite_unix.c,
  * tools/build-unixlibs-ps4.py); MSYS2's harfbuzz, and through it GTK, imports DWrite.dll */
 extern const void *pw_dwrite_unix_call_funcs[],*pw_dwrite_unix_call_wow64_funcs[];
+/* 04.89 (Alice, run-0227/0228/0230): winspool's Unix side, Wine's cups.c without CUPS (every call answers
+ * STATUS_NOT_SUPPORTED: no printers), tools/build-unixlibs-ps4.py. Without it __wine_init_unix_call failed and
+ * winspool's DllMain still called enum_printers with handle 0: a NULL+8 read in __wine_unix_call_dispatcher */
+extern const void *pw_winspool_unix_call_funcs[],*pw_winspool_unix_call_wow64_funcs[];
 /* W178 (phase 7): xinput's Unix side, the console's pad as controller 0 (tools/build-xinput-hw.py) */
 extern const void *pw_xinput_unix_call_funcs[],*pw_xinput_unix_call_wow64_funcs[];
 /* alpha-1 (run-0165): "pwguest", kernelbase's calls at a guest's end that reach win32u's Unix side: the Vulkan
@@ -102,6 +106,7 @@ int pw_wine_static_unixlib(const char *path,int wow,const void **funcs,PwUnixLib
         {"xinput1_3.so",pw_xinput_unix_call_funcs,pw_xinput_unix_call_wow64_funcs,NULL},
         {"crypt32.so",pw_crypt32_unix_call_funcs,pw_crypt32_unix_call_wow64_funcs,NULL},
         {"dwrite.so",pw_dwrite_unix_call_funcs,pw_dwrite_unix_call_wow64_funcs,NULL},
+        {"winspool.so",pw_winspool_unix_call_funcs,pw_winspool_unix_call_wow64_funcs,NULL},
         {"winebus.so",pw_winebus_unix_call_funcs,NULL,NULL},
         {"pwguest.so",pw_guest_unix_call_funcs,pw_guest_unix_call_wow64_funcs,NULL}};
     const char *base=path?strrchr(path,'/'):NULL;

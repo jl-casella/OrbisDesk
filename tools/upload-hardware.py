@@ -63,7 +63,7 @@ def put(local,remote,expected):
 # W172/W175/W292: the user.reg keys the console keeps (tools/console_state.py, shared with the
 # first-run installer's install.json)
 USER_REG='wine-prefix/user.reg';REG_HEADER=b'WINE REGISTRY Version 2'
-from console_state import CONSOLE_OWNED,CONSOLE_OWNED_FILES
+from console_state import CONSOLE_OWNED,CONSOLE_OWNED_FILES,is_vcrt_file,is_wine_builtin
 reset=[key.lower() for key in manifest.get('user_reg_reset',[])]
 if not set(reset)<=set(CONSOLE_OWNED):raise SystemExit('user_reg_reset names keys the console does not own: %r'%reset)
 def reg_blocks(text):
@@ -176,6 +176,14 @@ if not args.skip_runtime:
             counts['kept']=counts.get('kept',0)+1
             print(index,'kept',name,'console-owned',flush=True)
             continue
+        if is_vcrt_file(name):
+            # 04.92 (docs/VCRUNTIME_FALLBACK.md): a VC++ runtime DLL that is not Wine's belongs to a Microsoft
+            # redistributable a game installed; it stays while installed (the launcher's installer does the same)
+            current=retrying(fetch,remote)
+            if current is not None and sha(current)!=entry['sha256'] and not is_wine_builtin(current[:0x50]):
+                counts['kept']=counts.get('kept',0)+1
+                print(index,'kept',name,'not a Wine builtin (a redistributable owns it)',flush=True)
+                continue
         if name.endswith('.prx'):
             # GoldHEN's FTP: an overwritten PRX can stay loaded, and RETR returns the decrypted ELF, so delete
             # first and verify by a slice of the ELF's text (as tools/upload-pop-separate.py does)

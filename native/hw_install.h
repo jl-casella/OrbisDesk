@@ -10,6 +10,11 @@
  *     /data/orbisdesk/user-reg-delivered.json, shared with the uploader);
  *   - a console-owned file (P lines, tools/console_state.py CONSOLE_OWNED_FILES: MangoHud.conf, which
  *     MangoJuice edits) is copied only when it is missing; the user's copy is never replaced;
+ *   - a Visual C++ runtime DLL of system32/syswow64 (V lines, tools/console_state.py is_vcrt_file) that is not a
+ *     Wine builtin belongs to a Microsoft redistributable a game installed and is kept; one that is missing (that
+ *     redistributable's uninstall or a failed install's rollback deleted it) gets Wine's copy back from
+ *     /data/wine/lib/wine/vcrt-fallback on every start, also when the build is already installed or the runtime
+ *     came over FTP (docs/VCRUNTIME_FALLBACK.md);
  *   - files earlier builds shipped and this one does not (obsolete) are deleted;
  *   - the files of the build PC's profile folder (C:\users\<host>, shipped by builds before alpha-1, whose
  *     registry pointed Documents and the rest there) move to C:\users\orbis without replacing anything;
@@ -23,10 +28,15 @@
 #include <strings.h>
 #include <sys/statvfs.h>
 
+#ifndef HW_INSTALL_ROOT
 #define HW_INSTALL_ROOT "/app0/runtime"
+#endif
+#ifndef HW_INSTALL_DATA
+#define HW_INSTALL_DATA "/data"   /* tests/vcrt_fallback_host_check.c points both at temporary folders */
+#endif
 #define HW_INSTALL_LIST HW_INSTALL_ROOT "/install.txt"
-#define HW_INSTALL_RECORD "/data/orbisdesk/runtime-installed.txt"
-#define HW_INSTALL_LEDGER "/data/orbisdesk/user-reg-delivered.json"
+#define HW_INSTALL_RECORD HW_INSTALL_DATA "/orbisdesk/runtime-installed.txt"
+#define HW_INSTALL_LEDGER HW_INSTALL_DATA "/orbisdesk/user-reg-delivered.json"
 #define HW_INSTALL_USER_REG "wine-prefix/user.reg"
 
 /* ---- SHA-256 (FIPS 180-4) ---- */
@@ -87,19 +97,20 @@ struct hw_install_file {const char *sha,*path;uint64_t bytes;int action;};
 struct hw_install_list {
     char *text;size_t size;const char *build,*host;uint64_t total;
     const char *writable[HW_INSTALL_MAX_ROOTS],*owned[HW_INSTALL_MAX_ROOTS],*reset[HW_INSTALL_MAX_ROOTS],*kept[HW_INSTALL_MAX_ROOTS];
-    unsigned writables,owneds,resets,keeps,dirs,files,obsoletes;
-    const char **dir,**obsolete;struct hw_install_file *file;
+    unsigned writables,owneds,resets,keeps,dirs,files,obsoletes,vcrts;
+    const char **dir,**obsolete,**vcrt;struct hw_install_file *file;
 };
-static void hw_install_free(struct hw_install_list *l){free(l->text);free(l->dir);free(l->obsolete);free(l->file);memset(l,0,sizeof(*l));}
+static void hw_install_free(struct hw_install_list *l){free(l->text);free(l->dir);free(l->obsolete);free(l->vcrt);free(l->file);memset(l,0,sizeof(*l));}
 /* "ORBISDESK-INSTALL 1" then one record per line: B build, H host profile, T total bytes, W writable root,
- * K console-owned key, R reset key, P console-owned file, D directory, F sha256 bytes path, O obsolete path
- * (paths last: spaces) */
+ * K console-owned key, R reset key, P console-owned file, V Visual C++ runtime file, D directory,
+ * F sha256 bytes path, O obsolete path (paths last: spaces) */
 static int hw_install_parse(struct hw_install_list *l,char *text,size_t size)
 {
     memset(l,0,sizeof(*l));l->text=text;l->size=size;
     unsigned lines=0;for(size_t i=0;i<size;i++)if(text[i]=='\n')lines++;
     l->dir=calloc(lines+1,sizeof(*l->dir));l->obsolete=calloc(lines+1,sizeof(*l->obsolete));l->file=calloc(lines+1,sizeof(*l->file));
-    if(!l->dir||!l->obsolete||!l->file)return -1;
+    l->vcrt=calloc(lines+1,sizeof(*l->vcrt));
+    if(!l->dir||!l->obsolete||!l->file||!l->vcrt)return -1;
     if(size<20||memcmp(text,"ORBISDESK-INSTALL 1\n",20))return -1;
     for(char *line=text+20;line<text+size&&*line;){
         char *end=memchr(line,'\n',(size_t)(text+size-line));
@@ -115,6 +126,7 @@ static int hw_install_parse(struct hw_install_list *l,char *text,size_t size)
         case 'K':if(l->owneds<HW_INSTALL_MAX_ROOTS)l->owned[l->owneds++]=value;break;
         case 'R':if(l->resets<HW_INSTALL_MAX_ROOTS)l->reset[l->resets++]=value;break;
         case 'P':if(l->keeps<HW_INSTALL_MAX_ROOTS)l->kept[l->keeps++]=value;break;
+        case 'V':l->vcrt[l->vcrts++]=value;break;
         case 'D':l->dir[l->dirs++]=value;break;
         case 'O':l->obsolete[l->obsoletes++]=value;break;
         case 'F':{
@@ -137,6 +149,23 @@ static int hw_install_kept(const struct hw_install_list *l,const char *path)
 {
     for(unsigned i=0;i<l->keeps;i++)if(!strcmp(l->kept[i],path))return 1;
     return 0;
+}
+/* 04.92 (docs/VCRUNTIME_FALLBACK.md): a Visual C++ runtime DLL of system32/syswow64 (V lines) */
+static int hw_install_vcrt(const struct hw_install_list *l,const char *path)
+{
+    for(unsigned i=0;i<l->vcrts;i++)if(!strcmp(l->vcrt[i],path))return 1;
+    return 0;
+}
+/* 1: winebuild made the PE file at path (tools/winebuild/spec32.c writes builtin_signature after the 64-byte DOS
+ * header); 0: another file, such as the copy a Microsoft redistributable installed; -1: absent or unreadable */
+static int hw_install_wine_builtin(const char *path)
+{
+    static const char signature[]="Wine builtin DLL";
+    char head[0x40+sizeof(signature)-1];size_t got=0;
+    int fd=open(path,O_RDONLY);if(fd<0)return -1;
+    while(got<sizeof(head)){ssize_t n=read(fd,head+got,sizeof(head)-got);if(n<0){close(fd);return -1;}if(!n)break;got+=(size_t)n;}
+    close(fd);
+    return got==sizeof(head)&&!memcmp(head+0x40,signature,sizeof(signature)-1);
 }
 static int hw_install_writable(const struct hw_install_list *l,const char *path)
 {
@@ -278,7 +307,7 @@ static int hw_ledger_has(char **keys,unsigned count,const char *key,size_t len)
 }
 static int hw_install_user_reg(const struct hw_install_list *l,const char *build_sha)
 {
-    static const char build_path[]=HW_INSTALL_ROOT "/" HW_INSTALL_USER_REG,live_path[]="/data/" HW_INSTALL_USER_REG;
+    static const char build_path[]=HW_INSTALL_ROOT "/" HW_INSTALL_USER_REG,live_path[]=HW_INSTALL_DATA "/" HW_INSTALL_USER_REG;
     size_t build_size=0,live_size=0;
     char *build=read_whole(build_path,&build_size),*live=read_whole(live_path,&live_size);
     if(!build){free(live);note(HW_BUILD " PWINSTALL failed user_reg read_build errno=%d\n",errno);return -1;}
@@ -363,9 +392,9 @@ static void hw_install_migrate_profile(const char *host)
     unsigned moved=0,kept=0;
     for(unsigned f=0;f<sizeof(folders)/sizeof(*folders);f++){
         char from[PATH_MAX],to[PATH_MAX];
-        snprintf(from,sizeof(from),"/data/wine-prefix/drive_c/users/%s/%s",host,folders[f]);
+        snprintf(from,sizeof(from),HW_INSTALL_DATA "/wine-prefix/drive_c/users/%s/%s",host,folders[f]);
         DIR *dir=opendir(from);if(!dir)continue;
-        snprintf(to,sizeof(to),"/data/wine-prefix/drive_c/users/orbis/%s",folders[f]);
+        snprintf(to,sizeof(to),HW_INSTALL_DATA "/wine-prefix/drive_c/users/orbis/%s",folders[f]);
         hw_install_mkdirs(to,0777);
         for(struct dirent *e;(e=readdir(dir));){
             if(!strcmp(e->d_name,".")||!strcmp(e->d_name,".."))continue;
@@ -380,6 +409,49 @@ static void hw_install_migrate_profile(const char *host)
     if(moved||kept)note(HW_BUILD " PWINSTALL migrate profile=%s moved=%u kept=%u\n",host,moved,kept);
 }
 
+/* ---- the Visual C++ runtime (04.92, docs/VCRUNTIME_FALLBACK.md) ---- */
+/* On every start, before Wine, whether the runtime came in the package or over FTP (--runtime-outside-package): a
+ * VC++ runtime DLL missing from the prefix's system32/syswow64 gets Wine's copy back from
+ * /data/wine/lib/wine/vcrt-fallback, a second copy of the build's that no installer owns (tools/build-wine-hardware.py
+ * writes it and its list.txt, "ORBISDESK-VCRT 1" then "<sha256> <bytes> <folder>/<name>" per line). A
+ * redistributable deletes the copies it put in place when it is uninstalled or when a failed install rolls back
+ * (Wine's MSI, dlls/msi/files.c ACTION_RemoveFiles, keeps no backup of what they replaced), and Wine's loader does not
+ * fall back to lib/wine outside the prefix bootstrap (dlls/ntdll/loader.c find_builtin_without_file): without this
+ * every program importing vcruntime140.dll fails. A present copy, Microsoft's or Wine's, is never touched here.
+ * Returns how many failed; a missing list (a runtime from before this rule) restores nothing. */
+#define HW_VCRT_FALLBACK HW_INSTALL_DATA "/wine/lib/wine/vcrt-fallback"
+static unsigned hw_install_vcrt_repair(void)
+{
+    size_t size=0;char *text=read_whole(HW_VCRT_FALLBACK "/list.txt",&size);
+    if(!text){note(HW_BUILD " PWINSTALL vcrt no_fallback_list errno=%d\n",errno);return 0;}
+    unsigned checked=0,restored=0,failed=0,present=0,refused=0;
+    if(size<17||memcmp(text,"ORBISDESK-VCRT 1\n",17)){note(HW_BUILD " PWINSTALL vcrt fallback_list_unreadable\n");free(text);return 1;}
+    for(char *line=text+17;line<text+size&&*line;){
+        char *end=memchr(line,'\n',(size_t)(text+size-line));
+        if(!end)break;
+        *end=0;
+        /* <64 hex> <bytes> system32|syswow64/<name> */
+        char *size_end=NULL,*path=NULL;
+        if(strlen(line)>66&&line[64]==' '){line[64]=0;strtoull(line+65,&size_end,10);if(size_end&&*size_end==' ')path=size_end+1;}
+        const char *name=path?strchr(path,'/'):NULL;
+        if(!path||!name||strchr(name+1,'/')||strstr(path,"..")||!name[1]||
+           (strncmp(path,"system32/",9)&&strncmp(path,"syswow64/",9))){refused++;line=end+1;continue;}
+        checked++;
+        char source[PATH_MAX],target[PATH_MAX];struct stat st;
+        snprintf(source,sizeof(source),HW_VCRT_FALLBACK "/%s",path);
+        snprintf(target,sizeof(target),HW_INSTALL_DATA "/wine-prefix/drive_c/windows/%s",path);
+        if(!pw_wine_stat(target,&st)){present++;line=end+1;continue;}
+        if(hw_install_write(source,NULL,0,target,line,0666)){
+            failed++;note(HW_BUILD " PWINSTALL vcrt restore_failed %s errno=%d\n",path,errno);
+        } else {restored++;note(HW_BUILD " PWINSTALL vcrt restored %s (missing; Wine's copy from vcrt-fallback)\n",path);}
+        line=end+1;
+    }
+    if(restored||failed||refused||pw_trace_on())
+        note(HW_BUILD " PWINSTALL vcrt checked=%u present=%u restored=%u failed=%u refused=%u\n",checked,present,restored,failed,refused);
+    free(text);
+    return failed+refused;
+}
+
 /* ---- the installer ---- */
 static void hw_install_screen(int percent,const char *state)
 {
@@ -391,9 +463,10 @@ static void hw_install_screen(int percent,const char *state)
 static int hw_install_runtime(char *detail,size_t detail_size)
 {
     size_t size=0;char *text=read_whole(HW_INSTALL_LIST,&size);
-    if(!text){note(HW_BUILD " PWINSTALL no_embedded_runtime errno=%d (the uploaded /data runtime is used)\n",errno);return 0;}
+    /* 04.92: the VC++ runtime check runs on every start, in all three outcomes */
+    if(!text){note(HW_BUILD " PWINSTALL no_embedded_runtime errno=%d (the uploaded /data runtime is used)\n",errno);hw_install_vcrt_repair();return 0;}
     size_t record_size=0;char *record=read_whole(HW_INSTALL_RECORD,&record_size);
-    if(record&&record_size==size&&!memcmp(record,text,size)){free(record);free(text);note(HW_BUILD " PWINSTALL up_to_date\n");return 0;}
+    if(record&&record_size==size&&!memcmp(record,text,size)){free(record);free(text);note(HW_BUILD " PWINSTALL up_to_date\n");hw_install_vcrt_repair();return 0;}
     struct hw_install_list list,previous;memset(&previous,0,sizeof(previous));
     char *copy=malloc(size+1);
     if(!copy||(memcpy(copy,text,size),copy[size]=0,hw_install_parse(&list,copy,size))){
@@ -411,11 +484,15 @@ static int hw_install_runtime(char *detail,size_t detail_size)
     uint64_t copy_bytes=0,hash_bytes=0;unsigned to_copy=0,to_hash=0,trusted=0,kept=0;
     for(unsigned i=0;i<list.files;i++){
         struct hw_install_file *f=&list.file[i];char target[PATH_MAX];struct stat st;
-        snprintf(target,sizeof(target),"/data/%s",f->path);
+        snprintf(target,sizeof(target),HW_INSTALL_DATA "/%s",f->path);
         if(!strcmp(f->path,HW_INSTALL_USER_REG)){f->action=HW_USER_REG;continue;}
         /* pw_wine_stat, not stat (2026-11-20): the SDK's struct stat is not the kernel's layout (32-bit mode_t), so
          * st_size came from the wrong bytes and every update copied the whole runtime again (copy=3742 of 3749) */
         if(hw_install_kept(&list,f->path)&&!pw_wine_stat(target,&st)){f->action=HW_SKIP;kept++;continue;}  /* the user's copy */
+        /* 04.92: a VC++ runtime DLL that is not Wine's is a Microsoft redistributable's, kept while it is installed
+         * (a missing one is copied below like any other file) */
+        if(hw_install_vcrt(&list,f->path)&&hw_install_wine_builtin(target)==0){
+            f->action=HW_SKIP;kept++;note(HW_BUILD " PWINSTALL vcrt kept_native %s\n",f->path);continue;}
         if(pw_wine_stat(target,&st)||(uint64_t)st.st_size!=f->bytes){f->action=HW_COPY;copy_bytes+=f->bytes;to_copy++;continue;}
         int same=0;
         for(unsigned j=0;j<previous.files&&!same;j++)
@@ -423,7 +500,7 @@ static int hw_install_runtime(char *detail,size_t detail_size)
         if(same){f->action=HW_SKIP;trusted++;}else{f->action=HW_HASH;hash_bytes+=f->bytes;to_hash++;}
     }
     struct statvfs vfs;
-    if(!statvfs("/data",&vfs)){
+    if(!statvfs(HW_INSTALL_DATA,&vfs)){
         uint64_t free_bytes=(uint64_t)vfs.f_bavail*vfs.f_frsize,needed=copy_bytes+hash_bytes+(256ull<<20);
         note(HW_BUILD " PWINSTALL space free_mb=%llu needed_mb=%llu\n",(unsigned long long)(free_bytes>>20),(unsigned long long)(needed>>20));
         if(free_bytes<needed){
@@ -435,7 +512,7 @@ static int hw_install_runtime(char *detail,size_t detail_size)
          (unsigned long long)(copy_bytes>>20),to_hash,(unsigned long long)(hash_bytes>>20),trusted,kept);
     int failed=0;
     for(unsigned i=0;i<list.dirs&&!failed;i++){
-        char target[PATH_MAX];snprintf(target,sizeof(target),"/data/%s",list.dir[i]);
+        char target[PATH_MAX];snprintf(target,sizeof(target),HW_INSTALL_DATA "/%s",list.dir[i]);
         int writable=hw_install_writable(&list,list.dir[i]);
         if(hw_install_mkdirs(target,writable?0777:0755)){failed=1;snprintf(detail,detail_size,"CANNOT CREATE A FOLDER (%d)",errno);
             note(HW_BUILD " PWINSTALL failed mkdir %s errno=%d\n",list.dir[i],errno);}
@@ -446,7 +523,7 @@ static int hw_install_runtime(char *detail,size_t detail_size)
     for(unsigned i=0;i<list.files&&!failed;i++){
         struct hw_install_file *f=&list.file[i];
         char source[PATH_MAX],target[PATH_MAX];
-        snprintf(source,sizeof(source),HW_INSTALL_ROOT "/%s",f->path);snprintf(target,sizeof(target),"/data/%s",f->path);
+        snprintf(source,sizeof(source),HW_INSTALL_ROOT "/%s",f->path);snprintf(target,sizeof(target),HW_INSTALL_DATA "/%s",f->path);
         if(f->action==HW_SKIP&&hw_install_is_prx(f->path))chmod(target,hw_install_mode(&list,f->path));
         if(f->action==HW_SKIP||f->action==HW_USER_REG){present+=f->action==HW_SKIP;continue;}
         if(f->action==HW_HASH){
@@ -479,7 +556,7 @@ static int hw_install_runtime(char *detail,size_t detail_size)
         const char *p=list.obsolete[i];char target[PATH_MAX];
         /* the builder checks this too; wine/lib/wine/: library copies the prefix now holds alone (2026-11-20) */
         if((strncmp(p,"wine-prefix/",12)&&strncmp(p,"wine/lib/wine/",14))||strstr(p,".."))continue;
-        snprintf(target,sizeof(target),"/data/%s",p);
+        snprintf(target,sizeof(target),HW_INSTALL_DATA "/%s",p);
         if(!unlink(target))deleted++;
         else if(errno!=ENOENT)note(HW_BUILD " PWINSTALL obsolete %s errno=%d\n",p,errno);
     }
@@ -490,6 +567,7 @@ static int hw_install_runtime(char *detail,size_t detail_size)
     }
     note(HW_BUILD " PWINSTALL %s copied=%u present=%u obsolete_deleted=%u copied_mb=%llu ms=%llu\n",failed?"failed":"done",
          copied,present,deleted,(unsigned long long)(copy_bytes>>20),(unsigned long long)((sceKernelGetProcessTime()-start)/1000));
+    if(!failed)hw_install_vcrt_repair();   /* the copy above already filled what was missing: this only logs the state */
     if(!failed)hw_install_screen(100,"ORBISDESK INSTALLED");
     hw_install_free(&list);hw_install_free(&previous);free(text);
     return failed?-1:0;
