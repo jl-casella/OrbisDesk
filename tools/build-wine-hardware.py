@@ -195,10 +195,32 @@ world_build=json.loads((ROOT/'build/wow64-world-ps4/report.json').read_text())
 if world_build['builder_sha256']!=sha(ROOT/'tools/build-wow64-world-ps4.py'):raise SystemExit('wow64 world objects differ from their builder')
 for source,digest in world_build['inputs'].items():
     if sha(ROOT/source)!=digest:raise SystemExit('wow64 world input changed; run tools/build-wow64-world-ps4.py: '+source)
+for source,digest in world_build['quiescence_sources'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('native quiescence input differs from build: '+source)
+for source,digest in world_build['fd_pressure_sources'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('descriptor pressure policy differs from build: '+source)
 for replaced,entry in world_build['replaces'].items():
     if sha(ROOT/entry['object'])!=entry['sha256']:raise SystemExit('wow64 world object changed after its build: '+entry['object'])
     if command.count(str(ROOT/replaced))!=1:raise SystemExit('Expected one '+replaced+' in the link')
     command=[str(ROOT/entry['object']) if arg==str(ROOT/replaced) else arg for arg in command]
+# Operation instrumentation uses the exact Unix ABI and leaves Nt* return values
+# and side effects intact. The sync replacement only drops unused rusage queries
+# from a nonzero NtDelayExecution; zero-yield status keeps the original path.
+subprocess.run([sys.executable,str(ROOT/'tools/build-wine-optrace.py')],cwd=ROOT,check=True)
+optrace=json.loads((ROOT/'build/wine-optrace/report.json').read_text())
+for name,digest in (optrace['inputs']|optrace['source_hashes']).items():
+    if sha(ROOT/name)!=digest:raise SystemExit('operation trace input changed: '+name)
+if sha(ROOT/optrace['replaces'])!=optrace['original_sync_object_sha256']:raise SystemExit('operation trace base sync object changed')
+for entry in optrace['objects'].values():
+    if sha(ROOT/entry['path'])!=entry['sha256']:raise SystemExit('operation trace object changed')
+original_sync=str(ROOT/optrace['replaces'])
+if command.count(original_sync)!=1:raise SystemExit('Expected one original sync object')
+command=[str(ROOT/optrace['objects']['sync']['path']) if x==original_sync else x for x in command]
+original_file=str(ROOT/optrace['replaces_file'])
+if sha(ROOT/optrace['replaces_file'])!=optrace['original_file_object_sha256']:raise SystemExit('operation trace base file object changed')
+if command.count(original_file)!=1:raise SystemExit('Expected one world file object')
+command=[str(ROOT/optrace['objects']['file']['path']) if x==original_file else x for x in command]
+command[1:1]=[str(ROOT/optrace['objects']['optrace']['path']),*('--wrap='+name for name in optrace['wraps'])]
 # Wine's client server.c uses writev for requests with data. Redirect just that object
 # so every Wine client uses bounded writes, including the title's HID thread (run-0147).
 request_client=ROOT/'build/wow64-world-ps4/server.o'

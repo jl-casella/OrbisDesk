@@ -481,7 +481,12 @@ for old,new in (
 #else''',
      '''#ifdef __ORBIS__
         extern int pw_wine_thread_kill( int pid, long tid, int sig );
-        if (sig == SIGUSR1) ret = pw_wine_thread_kill( thread->unix_pid, thread->unix_tid, sig );  /* OrbisDesk W195 */
+        extern int pw_wine_thread_quit_ready(void);
+        /* 04.52: SIGQUIT is now thread-directed through the proven raw signal
+         * entry, never the W064 process-wide kill fallback. Without that entry
+         * preserve the failure; the guest must retain its code mappings. */
+        if (sig == SIGUSR1 || (sig == SIGQUIT && pw_wine_thread_quit_ready()))
+            ret = pw_wine_thread_kill( thread->unix_pid, thread->unix_tid, sig );
         else
         {
             fprintf( stderr, "PWBOOT thread_signal unavailable thread=%04x sig=%d\\n", thread->id, sig );

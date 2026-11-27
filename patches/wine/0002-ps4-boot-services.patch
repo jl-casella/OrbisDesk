@@ -11,6 +11,92 @@
  
  #include <assert.h>
  #include <errno.h>
+@@ -3398,9 +3402,15 @@
+ }
+ 
+ 
++#ifdef __ORBIS__
++#include "pw_wine_thread_alert.inc.c"
++#endif
++
+ union tid_alert_entry
+ {
+-#ifdef USE_FUTEX
++#ifdef __ORBIS__
++    struct { OrbisKernelEventFlag native; HANDLE event; } ps4;
++#elif defined(USE_FUTEX)
+     LONG futex;
+ #elif defined(HAVE_KQUEUE)
+     int kq;
+@@ -3424,7 +3434,7 @@
+     unsigned int block_idx;
+ 
+     handle_to_index( tid, &block_idx );
+-    return block_idx <= ARRAY_SIZE(tid_alert_blocks);
++    return block_idx < ARRAY_SIZE(tid_alert_blocks);
+ }
+ 
+ static union tid_alert_entry *get_tid_alert_entry( HANDLE tid )
+@@ -3432,7 +3442,7 @@
+     unsigned int block_idx, idx = handle_to_index( tid, &block_idx );
+     union tid_alert_entry *entry;
+ 
+-    if (block_idx > ARRAY_SIZE(tid_alert_blocks))
++    if (block_idx >= ARRAY_SIZE(tid_alert_blocks))
+     {
+         FIXME( "tid %p is too high\n", tid );
+         return NULL;
+@@ -3449,7 +3459,20 @@
+ 
+     entry = &tid_alert_blocks[block_idx][idx % TID_ALERT_BLOCK_SIZE];
+ 
+-#ifdef USE_FUTEX
++#ifdef __ORBIS__
++    if (!entry->ps4.native)
++    {
++        OrbisKernelEventFlag event = pw_alert_create();
++        if (InterlockedCompareExchangePointer( (void **)&entry->ps4.native, event, NULL ) &&
++            event != PW_ALERT_SERVER) sceKernelDeleteEventFlag( event );
++    }
++    if (entry->ps4.native == PW_ALERT_SERVER && !entry->ps4.event)
++    {
++        HANDLE event;
++        if (NtCreateEvent( &event, EVENT_ALL_ACCESS, NULL, SynchronizationEvent, FALSE )) return NULL;
++        if (InterlockedCompareExchangePointer( &entry->ps4.event, event, NULL )) NtClose( event );
++    }
++#elif defined(USE_FUTEX)
+     return entry;
+ #elif defined(HAVE_KQUEUE)
+     if (!entry->kq)
+@@ -3527,7 +3550,11 @@
+ 
+     if (!entry) return STATUS_INVALID_CID;
+ 
+-#ifdef USE_FUTEX
++#ifdef __ORBIS__
++    if (entry->ps4.native != PW_ALERT_SERVER) return pw_alert_set( entry->ps4.native );
++    if (pw_alert_diagnostics) pw_alert_stats.fallback_sets++;
++    return NtSetEvent( entry->ps4.event, NULL );
++#elif defined(USE_FUTEX)
+     {
+         LONG *futex = &entry->futex;
+         if (!InterlockedExchange( futex, 1 ))
+@@ -3589,7 +3616,14 @@
+ 
+     if (!entry) return STATUS_INVALID_CID;
+ 
+-#ifdef USE_FUTEX
++#ifdef __ORBIS__
++    if (entry->ps4.native != PW_ALERT_SERVER) return pw_alert_wait( entry->ps4.native, timeout );
++    if (pw_alert_diagnostics) pw_alert_stats.fallback_waits++;
++    {
++        NTSTATUS status = NtWaitForSingleObject( entry->ps4.event, FALSE, timeout );
++        return !status ? STATUS_ALERTED : status;
++    }
++#elif defined(USE_FUTEX)
+     {
+         LONG *futex = &entry->futex;
+         ULONGLONG end;
 --- a/dlls/ntdll/unix/thread.c
 +++ b/dlls/ntdll/unix/thread.c
 @@ -66,7 +66,7 @@

@@ -7,6 +7,7 @@ import json
 import pathlib
 import re
 import subprocess
+from wine_thread_alert import patch_thread_alerts
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 subprocess.run(['python3',str(ROOT/'tools/prepare-wine-ps4.py')],check=True)
@@ -26,6 +27,7 @@ replace(p,'#include "config.h"', '''#include "config.h"
 /* Use Wine's real server-event fallback; kqueue headers are unavailable. */
 #undef HAVE_KQUEUE
 #endif''')
+changes[p][1] = patch_thread_alerts(changes[p][1])
 p=edit('thread')
 replace(p,'#ifdef __FreeBSD__\n#include <sys/thr.h>','#if defined(__FreeBSD__) && !defined(__ORBIS__)\n#include <sys/thr.h>')
 replace(p,'#elif defined(__FreeBSD__)','#elif defined(__FreeBSD__) && !defined(__ORBIS__)')
@@ -827,6 +829,11 @@ revise('server/request.c','''            set_fd_events( current->reply_fd, POLLO
             set_fd_events( current->request_fd, 0 );''','''            set_fd_events( current->reply_fd, POLLOUT );
             if (current->reply_fd != current->request_fd)  /* OrbisDesk 04.25: one socket */
                 set_fd_events( current->request_fd, 0 );''')
+# 04.59: high-file-descriptor cache pressure fix, shared with the world producer.
+from wine_fd_pressure import OLD as fd_pressure_old, NEW as fd_pressure_new, BUDGET_CHANGES
+revise('dlls/ntdll/unix/server.c', fd_pressure_old, fd_pressure_new)
+for fd_budget_old, fd_budget_new in BUDGET_CHANGES:
+    revise('dlls/ntdll/unix/server.c', fd_budget_old, fd_budget_new)
 # W018: stopped inside alloc_virtual_heap; record every placement attempt.
 revise('dlls/ntdll/unix/virtual.c','''        ret = anon_mmap_fixed( (char *)end - size, size, PROT_READ | PROT_WRITE, 0 );
         if (ret == MAP_FAILED) continue;''','''#ifdef __ORBIS__
