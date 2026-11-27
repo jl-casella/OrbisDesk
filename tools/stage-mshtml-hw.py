@@ -42,7 +42,11 @@ TARGETS={'x86_64-windows':('mshtml.dll','jscript.dll','msxml3.dll','mshtml.tlb',
                          'crypt32.dll')+CRYPTO_AND_DELAYED}
 # W252: modules staged although the sealed prefix has them: its syswow64 crypt32.dll is not in the builtin folder,
 # so ntdll Unix gives it no Unix library
-BUILTIN_FOLDER={('i386-windows','crypt32.dll')}
+BUILTIN_FOLDER={('i386-windows','crypt32.dll'),
+                # 04.91 (04.90 run-0237: winspool.drv still loaded from syswow64 as a native module, so the Unix side
+                # linked in 04.90 (platform/ps4/pw_wine_unixlibs.c, tools/build-unixlibs-ps4.py) was never found and
+                # its DllMain went on with unixlib handle 0, the NULL+8 read of 04.89 run-0227/0228): both views
+                ('i386-windows','winspool.drv'),('x86_64-windows','winspool.drv')}
 # modules whose WINE_REGISTRY scripts are applied, per view, in order: shdocvw and ieframe both
 # register the WebBrowser class, and wineboot leaves it in ieframe (the sealed 64-bit view)
 REGISTER={'x86_64-windows':('mshtml.dll','jscript.dll','msxml3.dll'),

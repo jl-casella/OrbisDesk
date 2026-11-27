@@ -1011,6 +1011,12 @@ text+='\n[Software\\\\Wine\\\\AppDefaults\\\\explorer.exe\\\\DllOverrides] 17933
 # desktop exercises the PW_EXEC_SEPARATE path (tools/build-guest-hw.py), which spawns the separate-process
 # child that joins this wineserver. ps4_execution_mode reads AppDefaults\<base>\OrbisExecutionMode (HKCU).
 text+='\n[Software\\\\Wine\\\\AppDefaults\\\\separate_probe64.exe] 1793390636\n#time=1dd68a9cb52bf36\n"OrbisExecutionMode"="separate"\n'
+# 04.66 (GTA IV, run-0045 of 20261124T190700Z): Social Club's SocialClubHelper.exe (CEF) runs in a separate
+# process (04.65) and its chrome_elf.dll aborted at load: PartitionAlloc's GigaCage reserves 64 GiB of address
+# space at once, which the console refuses (PWVM reserve of 0x1000000000 bytes failed, ENOMEM). Chromium of that
+# era leaves GigaCage off below Windows 8.1 (IsWindows8Point1OrGreater), so the helper reports Windows 7.
+if '[Software\\\\Wine\\\\AppDefaults\\\\SocialClubHelper.exe]' in text:raise SystemExit('user.reg: unexpected SocialClubHelper.exe AppDefaults')
+text+='\n[Software\\\\Wine\\\\AppDefaults\\\\SocialClubHelper.exe] 1793390636\n#time=1dd68a9cb52bf36\n"Version"="win7"\n'
 # W045: a dark scheme through the system colours (the prefix's Colors key is empty, so Wine
 # used its classic grey). Light text on every dark face: buttons and taskbar, menus,
 # captions, windows, tooltips; blue selection with white text.
@@ -1387,6 +1393,31 @@ stale_removed=0
 for path in obsolete_files:
     if (data/path).is_file():(data/path).unlink();stale_removed+=1
 print(json.dumps({'stale_runtime_files_removed':stale_removed}))
+# 04.92 (docs/VCRUNTIME_FALLBACK.md): the Visual C++ 2010-2022 runtime DLLs of system32 and syswow64, which a
+# Microsoft redistributable a game installs can own on the console and delete again (its uninstall, or the rollback
+# of a failed install: Wine's MSI keeps no backup of the copies it replaced). Each must be Wine's here (an
+# OrbisDesk-shipped Microsoft copy would never be updated), and a second copy goes to wine/lib/wine/vcrt-fallback,
+# which no installer owns and Wine never loads from (its builtin search is lib/wine/<arch>-windows/<name> and
+# lib/wine/<name>). The launcher restores a missing prefix copy from there on every start, with or without
+# --runtime-outside-package (native/hw_install.h hw_install_vcrt_repair, list.txt as its contract).
+from console_state import is_vcrt_file,is_wine_builtin,VCRT_FALLBACK_DIR,VCRT_FALLBACK_LIST,vcrt_fallback_path
+fallback_root=data/VCRT_FALLBACK_DIR
+if fallback_root.exists():
+    for stale in sorted(fallback_root.rglob('*'),reverse=True):
+        stale.unlink() if stale.is_file() else stale.rmdir()
+vcrt_files=sorted(p.relative_to(data).as_posix() for folder in ('system32','syswow64')
+                  for p in (prefix/'drive_c/windows'/folder).iterdir() if p.is_file())
+vcrt_files=[path for path in vcrt_files if is_vcrt_file(path)]
+if not any(path.endswith('/syswow64/vcruntime140.dll') for path in vcrt_files):
+    raise SystemExit('VC++ runtime fallback: syswow64/vcruntime140.dll is not in the runtime')
+vcrt_list='ORBISDESK-VCRT 1\n'
+for path in vcrt_files:
+    body=(data/path).read_bytes()
+    if not is_wine_builtin(body[:0x50]):raise SystemExit('VC++ runtime file is not a Wine builtin: '+path)
+    copy=data/vcrt_fallback_path(path);copy.parent.mkdir(parents=True,exist_ok=True);copy.write_bytes(body)
+    vcrt_list+='%s %d %s\n'%(hashlib.sha256(body).hexdigest(),len(body),vcrt_fallback_path(path)[len(VCRT_FALLBACK_DIR):])
+(data/VCRT_FALLBACK_LIST).write_text(vcrt_list,encoding='utf-8',newline='\n')
+print(json.dumps({'vcrt_fallback_files':len(vcrt_files),'vcrt_fallback_mb':round(sum((data/p).stat().st_size for p in vcrt_files)/2**20,1)}))
 # The runtime's inventory (also the manifest's, below) and what the console must drop
 runtime_directories=[p.relative_to(data).as_posix() for p in sorted(data.rglob('*')) if p.is_dir()]
 runtime_files={p.relative_to(data).as_posix():{'sha256':sha(p),'bytes':p.stat().st_size} for p in sorted(data.rglob('*')) if p.is_file()}
@@ -1402,10 +1433,13 @@ user_reg_reset=[]   # CONSOLE_OWNED keys this build takes from its own user.reg 
 from console_state import CONSOLE_OWNED,CONSOLE_OWNED_FILES
 for path in CONSOLE_OWNED_FILES:
     if path not in runtime_files:raise SystemExit('console-owned file not in the runtime: '+path)
+for path in vcrt_files:   # the VC++ runtime DLLs and their fallback copies (above) are shipped
+    if path not in runtime_files or vcrt_fallback_path(path) not in runtime_files:raise SystemExit('VC++ runtime file not shipped: '+path)
 install={'schema_version':1,'build':HW_BUILD_ID,'app_version':args.app_version,'state_root':'/data/orbisdesk',
     'writable':['wine-prefix','wine-home'],'directories':runtime_directories,
     'files':[[path,e['sha256'],e['bytes']] for path,e in runtime_files.items()],
     'obsolete_files':obsolete_files,'console_owned':list(CONSOLE_OWNED),'console_owned_files':list(CONSOLE_OWNED_FILES),
+    'vcrt_files':vcrt_files,
     'user_reg_reset':user_reg_reset,
     'host_profile':host_profiles[0].name,'bytes':sum(e['bytes'] for e in runtime_files.values())}
 install_json=work/'install.json'
@@ -1418,6 +1452,7 @@ install_text='ORBISDESK-INSTALL 1\n'+install_line('B',HW_BUILD_ID)+install_line(
 install_text+=''.join(install_line('W',w) for w in install['writable'])
 install_text+=''.join(install_line('K',k) for k in CONSOLE_OWNED)+''.join(install_line('R',k) for k in user_reg_reset)
 install_text+=''.join(install_line('P',p) for p in CONSOLE_OWNED_FILES)
+install_text+=''.join(install_line('V',v) for v in vcrt_files)
 install_text+=''.join(install_line('D',d) for d in runtime_directories)
 install_text+=''.join(install_line('F','%s %d %s'%(e['sha256'],e['bytes'],path)) for path,e in runtime_files.items())
 install_text+=''.join(install_line('O',o) for o in obsolete_files)

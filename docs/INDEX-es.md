@@ -224,6 +224,7 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [DESKTOP_BACKGROUND-es.md](DESKTOP_BACKGROUND-es.md) — Diálogo de fondo de escritorio: tus propias imágenes como fondo (borrador)
 - [FPS_LIMIT-es.md](FPS_LIMIT-es.md) — Límite de FPS (por programa)
 - [FRAME_GENERATION-es.md](FRAME_GENERATION-es.md) — Generación de fotogramas (experimental)
+- [GUEST_COMPATIBILITY-es.md](GUEST_COMPATIBILITY-es.md) — Compatibilidad al iniciar guests: candidata 04.59
 - [MANAGE_INSTALLATION-es.md](MANAGE_INSTALLATION-es.md) — Administrar la instalación
 - [MANGOJUICE-es.md](MANGOJUICE-es.md) — MangoJuice: el programa de ajustes de MangoHud
 - [OVERLAY_MENU-es.md](OVERLAY_MENU-es.md) — El menú del overlay con L3+R3 (04.31)
@@ -239,5 +240,6 @@ Regenerar ambos idiomas: `python3 tools/build-doc-index.py`.
 - [SEAMONKEY_GPU-es.md](SEAMONKEY_GPU-es.md) — Composición por GPU en SeaMonkey
 - [SEAMONKEY_RESPONSIVENESS-es.md](SEAMONKEY_RESPONSIVENESS-es.md) — La respuesta de SeaMonkey en la consola
 - [SHADER_CACHE-es.md](SHADER_CACHE-es.md) — Compilación de shaders, tiempo de cuadro y la caché de shaders en disco
+- [VCRUNTIME_FALLBACK-es.md](VCRUNTIME_FALLBACK-es.md) — Las DLL del runtime de Visual C++ después de desinstalar un redistribuible (04.92)
 - [WARCRAFT3-es.md](WARCRAFT3-es.md) — Warcraft III 1.07: las importaciones estáticas de Storm y los videos AVI de introducción
 - [WINE_MONO-es.md](WINE_MONO-es.md) — Wine Mono: programas .NET

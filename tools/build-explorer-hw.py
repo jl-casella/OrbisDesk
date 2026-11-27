@@ -987,6 +987,17 @@ revise('desktop.c','''            if (launcher) ShellExecuteW( NULL, L"open", la
 revise('desktop.c','''            if (process_changes( desktop_folder, buf0 )) redraw = TRUE;''','''            redraw = TRUE;''','Notification on the user Desktop: reload (W290).')
 revise('desktop.c','''            if (process_changes( desktop_folder_public, buf1 )) redraw = TRUE;''','''            redraw = TRUE;''','Notification on the public Desktop: reload (W290).')
 revise('desktop.c','''        if (redraw) place_desktop_icons( hwnd );''','''        if (redraw) PostMessageW( hwnd, WM_ORBIS_DESKTOP_RESCAN, 0, 0 );''','The watcher posts the reload (W290).')
+# 04.82 (run-0151/0153 of 20261125T203855Z: GTA IV's second SocialClubHelper.exe, a separate process, ended and the
+# title quit 1 s later with status 0 from this thread): wineserver posts WM_CLOSE to the desktop window when the threads
+# left on the desktop are all the desktop owner's (server/winstation.c remove_desktop_user, close_desktop_timeout),
+# which in Wine means "only explorer is left". Here every program is a guest of this one process, so that count holds
+# whenever a separate process leaves. The title's own exit is ExitWindows (session end), not this message: ignored.
+revise('desktop.c','''    case WM_CLOSE:
+        PostQuitMessage(0);
+        return 0;''','''    case WM_CLOSE:
+        /* 04.82: the desktop lives as long as the title; the server's "no other user left" close is ignored */
+        ERR( "PWDESKTOP close ignored: the title's programs are guests of this process\\n" );
+        return 0;''','The desktop does not close when a separate process leaves (04.82).')
 revise('desktop.c','''static LRESULT WINAPI desktop_icons_wnd_proc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp )
 {''','''/* W290: Desktop folder changes while OrbisDesk runs, and the right-click menu */
 enum { ORBIS_RESCAN_NOTIFY, ORBIS_RESCAN_POLL, ORBIS_RESCAN_MENU };

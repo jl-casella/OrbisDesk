@@ -35,7 +35,12 @@ LIBS={# Phase 8: ws2_32 with getaddrinfo and the other resolver calls answered b
       # MangoJuice (docs/MANGOJUICE.md): dwrite's Unix side, its FreeType calls answered by the
       # FreeType win32u links into the boot ELF (platform/ps4/pw_dwrite_unix.c). MSYS2's harfbuzz
       # imports DWrite.dll; without it GTK could not load (run-0060).
-      'dwrite':['dlls/dwrite/freetype',('dlls/dwrite/freetype','platform/ps4/pw_dwrite_unix.c')]}
+      'dwrite':['dlls/dwrite/freetype',('dlls/dwrite/freetype','platform/ps4/pw_dwrite_unix.c')],
+      # 04.89 (Alice through steam-open, run-0227/0228/0230): winspool's Unix side, unpatched; the
+      # ps4-unix configure found no CUPS, so every call answers STATUS_NOT_SUPPORTED (no printers),
+      # as Wine on a Linux without CUPS. Without it winspool.drv's DllMain called enum_printers with
+      # unixlib handle 0 and the title died at a NULL+8 read in __wine_unix_call_dispatcher.
+      'winspool':['dlls/winspool.drv/cups']}
 # FreeType headers for dwrite, as tools/build-win32u-ps4.py compiles win32u's freetype.c
 FREETYPE_INCLUDE=['-I'+str(ROOT/'build/freetype-ps4/include'),'-I'+str(ROOT/'.deps/shadPS4-fork/externals/freetype/include')]
 DEFINES={'ws2_32':['-DHAVE_GETADDRINFO=1','-Dgetaddrinfo=pw_ws2_getaddrinfo','-Dfreeaddrinfo=pw_ws2_freeaddrinfo',

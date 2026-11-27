@@ -270,6 +270,48 @@ static int kernel_sigaction(int orbis,const PwWireAction *action,PwWireAction *o
     if(raw_mode) return (int)pw_native_syscall_at(pw_native_raw_syscall,PW_SYS_SIGACTION,orbis,(long)action,(long)old);
     return ((Call)(uintptr_t)&sigaction)(orbis,action,old);
 }
+/* 04.73 (run-0081 of 20261125T104317Z: vc_redist.x86's MSI extracted all eleven files from cab1.cab, then
+ * failed InstallFiles with 1603, "compressed file wasn't installed"): the SDK's futimens and utimensat are stubs
+ * that fail with ENOSYS, so every SetFileTime failed, and msi's cabinet_close_file_info returns before marking
+ * the file installed. The console kernel has FreeBSD's futimes (system call 206); this issues it through the
+ * same libkernel syscall instruction as sigaction above. Without that entry the call still fails with ENOSYS.
+ * It is named futimens so that ntdll's file.o (and musl's futimes) bind here, ahead of libc.a's stub. */
+int futimens(int fd,const struct timespec times[2])
+{
+    enum {PW_SYS_FUTIMES=206};
+    struct timeval tv[2];
+    struct stat st;
+    int have_stat=0;
+    if(!pw_native_raw_syscall) {fprintf(stderr,"PWFUTIMES fd=%d no_raw_syscall\n",fd);errno=ENOSYS;return -1;}
+    for(int i=0;i<2;i++) {
+        long nsec=times?times[i].tv_nsec:UTIME_NOW;
+        if(nsec==UTIME_NOW) {
+            struct timespec now;
+            if(clock_gettime(CLOCK_REALTIME,&now)) return -1;
+            tv[i].tv_sec=now.tv_sec;tv[i].tv_usec=now.tv_nsec/1000;
+        } else if(nsec==UTIME_OMIT) {
+            /* 04.75 (run-0100 of 20261125T134217Z: every omitted access time read 0 with garbage nanoseconds,
+             * EINVAL): libc's fstat does not decode the console's stat layout; pw_wine_fstat does */
+            if(!have_stat) {if(pw_wine_fstat(fd,&st)) return -1;have_stat=1;}
+            const struct timespec *kept=i?&st.st_mtim:&st.st_atim;
+            tv[i].tv_sec=kept->tv_sec;tv[i].tv_usec=kept->tv_nsec/1000;
+        } else {
+            if(nsec<0 || nsec>=1000000000L) {errno=EINVAL;return -1;}
+            tv[i].tv_sec=times[i].tv_sec;tv[i].tv_usec=nsec/1000;
+        }
+    }
+    int rc=(int)pw_native_syscall_at(pw_native_raw_syscall,PW_SYS_FUTIMES,fd,(long)tv,0);
+    /* 04.74 (run-0091 of 20261125T125644Z): a line per call showed the kernel call works with both times given;
+     * 04.75 keeps a line for the first 16 failures only */
+    static int logged;
+    if(rc && __atomic_fetch_add(&logged,1,__ATOMIC_RELAXED)<16) {
+        int saved=errno;
+        fprintf(stderr,"PWFUTIMES fd=%d rc=%d errno=%d atime=%lld mtime=%lld omit=%d/%d\n",fd,rc,rc?saved:0,
+                (long long)tv[0].tv_sec,(long long)tv[1].tv_sec,times && times[0].tv_nsec==UTIME_OMIT,times && times[1].tv_nsec==UTIME_OMIT);
+        errno=saved;
+    }
+    return rc;
+}
 static PwHandler registered_entry(void) {return raw_mode?(PwHandler)pw_native_signal_entry:trampoline;}
 static int is_entry(PwHandler handler) {return handler==trampoline || handler==(PwHandler)pw_native_signal_entry;}
 int pw_wine_sigaction(int signal,const struct sigaction *action,struct sigaction *old)

@@ -280,6 +280,7 @@ struct guest32_launch      /* kernelbase (64-bit) ps4_world_launch, tools/build-
     DWORD std_input;
     DWORD std_output;
     DWORD std_error;
+    DWORD process;         /* 04.76: out: the guest's process handle (its end event), now the caller's, or 0 */
     WCHAR exe[MAX_PATH];
     WCHAR dir[MAX_PATH];   /* its current directory: the caller's, else the program's folder */
     WCHAR cmd[1];          /* the command line, as long as it is */
@@ -339,7 +340,8 @@ __declspec(dllexport) DWORD WINAPI ps4_guest32_launch( struct guest32_launch *re
          * warnings with traces (PW_TRACE=1), errors without */
         WCHAR level[4];
         BOOL traced = !GetEnvironmentVariableW( L"PW_TRACE", level, 4 ) || level[0] != '0';
-        SetEnvironmentVariableW( L"DXVK_LOG_LEVEL", traced ? L"warn" : L"error" );
+        BOOL workers = GetEnvironmentVariableW( L"PW_DXVK_WORKERS_TRACE", level, 4 ) && level[0] == '1';
+        SetEnvironmentVariableW( L"DXVK_LOG_LEVEL", workers ? L"info" : traced ? L"warn" : L"error" );
         SetEnvironmentVariableW( L"DXVK_LOG_PATH", L"none" );
     }
     /* W270 (W269: Call of Duty ended with "Buffer overrun detected" right after glGetString(GL_EXTENSIONS),
@@ -368,13 +370,32 @@ __declspec(dllexport) DWORD WINAPI ps4_guest32_launch( struct guest32_launch *re
         trace( "PWWOW guest32 launch_failed exe=%s error=%lu\n", exe, req->error );
         return req->error;
     }
-    if (info.hProcess) CloseHandle( info.hProcess );
+    /* 04.76 (run-0108 of 20261125T151320Z: the Rockstar Games Launcher installer, 64-bit, waited on vc_redist.x86.exe's
+     * process handle, a copy of the title's own, and stayed at "installing" after vc_redist ended with 0): the guest's
+     * process handle, its end event (W267), goes to the caller; ps4_guest32_exit_code answers its exit status */
+    req->process = (DWORD)(ULONG_PTR)info.hProcess;
     req->thread = (DWORD)(ULONG_PTR)info.hThread;
     req->thread_id = info.dwThreadId;
     /* W236: no thread is a second start of a running program (W217): its window came to the front, or
      * ERROR_ALREADY_EXISTS when none was found, for explorer to say so */
     if (!info.hThread) req->error = GetLastError() == ERROR_ALREADY_EXISTS ? ERROR_ALREADY_EXISTS : 0;
     trace( "PWWOW guest32 launched exe=%s guest_thread=%04lx error=%lu\n", exe, info.dwThreadId, req->error );
+    return 0;
+}
+
+struct guest32_exit        /* kernelbase (64-bit) ps4_world_exit_code, tools/build-guest-hw.py (04.76) */
+{
+    DWORD process;         /* a handle to a guest's end event (ps4_guest32_launch's req->process, or a copy) */
+    DWORD code;            /* out: GetExitCodeProcess of the 32-bit world: STILL_ACTIVE, or the guest's status */
+    DWORD ok;
+    DWORD error;
+};
+
+/* 04.76: the exit status of a 32-bit guest started for a 64-bit caller; the i386 kernelbase keeps it (W267) */
+__declspec(dllexport) DWORD WINAPI ps4_guest32_exit_code( struct guest32_exit *req )
+{
+    req->ok = GetExitCodeProcess( (HANDLE)(ULONG_PTR)req->process, &req->code );
+    req->error = req->ok ? 0 : GetLastError();
     return 0;
 }
 

@@ -1233,7 +1233,13 @@ int main(void)
     /* alpha-1 (pw_trace.h): without traces, Wine's errors and warn+module (a DLL that fails to load or
      * initialise) only. Off: fixme (dozens of lines per program start), trace+seh (lines per exception,
      * on the faulting thread), trace+loaddll and debugstr (each OutputDebugString). */
-    static char release_log[]="--env=WINEDEBUG=fixme-all,warn+module";
+    /* 04.70 (GTA IV's launcher, run-0056 of 20261125T004143Z: vc_redist.x86's MSI stopped in InstallFiles, "compressed
+     * file wasn't installed", with no line saying why): warn+msi and warn+cabinet, which a working install never hits.
+     * 04.72 (run-0062 of 20261125T025118Z: FDICopy succeeded but extracted nothing, silently; the same MSI and cab install
+     * under the host's Wine, 32- and 64-bit): trace+msi and trace+cabinet, about 9000 lines per install, none otherwise.
+     * 04.73: the trace (run-0081 of 20261125T104317Z) showed every file extracted and SetFileTime failing (futimens was
+     * an SDK stub, now pw_wine_signals.c); back to warn+msi and warn+cabinet */
+    static char release_log[]="--env=WINEDEBUG=fixme-all,warn+module,warn+msi,warn+cabinet";
     int debug_arg=argc;
     args[argc++]=pw_trace_on()?mesa_log:release_log;
     static char trace_env[]="--env=PW_TRACE=0";

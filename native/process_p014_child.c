@@ -8,6 +8,8 @@
  * launcher + POP.exe on "PrinceSM") needs. Loader-dependent research substrate; not a shippable feature. */
 #include <sys/stat.h>
 #include <dlfcn.h>
+#include <stdio.h>
+#include <string.h>
 #include "pop_separate.h"
 #include "pop_wine_join_core.h"
 #include "pop_separate_window.h"
@@ -112,7 +114,13 @@ int main(void){
             if(field[3]&&run_job){
                 pop_logf(&j,"{\"build\":\"P019\",\"event\":\"job\",\"token\":\"%s\",\"image_bytes\":%zu}",field[0],strlen(field[1]));
                 if(logf)fflush(logf);
-                rc=run_job(j.fd_socket,field[0],field[1],field[2],field[3],POP_SEP_WINE_LOG);
+                /* 04.67 (GTA IV, 20261124T204552Z: the title started SocialClubHelper.exe seven times and only the
+                 * last start's log survived): each job logs to its own file, by token (digits only) */
+                static char job_log[128];
+                const char *log=POP_SEP_WINE_LOG;
+                if(field[0]&&*field[0]&&strspn(field[0],"0123456789")==strlen(field[0])&&strlen(field[0])<16){
+                    snprintf(job_log,sizeof(job_log),POP_SEP_DIR "/wine-child-%s.jsonl",field[0]);log=job_log;}
+                rc=run_job(j.fd_socket,field[0],field[1],field[2],field[3],log);
             }else{
                 struct stat d2;const char *exe=stat(POP_SEP_D2_FILE,&d2)==0?POP_SEP_D2_EXE:POP_SEP_D1_EXE;  /* D.2: the GUI program when installed */
                 rc=run(j.fd_socket,exe,POP_SEP_WINE_LOG);

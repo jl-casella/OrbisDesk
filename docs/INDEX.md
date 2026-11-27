@@ -224,6 +224,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [DESKTOP_BACKGROUND.md](DESKTOP_BACKGROUND.md) — Desktop background dialog: your own pictures as wallpaper (draft)
 - [FPS_LIMIT.md](FPS_LIMIT.md) — FPS limit (per program)
 - [FRAME_GENERATION.md](FRAME_GENERATION.md) — Frame generation (experimental)
+- [GUEST_COMPATIBILITY.md](GUEST_COMPATIBILITY.md) — Guest launch compatibility: 04.59 candidate
 - [MANAGE_INSTALLATION.md](MANAGE_INSTALLATION.md) — Manage installation
 - [MANGOJUICE.md](MANGOJUICE.md) — MangoJuice: the MangoHud settings program
 - [OVERLAY_MENU.md](OVERLAY_MENU.md) — The L3+R3 overlay menu (04.31)
@@ -239,5 +240,6 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 - [SEAMONKEY_GPU.md](SEAMONKEY_GPU.md) — SeaMonkey GPU compositing
 - [SEAMONKEY_RESPONSIVENESS.md](SEAMONKEY_RESPONSIVENESS.md) — SeaMonkey responsiveness on the console
 - [SHADER_CACHE.md](SHADER_CACHE.md) — Shader compiles, frame time and the disk shader cache
+- [VCRUNTIME_FALLBACK.md](VCRUNTIME_FALLBACK.md) — Visual C++ runtime DLLs after a redistributable's uninstall (04.92)
 - [WARCRAFT3.md](WARCRAFT3.md) — Warcraft III 1.07: Storm's static imports and the AVI intro movies
 - [WINE_MONO.md](WINE_MONO.md) — Wine Mono: .NET programs
