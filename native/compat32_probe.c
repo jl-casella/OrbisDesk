@@ -6,12 +6,13 @@
  * GDT layout. Before porting it, this probe asks the PS4 kernel the one question it depends
  * on: a far return to 0x33 runs one 32-bit instruction (it stores a marker), a far return
  * to 0x43 comes back. Code, data and stack are in one page below 4 GiB, as 32-bit code
- * needs. A fault ends the attempt through siglongjmp and is reported, not hidden.
+ * needs. A fault ends the attempt through _longjmp and is reported, not hidden.
  *
  * It runs once per build: a marker file is written before the attempt, so a probe that
  * takes the title down cannot do so on every start. */
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdint.h>
@@ -21,14 +22,17 @@
 #include <unistd.h>
 
 extern int pw_wine_sigaction(int,const struct sigaction *,struct sigaction *);
-static sigjmp_buf probe_jump;
+/* 04.86: _setjmp/_longjmp, both musl's, with the mask restored by hand: the SDK's sigsetjmp resolves to
+ * libkernel's (FreeBSD jmp_buf) while siglongjmp is musl's, and that pair jumps to rip=0 (the hosted
+ * Steam client's net guard did so on hardware in 04.85). */
+static jmp_buf probe_jump;
 static volatile int probe_signal;
 
 static void probe_handler(int signal,siginfo_t *info,void *context)
 {
     (void)info;(void)context;
     probe_signal=signal;
-    siglongjmp(probe_jump,1);
+    _longjmp(probe_jump,1);
 }
 
 /* Returns 1 when 32-bit code ran and came back, 0 when it could not; *detail says why. */
@@ -68,7 +72,8 @@ int pw_compat32_probe(const char *marker,char *detail,size_t size)
     for(int i=0;i<3;i++) pw_wine_sigaction(signals[i],&action,&old[i]);
     probe_signal=0;
     uint16_t cs=0;__asm__ volatile("mov %%cs,%0":"=r"(cs));
-    if(!sigsetjmp(probe_jump,1)) {
+    sigset_t probe_mask;pthread_sigmask(SIG_SETMASK,NULL,&probe_mask);
+    if(!_setjmp(probe_jump)) {
         __asm__ volatile(
             "lea 1f(%%rip),%%rax\n\t"
             "mov %%rax,(%[cont])\n\t"
@@ -84,6 +89,7 @@ int pw_compat32_probe(const char *marker,char *detail,size_t size)
             /* the 32-bit code runs one mov and a retf: callee-saved registers are untouched */
             :"rax","rcx","rdx","rsi","rdi","r8","r9","r10","r11","memory","cc");
     }
+    pthread_sigmask(SIG_SETMASK,&probe_mask,NULL);
     uint16_t cs_after=0;__asm__ volatile("mov %%cs,%0":"=r"(cs_after));
     for(int i=0;i<3;i++) pw_wine_sigaction(signals[i],&old[i],NULL);
     int ok=*result==0x32beef32 && !probe_signal && cs_after==cs;

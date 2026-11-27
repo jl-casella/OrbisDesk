@@ -663,8 +663,11 @@ static void crash_handler(int signal,siginfo_t *info,void *raw)
     if(!scanned++){
         char name[40]={0};scePthreadGetname(scePthreadSelf(),name);
         const uint64_t *sp=(const uint64_t *)(uintptr_t)mc->mc_rsp;
+        /* 04.85 (run-0187 of 20261126T003118Z: the scan read past the top of a short thread stack, at 0x7eecc4000,
+         * and that second fault cascaded): only the words up to the end of rsp's 16 KiB page, which is mapped */
+        const int words=(int)((((uintptr_t)sp|0x3fff)+1-(uintptr_t)sp)/8);
         n=snprintf(text,sizeof(text),HW_BUILD " crash_stack thread=%.32s",name);
-        for(int i=0,hits=0;i<512&&hits<16&&n<(int)sizeof(text)-24;i++)
+        for(int i=0,hits=0;i<512&&i<words&&hits<16&&n<(int)sizeof(text)-24;i++)
             if(sp[i]>=0x1100000000ull&&sp[i]<0x1110000000ull){n+=snprintf(text+n,sizeof(text)-n," %llx",(unsigned long long)sp[i]);hits++;}
         if(n<(int)sizeof(text)-1)text[n++]='\n';
         if(log_fd>=0){__real_write(log_fd,text,(size_t)n);fsync(log_fd);}
@@ -1055,6 +1058,10 @@ static void *log_sync(void *arg)
 }
 int main(void)
 {
+    /* 04.83: the native-fault lines of pw_wine_signals.c use thread-local storage, which the separate-process
+     * PRX (pop-wine-child.prx, same object, no main here) cannot reach: only the title turns them on */
+    extern int pw_native_fault_diag;
+    pw_native_fault_diag=1;
     pw_brand_prepare_state();
     mkdir("/data/orbisdesk",0755);mkdir(HW_DIR,0777);
     char path[160];
