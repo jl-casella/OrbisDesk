@@ -179,6 +179,15 @@ if wine.name=='bootstrap.elf':
     for name,(source,definition) in HARDWARE_ONLY.items():
         if definition not in (ROOT/source).read_text():raise SystemExit(source+' no longer defines '+name)
         available.add(name)
+    # and the system libraries only the hardware link names (its -lSce... list, read from the builder so the two
+    # stay the same): a clean CI workspace checks here, and Big Picture's clock needs libSceRtc's
+    # sceRtcGetCurrentClockLocalTime, which the bootstrap link does not import (run 46054877311)
+    import re
+    hardware_libraries=re.findall(r"'-l(Sce[A-Za-z]+)'",(ROOT/'tools/build-wine-hardware.py').read_text())
+    for name in hardware_libraries:
+        library=SDK/'lib'/('lib'+name+'.so')
+        if not library.is_file():raise SystemExit('missing SDK stub library: '+str(library))
+        available|=symbols(library,False)
 needed=symbols(out,True)
 missing=sorted(needed-available-NEW_IMPORTS)
 if missing:raise SystemExit('steam_client_hosted.o needs what %s neither defines nor imports: %s'%(wine.relative_to(ROOT),', '.join(missing)))
