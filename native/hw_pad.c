@@ -30,6 +30,7 @@
 #include <sys/time.h>
 #include <orbis/libkernel.h>
 #include <orbis/Pad.h>
+#include "hw_pad_remap.h"
 #include <orbis/_types/keyboard.h>
 #include <orbis/Sysmodule.h>
 #include <orbis/UserService.h>
@@ -425,6 +426,14 @@ void pw_wine_pad_profile(const char *exe,int load)
         fprintf(stderr,"PWROOT request reply=%s\n",exe);
         return;
     }
+    /* Start's "Steam Big Picture": the title relaunches into Big Picture, answering only when that failed
+     * (native/wine_hardware.c pw_hw_restart_mode, docs/STEAM_BIG_PICTURE.md) */
+    if(exe && !strcmp(exe,"<bigpicture>")) {
+        extern const char *pw_hw_restart_mode(const char *mode) __attribute__((weak));
+        fprintf(stderr,"PWBIGPICTURE request restart\n");
+        snprintf((char *)exe,260,"%s",pw_hw_restart_mode?pw_hw_restart_mode("bigpicture"):"error: unavailable");
+        return;
+    }
     if(exe && !strcmp(exe,"<overlay-desktop>")) {pw_hw_overlay_desktop(load);return;}
     /* W242: "exit" or "-", then the windows Vulkan presented to in the last 2 s, in hex (the closer
      * counts MangoHud only for the one in front) */
@@ -512,6 +521,9 @@ static int poll_controller(unsigned reads,uint32_t *previous,int *moved)
         data.buttons=0;data.leftStick.x=data.leftStick.y=data.rightStick.x=data.rightStick.y=128;
         data.analogButtons.l2=data.analogButtons.r2=0;data.touch.fingers=0;
     }
+    /* 04.57: menus use physical controls; every game-facing path below shares one remap. */
+    extern unsigned pw_hw_overlay_input_options(void);
+    pw_pad_remap(&data,pw_hw_overlay_input_options());
     /* W178: the state xinput reads; a new packet number whenever an input changed */
     pthread_mutex_lock(&pad_state_lock);
     if(pad_last.buttons!=data.buttons || pad_last.connected!=data.connected ||

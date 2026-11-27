@@ -4,14 +4,40 @@
 
 Pressing L3 and R3 together opens OrbisDesk's menu over the running program. The program keeps running, and the pad drives only the menu until it closes. From 04.31 the menu is laid out as a quick access menu: a rail of section icons on the left and the selected section's settings on the right, changed in place.
 
-The code is `native/hw_overlay.c` (`draw_panel`, `panel_input`). The settings, the keys they are saved under and what they do are the same as before. Only the layout and the navigation changed.
+The code is `native/hw_overlay.c` (`draw_panel`, `panel_input`), with the profile selector in `native/hw_overlay_profiles.inc.c`. Existing setting keys remain compatible.
+
+## Executable profiles (04.57)
+
+Every section has a selectable EXE header. Move up from the first item, or up from PERFORMANCE on the rail, and press X on the name. A scrollable native list shows recent launches, including closed/crashed programs, plus saved overlay profiles. File Manager (`wfm.exe`), Explorer and internal service/host executables are excluded; names are deduplicated without case sensitivity. There is no file browser.
+
+**Add EXE** opens a local on-screen name field: enter a basename such as `hl2.exe`, not a path, and press OPTIONS or Enter. This keyboard sends no keys to the running application. Circle returns to the list; L1/R1 move the caret, Square deletes, L2 toggles Shift and R2 changes symbols.
+
+The editor initially selects the current runtime program, or the latest eligible name when the desktop is in front. Its target stays fixed until another profile is chosen or the menu is reopened, even if a program starts or exits. RUNNING reflects launch/exit tracking, not independent foreground-window detection. History retains 128 names and their known architecture as `profile.<exe>=0|32|64` in `overlay.ini`, separately from 64 preference slots; saved preferences also appear after history eviction. Pre-feature launches need an existing saved overlay preference or manual name entry. Registry-only AppDefaults are not enumerated.
+
+FPS, frame generation, stretch, cursor, controller type and key mapping edit the selected EXE. Saves apply immediately only when it owns the runtime's current settings; another profile applies on its next start without changing live settings or input. The footer labels this scope. Renderer always applies on next start, through the existing desktop Wine AppDefaults bridge; a known 64-bit EXE retains the 32-bit-only restriction after restart. An in-flight renderer request prevents switching profiles until completion/timeout and survives the program closing. Failed preference saves retain previous values in memory and on disk. Key mappings are saved atomically.
+
+Statistics, session mouse emulation, the ordinary keyboard and Close Program still act on the current session/window, independently of the selected profile; language remains global. To compare Portal renderers, select/add `hl2.exe`, save GRAPHICS → RENDERER → WINED3D + OPENGL, then relaunch the game. This does not establish the crash's cause.
+
+Validation: host tests exercise the actual overlay's isolation, persistence, failed saves, offline renderer replies during guest exit, internal filtering, architecture retention, navigation, local name keyboard and inactive key mapping. English/Spanish previews use the real native drawing functions, and PS4 compilation passes. Physical interaction and Portal compatibility remain pending console testing.
+
+### Renderer startup and recovery (04.58)
+
+The 04.57 hardware run exposed a startup dependency: the registry consumer started only with the first guest attempt, leaving a desktop-only GET on READING indefinitely. Explorer now starts an independent registry worker during desktop initialization. It uses the existing native request protocol and Wine AppDefaults read/write rules; the native taken gate permits only one consumer, including when the older game closer is running too. No game must be launched to initialize it.
+
+All GET and SET requests now have a three-second deadline, including a GET no worker took. A failed read shows **NO RESPONSE; X: RETRY** instead of a default renderer value; X retries the read. Readback errors are visible and a successful retry restores editing. A failed SET keeps the existing save-error message; it does not claim success. Host tests cover untaken/taken timeouts, retry, error replies, one-consumer routing and the worker parser. The Explorer PE and native overlay compile; physical validation of this fix is pending.
+
+### Controller swaps
+
+CONTROLS adds two independent toggles, off by default and saved per selected EXE: **SWAP STICKS** (`swapsticks.<exe>=on`) exchanges both axes of the left/right sticks and L3/R3; **SWAP A/B AND X/Y** (`swapbuttons.<exe>=on`) exchanges Cross/Circle and Square/Triangle. Swapping sticks moves an existing left-stick mouse function to the physical right stick and vice versa, without rewriting the key profile.
+
+Both use the same live-versus-next-start scope as the other profile settings. Input is remapped once, after the native overlay and Steam menus read the physical pad and before publishing gamepad state or generating mouse/key events. XInput, the HID/DualSense paths and key/mouse profiles therefore share the same logical layout. The overlay's confirmation/back buttons and its navigation remain unchanged; USB keyboard/mouse are unaffected. No polling-time configuration file reads are added. Host tests cover all face/click combinations, axis directions, both toggles together, persistence, rollback and inactive-profile isolation; console behavior remains to be tested.
 
 ## Layout
 
 - **Rail.** One icon per section: PERFORMANCE (lightning bolt), GRAPHICS (monitor), CONTROLS (gamepad), SYSTEM (gear). EXIT is the power icon at the rail's foot, in red. The selected section has an accent bar on its left.
 - **Section.**
   - The section's title, and `ORBISDESK L3+R3` on the right.
-  - Sections whose settings are saved per program show `PROGRAM: <exe>` under the title: the last program opened that is still open, the one the settings apply to. It plays the role of the Steam Deck's "Using - <game>" line. GRAPHICS shows the program its renderer was read for.
+  - Every section shows the selectable `EXE PROFILE` header described above, with the editing target and a RUNNING/CLOSED badge.
   - Then the items, each in one of three forms:
     - a toggle: on or off, the knob right and the track in the accent colour when on;
     - a slider of steps for a choice. The step in effect is named in the accent colour, and the knob sits on the pending step. The pending value's full name is at the right of the item's name, in the accent colour while it differs from the value in effect;
@@ -33,6 +59,8 @@ The colours are the Steam client's: page `#1b2838`, band `#171a21`, highlight `#
 | GRAPHICS | RENDERER: DXVK or wined3d, Vulkan or OpenGL | slider | per 32-bit program, Wine's registry (from its next start) |
 | | STRETCH | toggle | per program, `stretch.<exe>=on` |
 | CONTROLS | CONTROLLER: generic, Xbox 360, Xbox One, DualSense | slider | per program, `pad.<exe>=` |
+| | SWAP STICKS | toggle | per program, `swapsticks.<exe>=on` |
+| | SWAP A/B AND X/Y | toggle | per program, `swapbuttons.<exe>=on` |
 | | MOUSE | toggle | this run only |
 | | CURSOR: game, always, hidden | slider | per program, `cursor.<exe>=` |
 | | KEY MAPPING (04.36) | action: a screen of the pad's buttons and their keys | per program, `C:\orbis\padmaps\<exe>.ini` |
@@ -68,11 +96,11 @@ EXIT takes two presses: X on the rail enters the section, then X on CLOSE THE PR
 
 ## KEY MAPPING (04.36)
 
-CONTROLS → KEY MAPPING gives each button and stick direction of the pad a keyboard key or a mouse click, for the program in front. It is for games that read only the keyboard and mouse. X on the item opens a screen over the whole output; with no program open, X only shows the toast `KEY MAPPING: NO PROGRAM OPEN`.
+CONTROLS → KEY MAPPING gives each button and stick direction a keyboard key or mouse click for the selected EXE profile. It is for games that read only the keyboard and mouse. X opens a screen over the whole output, even with that program closed; first select/add an EXE when no editing target exists.
 
 **What it edits.** The pad's key profile for that program, `C:\orbis\padmaps\<exe>.ini`, which `native/hw_pad.c` already reads at the program's start (W181, W213). The screen writes `source = key` lines and keeps every other line as it is: comments, `stick = mouse`, `rstick = mouse` and the `rstick_speed` / `rstick_deadzone` values.
 
-- **Saving.** On OPTIONS the file is written, and the pad thread loads it again at its next read (`pw_hw_pad_profile_reload`). The new keys apply at once.
+- **Saving.** OPTIONS writes the file atomically. If the selected EXE owns the runtime's current input, the pad thread reloads it at its next read (`pw_hw_pad_profile_reload`); other profiles apply on their next start.
 - **A file with no key line left is removed.** The pad then works as with no profile.
 - **A new file** starts with a comment that names the program and this screen.
 

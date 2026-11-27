@@ -1642,14 +1642,30 @@ static BOOL orbis_native_call( const char *request, char *reply, size_t size )
     typedef LONG (WINAPI *dispatch_fn)( UINT64, unsigned int, void * );
     struct { USHORT Length, MaximumLength; WCHAR *Buffer; } name = { 18, 20, (WCHAR *)L"xinput1_3" };
     struct { char exe[260]; UINT32 load; } params;
-    HMODULE ntdll = GetModuleHandleW( L"ntdll.dll" );
-    query_fn query = ntdll ? (query_fn)GetProcAddress( ntdll, "NtQueryVirtualMemory" ) : NULL;
-    void **dispatcher = ntdll ? (void **)GetProcAddress( ntdll, "__wine_unix_call_dispatcher" ) : NULL;
-    UINT64 library[2] = {0};
+    /* 04.94: loaded once, as ps4_overlay_call and ps4_guest_pad_profile do. The overlay registry worker
+     * (04.58) calls this every 150 ms; loading by name each time preceded every THAW/CS abort (04.90-04.93). */
+    static void **dispatcher;
+    static UINT64 library[2];
+    static LONG state;  /* 0 not tried, 1 ready, 2 no library */
 
-    if (!query || !dispatcher || !*dispatcher) return FALSE;
-    if (query( GetCurrentProcess(), &name, 1002 /* MemoryWineLoadUnixLibByName */, library, sizeof(library), NULL ))
-        return FALSE;
+    if (!state)
+    {
+        HMODULE ntdll = GetModuleHandleW( L"ntdll.dll" );
+        query_fn query = ntdll ? (query_fn)GetProcAddress( ntdll, "NtQueryVirtualMemory" ) : NULL;
+        void **export = ntdll ? (void **)GetProcAddress( ntdll, "__wine_unix_call_dispatcher" ) : NULL;
+        UINT64 res[2] = {0};
+
+        if (query && export && *export &&
+            !query( GetCurrentProcess(), &name, 1002 /* MemoryWineLoadUnixLibByName */, res, sizeof(res), NULL ))
+        {
+            library[0] = res[0];
+            library[1] = res[1];
+            dispatcher = export;
+            InterlockedExchange( &state, 1 );
+        }
+        else InterlockedExchange( &state, 2 );
+    }
+    if (state != 1) return FALSE;
     ZeroMemory( &params, sizeof(params) );
     lstrcpynA( params.exe, request, sizeof(params.exe) );
     if (((dispatch_fn)*dispatcher)( library[1], 3, &params )) return FALSE;
@@ -2669,6 +2685,15 @@ revise('systray.c','''            if (!hung.hwnd) hung_since = hung_dumps = 0;''
             if (!hung.hwnd) hung_since = hung_dumps = 0;''','Broadcast USB drive arrival and removal (phase 10 hot plug).')
 
 # The pinned build's own commands for the explorer objects and link, from make -n.
+registry_worker=ROOT/'platform/ps4/pw_overlay_registry_guest.inc.c'
+shutil.copyfile(registry_worker,overlay/registry_worker.name)
+revise('startmenu.c','static int orbis_root_mode(void)',
+       '#include "pw_overlay_registry_guest.inc.c"\n\nstatic int orbis_root_mode(void)',
+       '04.58: independent desktop registry worker; no first-guest requirement.')
+revise('desktop.c','    desktopshellbrowserwindow_init();\n    shellwindows_init();',
+       '    { extern void orbis_overlay_registry_start(void); orbis_overlay_registry_start(); }\n'
+       '    desktopshellbrowserwindow_init();\n    shellwindows_init();',
+       '04.58: renderer queries are available immediately after desktop startup.')
 subprocess.run(['python3',str(ROOT/'tools/patch-explorer-open.py'),str(overlay)],check=True)
 revisions.append({'path':'desktop.c','why':'W106: copy WFM file-open requests and resolve them on Explorer desktop thread.'})
 dry=subprocess.run(['make','-n']+[f'-W../../source/programs/explorer/{u}.c' for u in UNITS]+
@@ -2687,6 +2712,7 @@ for command in commands:
     if run.returncode:raise SystemExit(command[:300]+'\n'+run.stdout+run.stderr)
 target=out/'explorer.exe';shutil.copyfile(work/'explorer.exe',target)
 manifest={'schema_version':1,'wine_commit':commit,'explorer':{'path':'explorer.exe','sha256':sha(target)},
+          'registry_worker_source_sha256':sha(ROOT/'platform/ps4/pw_overlay_registry_guest.inc.c'),
           'revisions':revisions,'commands':commands,
           'overlay_sha256':{p.name:sha(p) for p in sorted(overlay.glob('*.c'))},
           'open_protocol_sha256':sha(ROOT/'platform/ps4/pw_shell_open.h'),
