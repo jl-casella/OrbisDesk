@@ -71,6 +71,7 @@ if [ "${VARIANT:-}" = wine ]; then
   python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-cache-va32.py "$MESA"
   # 04.35: an empty submission (no command buffers) that waits on semaphores waits on the CPU (Crema has no sync files)
   python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-empty-submit.py "$MESA"
+  python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-async-empty-submit.py "$MESA"
   shader_cache="-Dshader-cache=enabled -Dshader-cache-max-size=256M"
 fi
 pc=$H/mesa-pkgconfig; mkdir -p $pc

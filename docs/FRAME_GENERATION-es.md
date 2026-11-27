@@ -8,6 +8,8 @@ El trabajo va por etapas. Las etapas 1 a 5 ya corrieron en una PS4 Pro (04.15 y 
 
 ## Estado
 
+**04.63, 2026-11-24:** el usuario reportó generación de fotogramas funcional en Portal 1. El log correspondiente de la PS4 Pro Baikal física con FW12.50 (`20261124T135505Z`, `run-0037.log`, marca de versión 04.63) identifica Steam app 400 / `hl2.exe`, WineD3D OpenGL, 1024x768 y límite de 30 FPS. `PWFG shown_rate` incluye ventanas de 60 FPS mostrados, 30 reales y 30 generados. Esto valida la presentación de fotogramas generados en esa configuración; no valida el puente de píxeles empaquetados de Half-Life 1 ni una matriz completa del juego y su cierre.
+
 | Etapa | Qué | Estado | Evidencia |
 | --- | --- | --- | --- |
 | 1 | Observación: marcas de tiempo de origen, finalización de flip/vblank, contadores de renderizados/generados/mostrados | Implementada | PS4 Pro, 04.15 (corrida física de W303 20261117T170454Z, run-0203): `period_us` entre 16 682 y 16 684, unos 120 vblanks cada 2 s, `status_failed=0`, `pending_max=0`. La estructura del estado de vblank es correcta |
@@ -113,6 +115,8 @@ Swapchain seguido: el primero que presenta. Otro lo reemplaza solo cuando el seg
 ## Etapa 3: las pasadas de cómputo
 
 Cuatro shaders de cómputo, compilados a SPIR-V por la build de hardware junto a los shaders del compositor. No se ejecuta ningún compilador GLSL en la consola. Todos los datos están en búferes de almacenamiento, así que no intervienen capacidades de formatos de imagen. El origen debe ser uno de los formatos RGBA/BGRA de 32 bits que el compositor ya muestra.
+
+El seguimiento tras 04.61 entrega las fuentes empaquetadas de 16 bits mediante la conversión BGRA existente del driver antes de la captura, con la misma identidad de buffer que usa el planificador de pantalla. Esto aborda el rechazo de captura registrado en Half-Life sin cambiar los formatos de shaders ni contar presentaciones de origen adicionales. El puente tiene pruebas de host y aún necesita validación física; ver [compatibilidad de invitados](GUEST_COMPATIBILITY-es.md#seguimiento-tras-la-prueba-de-0461).
 
 | Pasada | Malla (origen 1280×720) | Trabajo |
 | --- | --- | --- |

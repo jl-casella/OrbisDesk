@@ -3686,6 +3686,15 @@ revise('dlls/win32u/ps5drv.c','''static BOOL ps5_SetCursorPos( INT x, INT y )
     return TRUE;
 }''','A program warp moves the title pointer (mouse look).')
 
+from wine_present_pixels import patch_vulkan, patch_driver
+for unit, transform in (('vulkan',patch_vulkan),('ps5drv',patch_driver)):
+    target=overlay/'dlls/win32u'/(unit+'.c')
+    target.write_text(transform(target.read_text()))
+manifest['pixel_sources']={name:sha(ROOT/name) for name in
+    ('tools/wine_present_pixels.py','platform/ps4/pw_present_pixels.h','tools/build-win32u-ps4.py')}
+manifest['revisions'].append({'path':'dlls/win32u/vulkan.c + ps5drv.c',
+    'why':'04.60: packed 16-bit images become persistent per-window BGRA layers; validated pitch and safe GDI fallback.'})
+
 target=overlay/'dlls/win32u/freetype.c'
 target.write_text(target.read_text().replace('dlclose(ft_handle);','/* Static FreeType: no dynamic library handle to close. */'))
 makefile=(UNIX/'Makefile').read_text().splitlines()

@@ -181,6 +181,10 @@ int pw_wine_layer_images(void){ return 0; }
  * driver uses, so freeing any buffer it hands back is valid; 1 = freed here. */
 void *pw_wine_layer_alloc(size_t bytes){ return calloc(1, bytes ? bytes : 1); }
 int pw_wine_layer_free(void *pixels){ free(pixels); return 1; }
+/* This process publishes its converted BGRA layers through the existing bridge.
+ * Generation and displayed-frame accounting belong to the title's presenter. */
+void pw_wine_framegen_normalized(const void *swapchain,const void *source,const void *bgra,unsigned width,unsigned height)
+{ (void)swapchain;(void)source;(void)bgra;(void)width;(void)height; }
 int pw_wine_next_input(struct PwWineInput *event){ (void)event; return 0; }
 int pw_wine_input_fd(void){ return -1; }
 /* the Vulkan runtime reports a program's frame rate to the title's HUD through the sink; this process draws no HUD */

@@ -13,6 +13,7 @@
  * already did, and it owns it. __wine_main does not return; exit() is wrapped to record the exit status. */
 #include "pw_wine_platform.h"
 #include "pw_wine_fs.h"
+#include "pw_compiler_policy.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -635,6 +636,11 @@ __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, con
     /* the title runs Wine with tracing off (native/wine_hardware.c sets pw_trace_level from its build/launch
      * arguments); the same here, so both processes take the same code paths */
     extern int pw_trace_level; pw_trace_level = 0; setenv("PW_TRACE", "0", 1);
+#if PW_PERF_DIAGNOSTICS
+    setenv("PW_DXVK_WORKERS_TRACE", "1", 1);
+    setenv("DXVK_LOG_LEVEL", "info", 1);
+    setenv("DXVK_LOG_PATH", "none", 1);
+#endif
     child_log = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if(child_log < 0) child_log = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);  /* see native/pop_prx_probe.c: a first open failed on hardware */
     clog("{\"build\":\"P017\",\"event\":\"wine_child_entered\",\"pid\":%d,\"uid\":%d,\"server_fd\":%d,\"exe\":\"%s\"}",
@@ -696,6 +702,18 @@ __attribute__((visibility("default"))) int pop_wine_child_run(int server_fd, con
            (setenv("WINE_D3D_CONFIG", "renderer=no3d", 1) ||
             setenv("WINEDLLOVERRIDES", "d3d8,d3d9,ddraw,dxgi,d3d10core,d3d11=b", 1))) return 95;
         clog("{\"build\":\"P022\",\"event\":\"direct3d\",\"no3d\":%d}", stat("/data/orbisdesk/process-p014/gpu-probe", &no3d) != 0);
+    }
+    /* Retired compiler selector: remove only an inherited generated suffix
+     * before Wine initializes DXVK; explicit user options remain intact. */
+    {
+        const char *base=getenv("DXVK_CONFIG");
+        if(base&&strstr(base,PW_COMPILER_MARK)) {
+            char result[PW_COMPILER_ENV_BYTES];
+            if(pw_compiler_clean(base,result,sizeof(result))) {
+                int applied=result[0]?setenv("DXVK_CONFIG",result,1):unsetenv("DXVK_CONFIG");
+                clog("PWCOMPILER child cleanup generated=found removed=%d policy=dxvk-default",!applied);
+            }else clog("PWCOMPILER child cleanup rejected: oversized user configuration");
+        }
     }
     char *fixed_argv[] = {"/data/wine/bin/wine", (char *)exe, NULL};
     char **wine_argv = job_argc ? job_argv : fixed_argv;

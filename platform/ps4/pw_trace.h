@@ -26,6 +26,9 @@
  * check tools/check-wine-fs.py, tools/build-hardware-boot.py) keeps every trace, as before the switch. */
 extern int pw_trace_level __attribute__((weak));
 static inline int pw_trace_on(void) {return &pw_trace_level?pw_trace_level>0:1;}
+/* Targeted summaries do not enable Wine's verbose trace channels. */
+extern int pw_perf_level __attribute__((weak));
+static inline int pw_perf_on(void) {return pw_trace_on() || (&pw_perf_level && pw_perf_level>0);}
 
 #ifdef PW_TRACE_DEFINE_LEVEL
 /* A standalone title that never links pw_wine_platform.c (the S4 Steam title, tools/build-steam-s4.py): the

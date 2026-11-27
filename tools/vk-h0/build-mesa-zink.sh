@@ -53,6 +53,8 @@ fi
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-zink.py $SRC
 # alpha-1 (run-0178: a terminated OpenGL guest left its contexts in the one Zink device): the screen can be released
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-wgl-guest.py $SRC
+# W304 (W303 run-0085: GoldSrc got a 4-bit-per-channel pixel format and swapchain): ChoosePixelFormat prefers the desktop depth
+python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-wgl-pixelformat.py $SRC
 # 04.30 (04.29: SeaMonkey's GL image 34 pixels too high): a viewport not the size of the window's drawable is logged;
 # 04.32: Mesa's error lines reach the console log (__wine_dbg_output), and the drawable size WGL reads is logged
 python3 ${ORBISDESK_ROOT}/tools/vk-h0/patch-mesa-gl-viewport-trace.py $SRC

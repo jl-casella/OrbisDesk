@@ -16,7 +16,10 @@ Only the hardware package uses these modules. Each changed object is compiled wi
 exact command the pinned Wine build uses (from `make -n`), with the overlay source and a
 separate output; the other objects of the module are the pinned build's own.
 """
-import hashlib,json,pathlib,re,shutil,subprocess
+import argparse,hashlib,json,pathlib,re,shutil,subprocess
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--prepare-only', action='store_true', help='generate private overlays without compiling or linking')
+guest_cli=parser.parse_args()
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build'
 overlay=ROOT/'.deps/wine/guest-hw-overlay';work=ROOT/'build/guest-hw';out=ROOT/'out/guest-hw'
@@ -69,6 +72,8 @@ struct ps4_guest
     DWORD mode_width, mode_height;  /* W248: the display mode when it started */
     LONG serial;                    /* W248: launch order */
     DWORD_PTR affinity;             /* W275: the one core its threads run on, or 0 */
+    INIT_ONCE version_once;          /* 04.59: version queries are cached per guest, not per desktop */
+    RTL_OSVERSIONINFOEXW version_info;
 };
 /* TEB.UserReserved[0..1] holds the guest of the thread; [2] marks a guest image load */
 #define PS4_GUEST_LOADING 0x47345350
@@ -79,8 +84,9 @@ static inline void ps4_guest_set( TEB *teb, struct ps4_guest *guest ) { *(struct
 extern struct ps4_guest *ps4_guest_loading;
 static inline struct ps4_guest *ps4_guest_or_loading(void)
 {
-    if (ps4_guest_current()) return ps4_guest_current();
-    return NtCurrentTeb()->UserReserved[2] == PS4_GUEST_LOADING ? ps4_guest_loading : NULL;
+    /* A parent guest can load a child: its DLL initializers need the child's command line. */
+    if (NtCurrentTeb()->UserReserved[2] == PS4_GUEST_LOADING) return ps4_guest_loading;
+    return ps4_guest_current();
 }
 /* W206: kernelbase process.c; CreateFileW and CloseHandle of a guest thread */
 void ps4_guest_file_opened( HANDLE handle, void *caller );
@@ -303,8 +309,9 @@ static HMODULE ps4_guest_program(void)
     HMODULE ret = NULL;
     ULONG_PTR magic;
 
-    if (ps4_guest_current()) return ps4_guest_current()->module;
-    if (NtCurrentTeb()->UserReserved[2] != PS4_GUEST_LOADING || LdrLockLoaderLock( 0, NULL, &magic )) return NULL;
+    if (NtCurrentTeb()->UserReserved[2] != PS4_GUEST_LOADING)
+        return ps4_guest_current() ? ps4_guest_current()->module : NULL;
+    if (LdrLockLoaderLock( 0, NULL, &magic )) return NULL;
     for (entry = list->Blink; entry != list && !ret; entry = entry->Blink)
     {
         LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
@@ -798,6 +805,10 @@ static BOOL ps4_guest_launch( const WCHAR *app_name, const WCHAR *cmd_line, DWOR
     WORD subsystem;
     BOOL allocated = FALSE;
     int len;
+#ifndef _WIN64
+    HANDLE guest_actctx = INVALID_HANDLE_VALUE;  /* 04.69: the guest's manifest */
+    ULONG_PTR guest_actctx_cookie = 0;
+#endif
 
     if (!GetEnvironmentVariableW( L"WINE_PS4_GUESTS", flag, ARRAY_SIZE(flag) ) || !(subsystem = ps4_guest_image( app_name )))
         return FALSE;
@@ -932,6 +943,29 @@ static BOOL ps4_guest_launch( const WCHAR *app_name, const WCHAR *cmd_line, DWOR
             return FALSE;
         }
     }
+#ifndef _WIN64
+    /* 04.69 (run-0055 of 20261124T223125Z: vc_redist.x86's Burn failed with "Failed to load theme controls", no class
+     * "SysLink"): a process's default activation context is its EXE's manifest, which a 32-bit guest never got: its
+     * comctl32 import bound to v5, which has no SysLink, and class names were never versioned. The guest's manifest
+     * (RT_MANIFEST 1) is active while its image and imports load and when its first thread is made, which takes the
+     * active context along (CreateRemoteThreadEx), so the program runs inside it as in its own process */
+    {
+        ACTCTXW ctx = { sizeof(ctx) };
+
+        ctx.dwFlags = ACTCTX_FLAG_RESOURCE_NAME_VALID;
+        ctx.lpSource = app_name;
+        ctx.lpResourceName = (const WCHAR *)(ULONG_PTR)1;  /* RT_MANIFEST id 1 */
+        guest_actctx = CreateActCtxW( &ctx );
+        if (guest_actctx != INVALID_HANDLE_VALUE && !ActivateActCtx( guest_actctx, &guest_actctx_cookie ))
+        {
+            ReleaseActCtx( guest_actctx );
+            guest_actctx = INVALID_HANDLE_VALUE;
+        }
+        if (guest_actctx == INVALID_HANDLE_VALUE || ps4_pw_traced())
+            ERR( "PWWOW guest32 manifest app=%s active=%d error=%lu\\n", debugstr_w(app_name),
+                 guest_actctx != INVALID_HANDLE_VALUE, guest_actctx != INVALID_HANDLE_VALUE ? 0 : GetLastError() );
+    }
+#endif
     ps4_guest_loading = guest;  /* W274 */
     NtCurrentTeb()->UserReserved[2] = PS4_GUEST_LOADING;
     /* W214 (W212: the relaunch from W210's helper thread found no mozglue.dll): its imports are
@@ -943,6 +977,13 @@ static BOOL ps4_guest_launch( const WCHAR *app_name, const WCHAR *cmd_line, DWOR
     if (!guest->module || !(nt = RtlImageNtHeader( guest->module )))
     {
         ERR( "PS4 guest %s: load failed, error %lu\\n", debugstr_w(app_name), GetLastError() );
+#ifndef _WIN64
+        if (guest_actctx != INVALID_HANDLE_VALUE)  /* 04.69 */
+        {
+            DeactivateActCtx( 0, guest_actctx_cookie );
+            ReleaseActCtx( guest_actctx );
+        }
+#endif
         /* W066: the console made for it would stay open with no program */
         if (allocated) FreeConsole();
         return FALSE;
@@ -960,6 +1001,13 @@ static BOOL ps4_guest_launch( const WCHAR *app_name, const WCHAR *cmd_line, DWOR
     thread = CreateThread( NULL, nt->OptionalHeader.SizeOfStackReserve, ps4_guest_start, guest,
                            CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION, &tid );
     ps4_guest_set( NtCurrentTeb(), parent );
+#ifndef _WIN64
+    if (guest_actctx != INVALID_HANDLE_VALUE)  /* 04.69: the guest's thread holds its own reference */
+    {
+        DeactivateActCtx( 0, guest_actctx_cookie );
+        ReleaseActCtx( guest_actctx );
+    }
+#endif
     if (!thread)
     {
         ERR( "PS4 guest %s: no thread, error %lu\\n", debugstr_w(app_name), GetLastError() );
@@ -1015,9 +1063,52 @@ static BOOL ps4_guest_launch( const WCHAR *app_name, const WCHAR *cmd_line, DWOR
     return TRUE;
 }
 
+/* 04.65 (GTA IV, runs 0031-0039 of 20261124T135505Z): the 32-bit GTAIV.exe's socialclub.dll starts the 64-bit
+ * Social Club SocialClubHelper.exe every few seconds; the 32-bit world has no route to a 64-bit guest
+ * ("not_a_guest") and the game loops on its loading screen. A CEF/Chromium program runs as several processes,
+ * each with its own libcef instance, which guests of one title share. A program with no execution mode chosen
+ * (PW_EXEC_AUTO) whose folder holds libcef.dll therefore runs in a separate process (PoP Phase D.3); the CEF
+ * children it starts come back to the title's CreateProcess (title-launch) and get their own the same way */
+static BOOL ps4_cef_separate( const WCHAR *app_name )
+{
+    static const WCHAR libcef[] = L"libcef.dll";
+    const WCHAR *slash, *other;
+    WCHAR path[MAX_PATH];
+    size_t len;
+
+    if (!app_name || !(slash = wcsrchr( app_name, '\\\\' ))) return FALSE;
+    if ((other = wcsrchr( app_name, '/' )) && other > slash) slash = other;
+    len = slash + 1 - app_name;
+    if (len + ARRAY_SIZE(libcef) > MAX_PATH) return FALSE;
+    memcpy( path, app_name, len * sizeof(WCHAR) );
+    memcpy( path + len, libcef, sizeof(libcef) );
+    if (GetFileAttributesW( path ) == INVALID_FILE_ATTRIBUTES) return FALSE;
+    if (ps4_execution_mode( app_name ) != PW_EXEC_AUTO) return FALSE;
+    /* 04.72 (run-0067 of 20261125T025118Z: Half-Life's hl.exe, 32-bit, ships libcef.dll beside it; the separate
+     * process failed with 0xC0000135): only 64-bit images, as SocialClubHelper.exe, take this route */
+    {
+        IMAGE_DOS_HEADER dos;
+        IMAGE_FILE_HEADER pe;
+        DWORD sig = 0, got = 0;
+        BOOL x64 = FALSE;
+        HANDLE file = CreateFileW( app_name, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   NULL, OPEN_EXISTING, 0, NULL );
+        if (file == INVALID_HANDLE_VALUE) return FALSE;
+        if (ReadFile( file, &dos, sizeof(dos), &got, NULL ) && got == sizeof(dos) && dos.e_magic == IMAGE_DOS_SIGNATURE &&
+            SetFilePointer( file, dos.e_lfanew, NULL, FILE_BEGIN ) != INVALID_SET_FILE_POINTER &&
+            ReadFile( file, &sig, sizeof(sig), &got, NULL ) && got == sizeof(sig) && sig == IMAGE_NT_SIGNATURE &&
+            ReadFile( file, &pe, sizeof(pe), &got, NULL ) && got == sizeof(pe))
+            x64 = pe.Machine == IMAGE_FILE_MACHINE_AMD64;
+        CloseHandle( file );
+        if (!x64) return FALSE;
+    }
+    ERR( "PWSEP cef_separate image=%s (libcef.dll in its folder, no execution mode chosen)\\n", debugstr_w(app_name) );
+    return TRUE;
+}
+
 /**********************************************************************
  *           CreateProcessInternalW   (kernelbase.@)
- */''','Guest launch.')
+ */''','Guest launch; a CEF program runs in a separate process (04.65).')
 # W196: TerminateProcess of its own process from a guest thread ends the guest, as ExitProcess
 # does (RtlExitUserProcess above). W195: The Lost Forest (Unity) quits with
 # TerminateProcess(GetCurrentProcess()); the server ended every thread and the whole title
@@ -1026,7 +1117,9 @@ revise('kernelbase','process','''    return set_ntstatus( NtTerminateProcess( ha
         /* PS4 hardware build (W196): a guest that terminates its own process ends alone */
         struct ps4_guest *guest = ps4_guest_current();
         if (guest && guest->exit_process &&
-            (handle == GetCurrentProcess() || GetProcessId( handle ) == GetCurrentProcessId()))
+            (handle == GetCurrentProcess() ||
+             (guest->ended && !NtCompareObjects( handle, guest->ended )) ||
+             (!ps4_guest_exit_code( handle, NULL ) && GetProcessId( handle ) == GetCurrentProcessId())))
         {
             ERR( "PS4 guest module %p TerminateProcess( own process, %u )\\n", guest->module, exit_code );
             guest->terminated = TRUE;  /* W209: no DllMain(DETACH) for its modules */
@@ -1040,7 +1133,8 @@ revise('kernelbase','process','''    info->hThread = info->hProcess = 0;
     info->dwProcessId = info->dwThreadId = 0;
 
     if (ps4_execution_mode( app_name ) == PW_EXEC_SEPARATE ||
-        (ps4_separate_thread && ps4_separate_thread == GetCurrentThreadId()))
+        (ps4_separate_thread && ps4_separate_thread == GetCurrentThreadId()) ||
+        ps4_cef_separate( app_name ))  /* 04.65: GTA IV's SocialClubHelper.exe */
     {
         /* PoP Phase D.3: the program runs in a separate native process. The title's watcher
          * (native/pop_loader_spawn.h) starts it through the GoldHEN loader and it runs the image under Wine
@@ -1920,15 +2014,21 @@ revise('kernelbase','memory','''LPVOID WINAPI DECLSPEC_HOTPATCH VirtualAlloc( vo
 {
     void *ret = VirtualAllocEx( GetCurrentProcess(), addr, size, type, protect );
 
-    /* W208: released when the guest's own modules are unloaded (ps4_guest_unload) */
-    if (ret && (type & MEM_RESERVE) && ps4_guest_current()) ps4_guest_memory_reserved( ret, __builtin_return_address( 0 ) );
+    /* W208: released when the guest's own modules are unloaded (ps4_guest_unload). 04.75: any thread's reservation
+     * also forgets an older record of the same address (its first owner released it some way not seen here) */
+    if (ret && (type & MEM_RESERVE)) ps4_guest_memory_reserved( ret, __builtin_return_address( 0 ) );
     return ret;
 }''','Record the memory a guest reserves.')
-revise('kernelbase','memory','''BOOL WINAPI DECLSPEC_HOTPATCH VirtualFree( void *addr, SIZE_T size, DWORD type )
-{''','''BOOL WINAPI DECLSPEC_HOTPATCH VirtualFree( void *addr, SIZE_T size, DWORD type )
+revise('kernelbase','memory','''BOOL WINAPI DECLSPEC_HOTPATCH VirtualFreeEx( HANDLE process, void *addr, SIZE_T size, DWORD type )
+{''','''BOOL WINAPI DECLSPEC_HOTPATCH VirtualFreeEx( HANDLE process, void *addr, SIZE_T size, DWORD type )
 {
-    if (type == MEM_RELEASE && ps4_guest_current()) ps4_guest_memory_released( addr );  /* W208 */''',
-       'A region the guest releases leaves its record.')
+    /* W208; 04.75 (W303 run-0083, run-0085: a region a guest reserved and then released on a thread that was not
+     * the guest's, a winmm timer or thread pool callback, stayed recorded; ntdll's heap took the address for a
+     * subheap, and the guest's exit released it under the heap): any thread's release of this process's memory,
+     * VirtualFree included (it calls this) */
+    if (type == MEM_RELEASE && !size && (process == GetCurrentProcess() || GetProcessId( process ) == GetCurrentProcessId()))
+        ps4_guest_memory_released( addr );''',
+       'A region a guest reserved leaves its record when any thread releases it (W208, 04.75).')
 revise('kernelbase','process','''/* after the guest's threads are gone */''','''/* W208: memory reserved with VirtualAlloc from a guest's own code (the files' rule above), released
  * when its own modules are unloaded (W207: about 227 MB of Pale Moon's allocator per run) */
 struct ps4_guest_region
@@ -1936,13 +2036,63 @@ struct ps4_guest_region
     void *base;
 };
 
+/* 04.75 (W303 run-0083, run-0085): the records of every guest, under one lock that is taken last (nothing else is
+ * locked while it is held but the process heap, for the arrays); a guest is listed from its first record until its
+ * records are dropped. The guest structures are never freed. */
+static RTL_SRWLOCK ps4_region_lock = RTL_SRWLOCK_INIT;
+static struct ps4_guest *ps4_region_guests[64];
+static UINT ps4_region_guest_count;
+
+/* ps4_region_lock is held: drop every record of the base, in any guest */
+static void ps4_guest_regions_forget( void *base )
+{
+    UINT g, i;
+
+    for (g = 0; g < ps4_region_guest_count; g++)
+    {
+        struct ps4_guest *guest = ps4_region_guests[g];
+
+        for (i = guest->region_count; i--;)
+            if (guest->regions[i].base == base) guest->regions[i] = guest->regions[--guest->region_count];
+    }
+}
+
+/* ps4_region_lock is held */
+static void ps4_guest_regions_unlist( struct ps4_guest *guest )
+{
+    UINT g;
+
+    for (g = 0; g < ps4_region_guest_count; g++)
+        if (ps4_region_guests[g] == guest) ps4_region_guests[g--] = ps4_region_guests[--ps4_region_guest_count];
+}
+
 void ps4_guest_memory_reserved( void *base, void *caller )
 {
     struct ps4_guest *guest = ps4_guest_current();
     static BOOL full_reported;
+    UINT g;
 
-    if (!guest || !ps4_guest_own_code( caller )) return;
-    RtlEnterCriticalSection( &guest->lock );
+    if (guest && !ps4_guest_own_code( caller )) guest = NULL;
+    if (!guest && !ps4_region_guest_count) return;
+    RtlAcquireSRWLockExclusive( &ps4_region_lock );
+    ps4_guest_regions_forget( base );
+    if (!guest)
+    {
+        RtlReleaseSRWLockExclusive( &ps4_region_lock );
+        return;
+    }
+    for (g = 0; g < ps4_region_guest_count && ps4_region_guests[g] != guest; g++);
+    if (g == ps4_region_guest_count)
+    {
+        if (g == ARRAY_SIZE(ps4_region_guests))
+        {
+            if (!full_reported) ERR( "PWGUEST memory module=%p not recorded: %u guests with records\\n", guest->module, g );
+            full_reported = TRUE;
+            RtlReleaseSRWLockExclusive( &ps4_region_lock );
+            return;
+        }
+        ps4_region_guests[ps4_region_guest_count++] = guest;
+    }
     if (guest->region_count == guest->region_size)
     {
         UINT size = guest->region_size ? guest->region_size * 2 : 256;
@@ -1955,30 +2105,23 @@ void ps4_guest_memory_reserved( void *base, void *caller )
         {
             if (!full_reported) ERR( "PWGUEST memory module=%p not recorded past %u regions\\n", guest->module, guest->region_count );
             full_reported = TRUE;
-            RtlLeaveCriticalSection( &guest->lock );
+            RtlReleaseSRWLockExclusive( &ps4_region_lock );
             return;
         }
         guest->regions = regions;
         guest->region_size = size;
     }
     guest->regions[guest->region_count++].base = base;
-    RtlLeaveCriticalSection( &guest->lock );
+    RtlReleaseSRWLockExclusive( &ps4_region_lock );
 }
 
+/* 04.75: on any thread (VirtualFreeEx); the record goes from whichever guest has it */
 void ps4_guest_memory_released( void *base )
 {
-    struct ps4_guest *guest = ps4_guest_current();
-    UINT i;
-
-    if (!guest || !guest->region_count) return;
-    RtlEnterCriticalSection( &guest->lock );
-    for (i = guest->region_count; i--;)
-        if (guest->regions[i].base == base)
-        {
-            guest->regions[i] = guest->regions[--guest->region_count];
-            break;
-        }
-    RtlLeaveCriticalSection( &guest->lock );
+    if (!ps4_region_guest_count) return;
+    RtlAcquireSRWLockExclusive( &ps4_region_lock );
+    ps4_guest_regions_forget( base );
+    RtlReleaseSRWLockExclusive( &ps4_region_lock );
 }
 
 /* W208: the guest's own modules: loaded since it started, from outside the Windows directory */
@@ -2498,27 +2641,52 @@ static void ps4_guest_unload_own( struct ps4_guest *guest, BOOL leftovers )
     }
 
 memory:
-    /* the memory their code reserved */
-    RtlEnterCriticalSection( &guest->lock );
-    for (i = 0; i < guest->region_count; i++)
+    /* the memory their code reserved; 04.75 (W303 run-0083, run-0085): never a region that is now a heap's (its
+     * address released unseen and taken again by ntdll's heap) */
     {
-        MEMORY_BASIC_INFORMATION mbi;
-        void *addr = guest->regions[i].base;
-        SIZE_T size = 0;
+        HANDLE heaps[256];
+        ULONG heap_count, h;
+        UINT heap_owned = 0, count;
+        struct ps4_guest_region *regions;
 
-        if (!VirtualQuery( addr, &mbi, sizeof(mbi) ) || mbi.AllocationBase != addr || mbi.State == MEM_FREE) continue;
-        if (!NtFreeVirtualMemory( GetCurrentProcess(), &addr, &size, MEM_RELEASE ))
+        /* the records are taken out under their lock; the heaps are asked with no lock of ours held */
+        RtlAcquireSRWLockExclusive( &ps4_region_lock );
+        regions = guest->regions;
+        count = guest->region_count;
+        guest->regions = NULL;
+        guest->region_count = guest->region_size = 0;
+        ps4_guest_regions_unlist( guest );
+        RtlReleaseSRWLockExclusive( &ps4_region_lock );
+        heap_count = RtlGetProcessHeaps( ARRAY_SIZE(heaps), heaps );
+        if (heap_count > ARRAY_SIZE(heaps)) heap_count = 0;  /* not all listed: none released below */
+        for (i = 0; i < count; i++)
         {
-            released++;
-            released_bytes += size;
+            MEMORY_BASIC_INFORMATION mbi;
+            void *addr = regions[i].base;
+            SIZE_T size = 0;
+            struct { void *base; ULONG owned; } query = { addr, 0 };
+
+            if (!VirtualQuery( addr, &mbi, sizeof(mbi) ) || mbi.AllocationBase != addr || mbi.State == MEM_FREE) continue;
+            for (h = 0; h < heap_count && !query.owned; h++)
+                if (RtlQueryHeapInformation( heaps[h], (HEAP_INFORMATION_CLASS)0x505b /* PW_HEAP_REGION */, &query,
+                                             sizeof(query), NULL )) query.owned = 0;
+            if (!heap_count || query.owned)
+            {
+                if (ps4_pw_traced()) ERR( "PWGUEST memory module=%p region %p kept: a heap's now\\n", guest->module, addr );
+                heap_owned++;
+                continue;
+            }
+            if (!NtFreeVirtualMemory( GetCurrentProcess(), &addr, &size, MEM_RELEASE ))
+            {
+                released++;
+                released_bytes += size;
+            }
         }
+        if (ps4_pw_traced())
+            ERR( "PWGUEST memory module=%p regions=%u released=%u bytes=%Iu heap_owned=%u\\n", guest->module, count,
+                 released, released_bytes, heap_owned );
+        RtlFreeHeap( GetProcessHeap(), 0, regions );
     }
-    ERR( "PWGUEST memory module=%p regions=%u released=%u bytes=%Iu\\n", guest->module, guest->region_count, released,
-         released_bytes );
-    RtlFreeHeap( GetProcessHeap(), 0, guest->regions );
-    guest->regions = NULL;
-    guest->region_count = guest->region_size = 0;
-    RtlLeaveCriticalSection( &guest->lock );
 
 done:
     RtlReleaseSRWLockExclusive( &own_lock );
@@ -2739,6 +2907,108 @@ revise('kernelbase','process','''    ps4_guest_note_modules( guest );  /* W208 *
 revise('kernelbase','process','''        ps4_guest_live_remove( guest );  /* W209 */''','''        ps4_guest_live_remove( guest );  /* W209 */
         if (guest->ended) SetEvent( guest->ended );  /* W210: a relaunch of its program may start */''',
        'Signal the end of a guest (W210).')
+# 04.93 (run-0249/0250 of 20261126T203327Z): Add/Remove Programs runs a WiX Burn bundle from
+# C:\ProgramData\Package Cache. From there Burn starts its clean-room child from its own image, not from
+# a %TEMP%\...\.cr copy as it does elsewhere. W210 made that child wait for its parent's end while the
+# parent waited for the child; after 15 s W252 ended the parent, closing the -burn.filehandle.self file
+# the child had inherited ("PWBURN inherited kind=1 valid=0 error=6", or the value reused with flags=0),
+# and the child exited with E_HANDLE (0x80070006): no uninstall or repair from Add/Remove. A bundle
+# starting its own image with a -burn. switch now gets a private copy of that image, as Burn makes
+# itself elsewhere; it loads as another module, beside the running parent, whose handles stay open.
+revise('kernelbase','process','''static BOOL ps4_guest_launch( const WCHAR *app_name, const WCHAR *cmd_line, DWORD flags, PROCESS_INFORMATION *info )
+{''','''/* 04.93: the private copy of a Burn bundle's own image, removed once its guest has ended */
+struct ps4_burn_copy
+{
+    WCHAR dir[MAX_PATH], path[MAX_PATH];
+    HANDLE ended;
+};
+
+static DWORD WINAPI ps4_burn_copy_remove( void *arg )
+{
+    struct ps4_burn_copy *copy = arg;
+    DWORD wait = copy->ended ? WaitForSingleObject( copy->ended, INFINITE ) : 0, tries;
+    BOOL removed = FALSE;
+
+    for (tries = 0; tries < 60 && !(removed = DeleteFileW( copy->path )); tries++) Sleep( 1000 );
+    if (removed) RemoveDirectoryW( copy->dir );
+    if (!removed || ps4_pw_traced())
+        ERR( "PWBURN copy_removed copy=%s wait=%lu removed=%u tries=%lu\\n", debugstr_w(copy->path), wait, removed, tries );
+    if (copy->ended) CloseHandle( copy->ended );
+    RtlFreeHeap( GetProcessHeap(), 0, copy );
+    return 0;
+}
+
+/* -1: no copy made, the start goes on as before; otherwise ps4_guest_launch's result for the copy */
+static int ps4_guest_burn_own_image( const WCHAR *app_name, const WCHAR *cmd_line, DWORD flags, PROCESS_INFORMATION *info )
+{
+    struct ps4_guest *self = ps4_guest_current();
+    const WCHAR *base = wcsrchr( app_name, '\\\\' );
+    struct ps4_burn_copy *copy;
+    LDR_DATA_TABLE_ENTRY *mod;
+    WCHAR temp[MAX_PATH];
+    DWORD len, error;
+    HANDLE thread;
+    BOOL ret;
+
+    if (!cmd_line || !wcsstr( cmd_line, L" -burn." ) || !self || !self->module ||
+        LdrFindEntryForAddress( self->module, &mod ) || !mod->FullDllName.Buffer ||
+        wcsicmp( mod->FullDllName.Buffer, app_name )) return -1;
+    base = base ? base + 1 : app_name;
+    len = GetTempPathW( ARRAY_SIZE(temp), temp );
+    if (!len || len >= ARRAY_SIZE(temp) ||
+        !(copy = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*copy) ))) return -1;
+    if (swprintf( copy->dir, ARRAY_SIZE(copy->dir), L"%sOrbisDesk-burn-%04lx-%08lx", temp,
+                  GetCurrentThreadId(), GetTickCount() ) < 0 ||
+        swprintf( copy->path, ARRAY_SIZE(copy->path), L"%s\\\\%s", copy->dir, base ) < 0 ||
+        !CreateDirectoryW( copy->dir, NULL ))
+    {
+        ERR( "PWBURN own_image app=%s: no copy folder, error %lu\\n", debugstr_w(app_name), GetLastError() );
+        RtlFreeHeap( GetProcessHeap(), 0, copy );
+        return -1;
+    }
+    if (!CopyFileW( app_name, copy->path, TRUE ))
+    {
+        ERR( "PWBURN own_image app=%s: no copy, error %lu\\n", debugstr_w(app_name), GetLastError() );
+        RemoveDirectoryW( copy->dir );
+        RtlFreeHeap( GetProcessHeap(), 0, copy );
+        return -1;
+    }
+    ERR( "PWBURN own_image app=%s copy=%s\\n", debugstr_w(app_name), debugstr_w(copy->path) );
+    ret = ps4_guest_launch( copy->path, cmd_line, flags, info );
+    error = GetLastError();
+    if (ret && info->hProcess)
+        DuplicateHandle( GetCurrentProcess(), info->hProcess, GetCurrentProcess(), &copy->ended, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS );
+    if (ret && !copy->ended) ERR( "PWBURN own_image copy=%s: no end to wait for, the copy stays\\n", debugstr_w(copy->path) );
+    if (!ret || copy->ended)
+    {
+        /* not a thread of the guest: its exit must not end it (W184) */
+        ps4_guest_set( NtCurrentTeb(), NULL );
+        thread = CreateThread( NULL, 0, ps4_burn_copy_remove, copy, 0, NULL );
+        ps4_guest_set( NtCurrentTeb(), self );
+        if (thread) CloseHandle( thread );
+        else
+        {
+            if (copy->ended) CloseHandle( copy->ended );
+            RtlFreeHeap( GetProcessHeap(), 0, copy );
+        }
+    }
+    else RtlFreeHeap( GetProcessHeap(), 0, copy );
+    SetLastError( error );
+    return ret;
+}
+
+static BOOL ps4_guest_launch( const WCHAR *app_name, const WCHAR *cmd_line, DWORD flags, PROCESS_INFORMATION *info )
+{''','A Burn bundle starting its own image gets a private copy of it (04.93).')
+revise('kernelbase','process','''    /* W210: a guest starting its own program again (Pale Moon's restart after rebuilding its startup''','''    /* 04.93: Burn's clean-room or elevated start of its own image runs from a private copy */
+    if (subsystem == IMAGE_SUBSYSTEM_WINDOWS_GUI)
+    {
+        int own = ps4_guest_burn_own_image( app_name, cmd_line, flags, info );
+
+        if (own >= 0) return own;
+    }
+    /* W210: a guest starting its own program again (Pale Moon's restart after rebuilding its startup''',
+       'A Burn start of its own image runs from a private copy (04.93).')
 # W213: the pad's key profile (C:\orbis\padmaps\<exe>.ini, native/hw_pad.c) follows the guest. W181's
 # profiles applied only to a program the title started on its own, never to a 64-bit guest such as
 # The Lost Forest. A guest's start and end reach hw_pad.c through xinput's Unix library (call 3,
@@ -2890,6 +3160,27 @@ revise('kernelbase','process','''    if (!(guest = RtlAllocateHeap( GetProcessHe
                      debugstr_w(app_name), running->module, count );
                 ps4_guest_end( running, STATUS_UNSUCCESSFUL );
                 running = NULL;
+            }
+        }
+        /* 04.90 (run-0236 of 20261126T143640Z): "RockstarService.exe start" waited in StartService while
+         * services.exe started the same program as the service. The rule below found the first start windowless,
+         * ended it with its thread still running ("0 of 1 threads asked to quit, wait 258") and unloaded its image;
+         * the service start ran at the same base and exited; then a thread ran RockstarService code that was gone
+         * and the title ended. One image is one module in this title, so a second instance cannot run while the
+         * first does: a service start of a program whose guest still runs fails here, and the service does not
+         * start (services.exe logs it), instead of the running guest being unloaded under its threads. */
+        if (running && self && self->module)
+        {
+            LDR_DATA_TABLE_ENTRY *starter;
+
+            if (!LdrFindEntryForAddress( self->module, &starter ) && starter->BaseDllName.Buffer &&
+                !wcsicmp( starter->BaseDllName.Buffer, L"services.exe" ))
+            {
+                ERR( "PWGUEST service_start app=%s module=%p: the program already runs; the service does not start\\n",
+                     debugstr_w(app_name), running->module );
+                if (allocated) FreeConsole();
+                SetLastError( ERROR_ALREADY_EXISTS );
+                return FALSE;
             }
         }
         /* W252 (W251: webview32's main thread never reached its exit; every next start was refused): a GUI
@@ -3222,10 +3513,20 @@ struct ps4_guest32_launch   /* fixtures/win32/orbis32host.c */
     DWORD std_input;
     DWORD std_output;
     DWORD std_error;
+    DWORD process;          /* 04.76: the guest's process handle (its end event) from the 32-bit side, or 0 */
     WCHAR exe[MAX_PATH];
     WCHAR dir[MAX_PATH];
     WCHAR cmd[1];
 };
+
+struct ps4_guest32_exit     /* fixtures/win32/orbis32host.c, ps4_guest32_exit_code (04.76) */
+{
+    DWORD process;
+    DWORD code;
+    DWORD ok;
+    DWORD error;
+};
+static void ps4_guest_exit_bridge( HANDLE ended );  /* 04.76 */
 
 /* W236: the subsystem of a PE32, 0 when unreadable */
 static WORD ps4_pe32_subsystem( const WCHAR *path )
@@ -3473,8 +3774,20 @@ static DWORD ps4_world_launch( const WCHAR *app_name, const WCHAR *cmd_line, con
     if (exit_code) error = req->error ? req->error : exit_code;
     else
     {
-        DuplicateHandle( GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &info->hProcess, 0, FALSE,
-                         DUPLICATE_SAME_ACCESS );
+        /* 04.76 (run-0108 of 20261125T151320Z: the Rockstar Games Launcher installer waited on vc_redist.x86.exe, a
+         * 32-bit guest, through a copy of this process's handle, and stayed at "installing" after it ended): the
+         * caller's process handle is the 32-bit guest's end event, as a 64-bit guest's is (W267) */
+        if (req->process)
+        {
+            info->hProcess = ULongToHandle( req->process );
+            ps4_guest_exit_bridge( info->hProcess );
+            if (ps4_pw_traced())
+                ERR( "PWWOW bridge process_handle image=%s handle=%#lx: the guest's end event\\n", debugstr_w(app_name),
+                     req->process );
+        }
+        else
+            DuplicateHandle( GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &info->hProcess, 0, FALSE,
+                             DUPLICATE_SAME_ACCESS );
         info->hThread = req->thread ? ULongToHandle( req->thread ) : NULL;
         info->dwProcessId = GetCurrentProcessId();
         info->dwThreadId = req->thread_id;
@@ -3515,6 +3828,42 @@ static DWORD ps4_world_launch( const WCHAR *app_name, const WCHAR *cmd_line, con
     size = 0;
     NtFreeVirtualMemory( GetCurrentProcess(), (void **)&req, &size, MEM_RELEASE );
     return error;
+}
+
+/* 04.76: the exit status of a 32-bit guest whose end event a 64-bit caller holds, from the i386 kernelbase that
+ * recorded it (W267), on a WoW64 thread; FALSE when the 32-bit side cannot answer */
+static BOOL ps4_world_exit_code( HANDLE process, DWORD *code )
+{
+    struct ps4_guest32_exit *req = NULL;
+    ULONG_PTR host, entry;
+    HANDLE thread;
+    SIZE_T size = sizeof(*req);
+    DWORD error = 0, wait;
+    BOOL ok = FALSE;
+
+    if (!(host = ps4_world_host( &error )) || !(entry = ps4_world_export( host, "ps4_guest32_exit_code" )))
+    {
+        ERR( "PWWOW bridge exit_code no host export, error %lu\\n", error );
+        return FALSE;
+    }
+    if (NtAllocateVirtualMemory( GetCurrentProcess(), (void **)&req, 0x7fffffff, &size, MEM_RESERVE | MEM_COMMIT,
+                                 PAGE_READWRITE ))
+        return FALSE;
+    req->process = HandleToULong( process );
+    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(), (void *)entry, req,
+                          PS4_THREAD_CREATE_WOW64, 0, 0, 0x100000, NULL ))
+        thread = NULL;
+    wait = thread ? WaitForSingleObject( thread, 10000 ) : WAIT_FAILED;
+    if (thread) CloseHandle( thread );
+    /* installers poll this: a line only when the bridge could not answer */
+    if (wait != WAIT_OBJECT_0 || !req->ok)
+        ERR( "PWWOW bridge exit_code handle=%#lx wait=%lu ok=%lu code=%lu error=%lu\\n", req->process, wait, req->ok,
+             req->code, req->error );
+    if (wait == WAIT_TIMEOUT) return FALSE;  /* the request stays: its thread may still use it */
+    if (wait == WAIT_OBJECT_0 && req->ok) { *code = req->code; ok = TRUE; }
+    size = 0;
+    NtFreeVirtualMemory( GetCurrentProcess(), (void **)&req, &size, MEM_RELEASE );
+    return ok;
 }
 #endif
 
@@ -3667,7 +4016,7 @@ static const char *ps4_overlay_close_guest( struct ps4_guest *guest )
         ERR( "PWOVERLAY close module=%p refused: a console program ends with its console\\n", module );
         return "refused-console";
     }
-    if (!GetModuleFileNameW( module, path, ARRAY_SIZE(path) )) path[0] = 0;
+    if (!GetModuleFileNameW( module, path, ARRAY_SIZE(path) )) return;
     /* W239: the target, before anything is ended */
     ERR( "PWOVERLAY terminate module=%p path=%s threads=%u\\n", module, debugstr_w(path), guest->thread_count );
     if (path[0]) ps4_guest_pad_profile( path, FALSE );
@@ -4209,7 +4558,7 @@ revise('kernelbase','process','''static void ps4_guest_unload( struct ps4_guest 
 ''','''static void ps4_guest_unload( struct ps4_guest *guest );
 
 /* W267: the end events (W210) handed out as guests' process handles, and the status each guest exited with */
-static struct { HANDLE ended; DWORD status; } ps4_guest_exits[64];
+static struct { HANDLE ended; DWORD status; BOOL bridged; } ps4_guest_exits[64];  /* bridged: 04.76 */
 static UINT ps4_guest_exit_count, ps4_guest_exit_next;
 static SRWLOCK ps4_guest_exits_lock = SRWLOCK_INIT;
 
@@ -4228,6 +4577,7 @@ static void ps4_guest_exit_note( HANDLE ended, DWORD status, BOOL add )
         i = ps4_guest_exit_next++ % ARRAY_SIZE(ps4_guest_exits);
         if (ps4_guest_exits[i].ended) NtClose( ps4_guest_exits[i].ended );
         ps4_guest_exits[i].ended = NULL;
+        ps4_guest_exits[i].bridged = FALSE;
         if (DuplicateHandle( GetCurrentProcess(), ended, GetCurrentProcess(), &copy, SYNCHRONIZE, FALSE, 0 ))
             ps4_guest_exits[i].ended = copy;
         if (ps4_guest_exit_count < ARRAY_SIZE(ps4_guest_exits)) ps4_guest_exit_count++;
@@ -4236,22 +4586,57 @@ static void ps4_guest_exit_note( HANDLE ended, DWORD status, BOOL add )
     RtlReleaseSRWLockExclusive( &ps4_guest_exits_lock );
 }
 
+#ifdef _WIN64
+/* 04.76: a 32-bit guest's end event handed to a 64-bit caller (ps4_world_launch); its status is the 32-bit side's */
+static void ps4_guest_exit_bridge( HANDLE ended )
+{
+    UINT i;
+
+    ps4_guest_exit_note( ended, STILL_ACTIVE, TRUE );
+    RtlAcquireSRWLockExclusive( &ps4_guest_exits_lock );
+    for (i = 0; i < ps4_guest_exit_count; i++)
+        if (ps4_guest_exits[i].ended && !NtCompareObjects( ps4_guest_exits[i].ended, ended ))
+            ps4_guest_exits[i].bridged = TRUE;
+    RtlReleaseSRWLockExclusive( &ps4_guest_exits_lock );
+}
+
+static BOOL ps4_world_exit_code( HANDLE process, DWORD *code );  /* 04.76 */
+#endif
+
 /* a guest's process handle: STILL_ACTIVE until the guest has ended, then its status */
 static BOOL ps4_guest_exit_code( HANDLE process, DWORD *exit_code )
 {
-    BOOL found = FALSE;
+    BOOL found = FALSE, bridged = FALSE, ended = FALSE;
+    DWORD status = 0;
     UINT i;
 
     RtlAcquireSRWLockShared( &ps4_guest_exits_lock );
     for (i = 0; i < ps4_guest_exit_count && !found; i++)
     {
         if (!ps4_guest_exits[i].ended || NtCompareObjects( ps4_guest_exits[i].ended, process )) continue;
-        if (exit_code) *exit_code = WaitForSingleObject( process, 0 ) == WAIT_OBJECT_0 ?
-                                    ps4_guest_exits[i].status : STILL_ACTIVE;
+        ended = WaitForSingleObject( process, 0 ) == WAIT_OBJECT_0;
+        status = ps4_guest_exits[i].status;
+        bridged = ps4_guest_exits[i].bridged;
         found = TRUE;
     }
     RtlReleaseSRWLockShared( &ps4_guest_exits_lock );
-    return found;
+    if (!found || !exit_code) return found;
+    if (!ended) { *exit_code = STILL_ACTIVE; return TRUE; }
+#ifdef _WIN64
+    /* 04.76: a 32-bit guest's status lives in the i386 kernelbase; asked once, then kept here */
+    if (bridged && status == STILL_ACTIVE)
+    {
+        DWORD code;
+
+        if (!ps4_world_exit_code( process, &code ) || code == STILL_ACTIVE) return FALSE;
+        ps4_guest_exit_note( process, code, FALSE );
+        status = code;
+    }
+#else
+    (void)bridged;
+#endif
+    *exit_code = status;
+    return TRUE;
 }
 ''','A guest process handle is its end event (W267).')
 revise('kernelbase','process','''        guest->threads[guest->thread_count++] = copy;
@@ -4282,6 +4667,14 @@ revise('kernelbase','process','''    status = NtQueryInformationProcess( process
     /* W267: a guest's process handle is its end event */
     if ((status == STATUS_OBJECT_TYPE_MISMATCH || status == STATUS_ACCESS_DENIED) && ps4_guest_exit_code( process, exit_code ))
         return TRUE;
+    /* 04.76 (run-0108 of 20261125T151320Z: vc_redist's clean-room process ended with 0x80070006 after its engine
+     * ended with 0): a process handle this cannot answer for, in the log */
+    if (status)
+    {
+        static LONG logged;  /* polled in loops: the first 16 */
+        if (InterlockedIncrement( &logged ) <= 16)
+            ERR( "PWGUEST GetExitCodeProcess handle=%p status=%#lx\\n", process, status );
+    }
     if (!status && exit_code) *exit_code = pbi.ExitStatus;
 ''','GetExitCodeProcess answers for a guest process handle (W267).')
 
@@ -5553,6 +5946,26 @@ revise('ntdll','heap','''    list_remove( &heap->entry );''','''    list_remove(
 revise('ntdll','heap','''    TRACE( "handle %p, info_class %u, info %p, size_in %Iu, size_out %p.\\n", handle, info_class, info, size_in, size_out );
 ''','''    TRACE( "handle %p, info_class %u, info %p, size_in %Iu, size_out %p.\\n", handle, info_class, info, size_in, size_out );
 
+    if (info_class == (HEAP_INFORMATION_CLASS)0x505b)  /* PW_HEAP_REGION, 04.75 (W303 run-0083, run-0085) */
+    {
+        struct { void *base; ULONG owned; } *query = info;
+        const SUBHEAP *subheap;
+        const ARENA_LARGE *arena;
+
+        if (size_out) *size_out = sizeof(*query);
+        if (size_in < sizeof(*query)) return STATUS_BUFFER_TOO_SMALL;
+        if (!(heap = unsafe_heap_from_handle( handle, 0, &flags ))) return STATUS_INVALID_HANDLE;
+        query->owned = 0;
+        heap_lock( heap, flags );
+        if (heap->bins && query->base == (void *)heap->bins) query->owned = 1;
+        LIST_FOR_EACH_ENTRY( subheap, &heap->subheap_list, SUBHEAP, entry )
+            if (contains( subheap_base( subheap ), subheap_size( subheap ), query->base, 1 )) query->owned = 1;
+        LIST_FOR_EACH_ENTRY( arena, &heap->large_list, ARENA_LARGE, entry )
+            if (contains( arena, arena->block_size, query->base, 1 )) query->owned = 1;
+        heap_unlock( heap, flags );
+        return STATUS_SUCCESS;
+    }
+
     if (info_class == (HEAP_INFORMATION_CLASS)PW_HEAP_GUEST)  /* alpha-1 (run-0203) */
     {
         if (!(heap = unsafe_heap_from_handle( handle, 0, &flags ))) return STATUS_INVALID_HANDLE;
@@ -5710,12 +6123,12 @@ revise('kernelbase','process','''    NtCurrentTeb()->UserReserved[2] = 0;
     ps4_guest_loading = NULL;
     if (guest->module) ps4_guest_claim_heaps( guest );  /* alpha-1 (run-0203) */''',
        'The heaps made while a guest EXE loaded are its own (alpha-1, run-0203).')
-revise('kernelbase','process','''    guest->region_count = guest->region_size = 0;
-    RtlLeaveCriticalSection( &guest->lock );
+revise('kernelbase','process','''        RtlFreeHeap( GetProcessHeap(), 0, regions );
+    }
 
 done:
-    RtlReleaseSRWLockExclusive( &own_lock );''','''    guest->region_count = guest->region_size = 0;
-    RtlLeaveCriticalSection( &guest->lock );
+    RtlReleaseSRWLockExclusive( &own_lock );''','''        RtlFreeHeap( GetProcessHeap(), 0, regions );
+    }
     if (!leftovers) ps4_guest_release_heaps( guest );  /* alpha-1 (run-0190, run-0203) */
 
 done:
@@ -6836,6 +7249,248 @@ revise('kernelbase','process','''        const WCHAR *caller = ps4_guest_code_mo
 
         if (ps4_guest_code_gone( caller, frame, via ) || object)''','''A small block a C runtime allocated through more of the C runtime is counted for the code above it (04.32, run-0261).''')
 
+# 04.78 (W303 run-0085, run-0118, 2026-11-25: Half-Life launched right after Counter-Strike faulted in ucrtbase's
+# grab_locinfo, "lock add [edx],1" with edx 0 or "Serv"): the C runtime's process-wide locale had been freed. GoldSrc
+# calls setlocale; ucrtbase builds the new global locale (create_locinfo) on the game's thread, so ntdll gave its small
+# blocks the game's site, and the first frame above the C runtime is the game's (04.32). At the game's end its code
+# was gone, ps4_guest_release_small freed those blocks, and MSVCRT_locale->locinfo kept pointing at them; the next
+# program's first locale use read freed (zeroed or reused) memory. As 04.37 found for kernel32's profile cache, what a
+# C runtime keeps for the whole process is not the caller's. ucrtbase and msvcrt now mark the allocations that build
+# their process-wide locale and multibyte code page (setlocale and _setmbcp outside a per-thread locale) with a count
+# in TEB.UserReserved[3], and ntdll gives the blocks allocated while it is set no guest (no small-block site, a large
+# block of no guest). A per-thread locale, and a locale object from _create_locale, stay the caller's.
+for _module in ('ucrtbase', 'msvcrt'):
+    _source = 'dlls/msvcrt/%s.c'
+    revise(_module,'locale','#include "msvcrt.h"\n','''#include "msvcrt.h"
+#include <winternl.h>
+
+/* OrbisDesk 04.78 (see tools/build-guest-hw.py): what is allocated between these becomes the C runtime's process-wide
+ * state, not the calling guest's (ntdll's heap counts it for no guest) */
+#define PS4_PROCESS_STATE_BEGIN() (NtCurrentTeb()->UserReserved[3]++)
+#define PS4_PROCESS_STATE_END() (NtCurrentTeb()->UserReserved[3]--)
+''','The C runtime marks the allocations of its process-wide locale (04.78, W303 run-0118).',_source % 'locale')
+    revise(_module,'locale','''    locale_flags = data->locale_flags;
+    data->locale_flags |= LOCALE_THREAD;
+    newlocinfo = create_locinfo(category, locale, locinfo);
+    data->locale_flags = locale_flags;''','''    locale_flags = data->locale_flags;
+    data->locale_flags |= LOCALE_THREAD;
+    if (!(locale_flags & LOCALE_THREAD)) PS4_PROCESS_STATE_BEGIN();  /* OrbisDesk 04.78: the global locale */
+    newlocinfo = create_locinfo(category, locale, locinfo);
+    if (!(locale_flags & LOCALE_THREAD)) PS4_PROCESS_STATE_END();
+    data->locale_flags = locale_flags;''','The C runtime marks the allocations of its process-wide locale (04.78, W303 run-0118).',_source % 'locale')
+    revise(_module,'mbcs','#include "msvcrt.h"\n','''#include "msvcrt.h"
+#include <winternl.h>
+
+/* OrbisDesk 04.78: as in locale.c */
+#define PS4_PROCESS_STATE_BEGIN() (NtCurrentTeb()->UserReserved[3]++)
+#define PS4_PROCESS_STATE_END() (NtCurrentTeb()->UserReserved[3]--)
+''','The C runtime marks the allocations of its process-wide code page (04.78, W303 run-0118).',_source % 'mbcs')
+    revise(_module,'mbcs','''    mbcinfo = create_mbcinfo(cp, -1, get_mbcinfo());
+    if(!mbcinfo)''','''    if (!(data->locale_flags & LOCALE_THREAD)) PS4_PROCESS_STATE_BEGIN();  /* OrbisDesk 04.78: the global code page */
+    mbcinfo = create_mbcinfo(cp, -1, get_mbcinfo());
+    if (!(data->locale_flags & LOCALE_THREAD)) PS4_PROCESS_STATE_END();
+    if(!mbcinfo)''','The C runtime marks the allocations of its process-wide code page (04.78, W303 run-0118).',_source % 'mbcs')
+revise('ntdll','heap','''    if (!(guest = *(void **)NtCurrentTeb()->UserReserved) || !pw_small_enabled()) return NULL;''','''    if (!(guest = *(void **)NtCurrentTeb()->UserReserved) || !pw_small_enabled()) return NULL;
+    if (NtCurrentTeb()->UserReserved[3]) return NULL;  /* 04.78: a C runtime's process-wide state (its locale.c) */''',
+       "A C runtime's process-wide state is no guest's small block (04.78, W303 run-0118).")
+revise('ntdll','heap','''    tag->guest = *(void **)NtCurrentTeb()->UserReserved;''','''    tag->guest = NtCurrentTeb()->UserReserved[3] ? NULL : *(void **)NtCurrentTeb()->UserReserved;  /* 04.78 */''',
+       "A C runtime's process-wide state is no guest's large block (04.78, W303 run-0118).")
+
+# 04.79 (W303 run-0124, 2026-11-25, 04.78: Half-Life started after Counter-Strike stopped at its own heap check,
+# "validate_used_block heap 083D0000 [the process heap, where the guest structures are], block 0BB6E470: invalid block
+# header", then GoldSrc's _heapchk assertion, twice): the rest of the C runtime's process-wide state that a program
+# fills from its own thread, freed with the program's small blocks as the locale was (04.78): the descriptor table past
+# its first block (alloc_pioinfo_block), the stream table past _IOB_ENTRIES (msvcrt_get_file), the buffers of streams
+# (a program that ends without fclose leaves its FILE in the table), and the environment arrays and strings (env_init,
+# _putenv and _wputenv). The same TEB.UserReserved[3] count marks them; they stay for the process, as on Windows
+# until the process ends. Memory that a program gets back (_dupenv_s, the tmpnam buffers of its threads) is unchanged.
+for _module in ('ucrtbase', 'msvcrt'):
+    _source = 'dlls/msvcrt/%s.c'
+    for _unit in ('file', 'environ'):
+        revise(_module,_unit,'#include "msvcrt.h"\n','''#include "msvcrt.h"
+#include <winternl.h>
+
+/* OrbisDesk 04.79: as in locale.c (04.78) */
+#define PS4_PROCESS_STATE_BEGIN() (NtCurrentTeb()->UserReserved[3]++)
+#define PS4_PROCESS_STATE_END() (NtCurrentTeb()->UserReserved[3]--)
+''',"The C runtime marks the allocations of its process-wide tables (04.79, W303 run-0124).",_source % _unit)
+    for _old in ('''    block = calloc(MSVCRT_FD_BLOCK_SIZE, sizeof(ioinfo));''',
+                 '''        MSVCRT_fstream[i/MSVCRT_FD_BLOCK_SIZE] = calloc(MSVCRT_FD_BLOCK_SIZE, sizeof(file_crit));''',
+                 '''    file->_base = calloc(1, MSVCRT_INTERNAL_BUFSIZ);''',
+                 '''        file->_base = file->_ptr = malloc(size);'''):
+        _indent = _old[:len(_old) - len(_old.lstrip())]
+        revise(_module,'file',_old,'%sPS4_PROCESS_STATE_BEGIN();  /* OrbisDesk 04.79 */\n%s\n%sPS4_PROCESS_STATE_END();' % (_indent, _old, _indent),
+               "The C runtime marks the allocations of its process-wide tables (04.79, W303 run-0124).",_source % 'file')
+    for _ret, _name, _params, _args in (('int', 'env_init', 'BOOL unicode, BOOL modif', 'unicode, modif'),
+                                        ('static int', 'putenv_helper', 'const char *name, const char *val, const char *eq', 'name, val, eq'),
+                                        ('static int', 'wputenv_helper', 'const wchar_t *name, const wchar_t *val, const wchar_t *eq', 'name, val, eq')):
+        revise(_module,'environ','%s %s(%s)\n{' % (_ret, _name, _params),'''static int %s_process(%s);
+
+/* OrbisDesk 04.79: the environment is the process's */
+%s %s(%s)
+{
+    int ret;
+
+    PS4_PROCESS_STATE_BEGIN();
+    ret = %s_process(%s);
+    PS4_PROCESS_STATE_END();
+    return ret;
+}
+
+static int %s_process(%s)
+{''' % (_name, _params, _ret, _name, _params, _name, _args, _name, _params),
+               "The C runtime marks the allocations of its process-wide environment (04.79, W303 run-0124).",_source % 'environ')
+
+# 04.81 (W303 run-0137, run-0141, 2026-11-25, 04.80: Half-Life started after Counter-Strike stopped at its heap check,
+# "invalid block header" in the process heap again, block 0CA996A0, twice; another HL after CS faulted in
+# libMangoHud.dll+2b845 writing through a broken pointer): ntdll records for each block the frames above its caller
+# from RtlCaptureStackBackTrace, which follows the EBP chain. Mesa, MangoHud and libc++ are built without frame
+# pointers; when their code allocates (through the C runtime) inside a call the game made to them (wglSwapBuffers,
+# a present hook), the walk skips their frames and the frame "above" is the game's. At the game's end that code is
+# gone, and their process-wide blocks were freed with the game's (04.30 code-gone rule, 04.32 C-runtime chain). A
+# frame now counts only when the instruction before it is a call (call rel32, or through a pointer slot, followed
+# through one jump thunk) to an entry at most 64 KiB before the frame below it, the function it called. For a
+# small-block site the frames above the first one that is not verified are not reported (kernelbase then keeps the
+# blocks); a large block keeps no unverified via. A chain that cannot be proven keeps its blocks.
+revise('ntdll','heap','''static inline struct pw_large_tag *pw_large_tag( ARENA_LARGE *arena )''','''/* OrbisDesk 04.81 (see tools/build-guest-hw.py): whether ret, a frame of RtlCaptureStackBackTrace, returns from a call
+ * to the function that holds inner, the frame below it */
+static BOOL pw_readable( const void *addr, SIZE_T size )
+{
+    MEMORY_BASIC_INFORMATION mbi;
+
+    if ((ULONG_PTR)addr < 0x10000) return FALSE;
+    if (NtQueryVirtualMemory( NtCurrentProcess(), (void *)addr, MemoryBasicInformation, &mbi, sizeof(mbi), NULL ))
+        return FALSE;
+    if (mbi.State != MEM_COMMIT || !mbi.Protect || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return FALSE;
+    return (ULONG_PTR)addr - (ULONG_PTR)mbi.BaseAddress + size <= mbi.RegionSize;
+}
+
+static ULONG_PTR pw_slot_target( const BYTE *slot )
+{
+    return pw_readable( slot, sizeof(void *) ) ? *(const ULONG_PTR *)slot : 0;
+}
+
+static BOOL pw_frame_calls( const void *ret, const void *inner )
+{
+    const BYTE *r = ret, *t;
+    ULONG_PTR target;
+
+    if (!r || !inner || !pw_readable( r - 6, 6 )) return FALSE;
+    if (r[-5] == 0xe8) target = (ULONG_PTR)r + *(const LONG *)(r - 4);
+#ifdef _WIN64
+    else if (r[-6] == 0xff && r[-5] == 0x15) target = pw_slot_target( r + *(const LONG *)(r - 4) );
+#else
+    else if (r[-6] == 0xff && r[-5] == 0x15) target = pw_slot_target( (const BYTE *)(ULONG_PTR)*(const ULONG *)(r - 4) );
+#endif
+    else return FALSE;
+    if (target && pw_readable( (const void *)target, 6 ))
+    {
+        t = (const BYTE *)target;
+#ifdef _WIN64
+        if (t[0] == 0xff && t[1] == 0x25) target = pw_slot_target( t + 6 + *(const LONG *)(t + 2) );
+#else
+        if (t[0] == 0xff && t[1] == 0x25) target = pw_slot_target( (const BYTE *)(ULONG_PTR)*(const ULONG *)(t + 2) );
+#endif
+        else if (t[0] == 0xe9) target += 5 + *(const LONG *)(t + 1);
+    }
+    return target && target <= (ULONG_PTR)inner && (ULONG_PTR)inner - target < 0x10000;
+}
+
+static inline struct pw_large_tag *pw_large_tag( ARENA_LARGE *arena )''',"A heap block's frames count only when each calls the one below (04.81, W303 run-0137).")
+revise('ntdll','heap','''        tag->via = frames[i + 1];
+        break;''','''        tag->via = pw_frame_calls( frames[i + 1], caller ) ? frames[i + 1] : NULL;  /* 04.81 */
+        break;''',"A heap block's frames count only when each calls the one below (04.81, W303 run-0137).")
+revise('ntdll','heap','''    void *up[3];  /* 04.32: the three frames above via */''','''    void *up[3];  /* 04.32: the three frames above via */
+    ULONG trusted;  /* 04.81: how many of via, up[0..2] are verified calls, from the bottom */''',
+       "A heap block's frames count only when each calls the one below (04.81, W303 run-0137).")
+revise('ntdll','heap','''static struct pw_site *pw_site_get( void *guest, void *caller, void *via, void *const *up )''','''/* 04.81: how many frames above caller, from the bottom, are verified calls */
+static ULONG pw_frames_trusted( void *caller, void *via, void *const *up )
+{
+    void *chain[5] = { caller, via, up[0], up[1], up[2] };
+    ULONG n;
+
+    for (n = 0; n < 4 && pw_frame_calls( chain[n + 1], chain[n] ); n++);
+    return n;
+}
+
+static struct pw_site *pw_site_get( void *guest, void *caller, void *via, void *const *up )''',
+       "A heap block's frames count only when each calls the one below (04.81, W303 run-0137).")
+revise('ntdll','heap','''    pw_sites_enter();
+    for (n = 0, i = start; n < PW_SITE_PROBES; n++, i = (i + 1) % PW_SITE_COUNT)''','''    trusted = pw_frames_trusted( caller, via, up );  /* 04.81: once per new site, outside the lock */
+    pw_sites_enter();
+    for (n = 0, i = start; n < PW_SITE_PROBES; n++, i = (i + 1) % PW_SITE_COUNT)''',
+       "A heap block's frames count only when each calls the one below (04.81, W303 run-0137).")
+revise('ntdll','heap','''    struct pw_site *site, *found = NULL;
+
+    for (n = 0, i = start; n < PW_SITE_PROBES; n++, i = (i + 1) % PW_SITE_COUNT)''','''    struct pw_site *site, *found = NULL;
+    ULONG trusted;
+
+    for (n = 0, i = start; n < PW_SITE_PROBES; n++, i = (i + 1) % PW_SITE_COUNT)''',
+       "A heap block's frames count only when each calls the one below (04.81, W303 run-0137).")
+revise('ntdll','heap','''        site->up[2] = up[2];''','''        site->up[2] = up[2];
+        site->trusted = trusted;  /* 04.81 */''',"A heap block's frames count only when each calls the one below (04.81, W303 run-0137).")
+revise('ntdll','heap','''        info->sites[info->listed].up[2] = site->up[2];
+''','''        info->sites[info->listed].up[2] = site->up[2];
+        /* 04.81: no frame above the first unverified one */
+        if (site->trusted < 4) info->sites[info->listed].up[2] = NULL;
+        if (site->trusted < 3) info->sites[info->listed].up[1] = NULL;
+        if (site->trusted < 2) info->sites[info->listed].up[0] = NULL;
+        if (site->trusted < 1) info->sites[info->listed].via = NULL;
+''',"A heap block's frames count only when each calls the one below (04.81, W303 run-0137).")
+
+# 04.83 (W303 run-0165, run-0167, 2026-11-25, 04.82): after a 32-bit game ended, the next one still found live memory
+# of the process heap freed: Counter-Strike faulted in the heap's free list and left its lock held (the loader and the
+# heap then waited on each other), the next one found "invalid block header" at block 1733CC38 four times, and Half-Life
+# after Counter-Strike faulted in the loader reading a module entry overwritten with text. 04.75-04.82 each narrowed
+# the guesses of who made a block (04.30, 04.32: the code above malloc; 04.78-04.81) and each round found another
+# owner the guess got wrong; a block a running module or the loader still uses can never be told apart by the
+# frames that made it. For 32-bit guests the blocks those rules chose are now kept: the small blocks of the process
+# heap (ps4_guest_release_small), the large blocks of the guest (ps4_guest_release_large) and those of no guest
+# (ps4_guest_release_unowned). The memory an ended 32-bit guest left in those heaps stays until OrbisDesk ends, as a
+# Windows process keeps it until it exits; each end logs what stays ("PWGUEST heap_small ... kept"). 64-bit guests
+# keep these rules (their small blocks were never tagged). The guest's own heaps, regions and modules are unchanged.
+revise('kernelbase','process','''static void ps4_guest_release_large( struct ps4_guest *guest, HMODULE ntdll )''','''/* 04.83 (see tools/build-guest-hw.py): whether the blocks chosen by the code-gone rules are freed */
+#ifdef _WIN64
+#define PS4_GUEST_RECLAIM 1
+#else
+#define PS4_GUEST_RECLAIM 0
+#endif
+
+static void ps4_guest_release_large( struct ps4_guest *guest, HMODULE ntdll )''',
+       "An ended 32-bit guest's heap blocks are kept (04.83, W303 run-0165, run-0167).")
+revise('kernelbase','process','''            if (ps4_guest_code_gone( caller, block->via, via ) || object)  /* 04.30: or a C runtime's, for gone code */''',
+       '''            if (PS4_GUEST_RECLAIM && (ps4_guest_code_gone( caller, block->via, via ) || object))  /* 04.30; 04.83 */''',
+       "An ended 32-bit guest's heap blocks are kept (04.83, W303 run-0165, run-0167).")
+revise('kernelbase','process','''            if (ps4_guest_code_gone( caller, block->via, via ))''',
+       '''            if (PS4_GUEST_RECLAIM && ps4_guest_code_gone( caller, block->via, via ))  /* 04.83 */''',
+       "An ended 32-bit guest's heap blocks are kept (04.83, W303 run-0165, run-0167).")
+revise('kernelbase','process','''        if (ps4_guest_code_gone( caller, frame, via ) || object)''',
+       '''        if (PS4_GUEST_RECLAIM && (ps4_guest_code_gone( caller, frame, via ) || object))  /* 04.83 */''',
+       "An ended 32-bit guest's heap blocks are kept (04.83, W303 run-0165, run-0167).")
+revise('kernelbase','process','''    /* also ends its sites when none is freed */''','''    if (!PS4_GUEST_RECLAIM)  /* 04.83: what an ended 32-bit guest leaves in the process heap */
+        ERR( "PWGUEST heap_small module=%p kept sites=%lu blocks=%Iu bytes=%Iu (04.83: not freed)\\n", guest->module,
+             info->total, info->blocks, info->bytes );
+    /* also ends its sites when none is freed */''',"An ended 32-bit guest's heap blocks are kept (04.83, W303 run-0165, run-0167).")
+
+# 04.86 (W303 run-0188, 04.84: Half-Life after Counter-Strike, in D3D mode, ended with "PW_VK_BATCH fatal ... line
+# 229, status 0xc0000005"): the 32-bit Vulkan batching (tools/build-winevulkan-batch.py) still held records that the
+# ended guest's killed threads had queued, and replayed them at the next guest's first flush, after this exit had
+# released the memory, Vulkan devices and heaps they refer to. Once the other threads are gone, and before any of that
+# is released, winevulkan replays what they published (pw_vk_batch_guest_end; a world without that winevulkan, or
+# without winevulkan loaded, has nothing to replay).
+revise('kernelbase','process','''    ERR( "PS4 guest module %p: %u other threads ended, %u windows of this thread destroyed\\n",
+         guest->module, other_count, destroyed );
+''','''    ERR( "PS4 guest module %p: %u other threads ended, %u windows of this thread destroyed\\n",
+         guest->module, other_count, destroyed );
+    {
+        /* 04.86: what the ended threads queued in winevulkan's batching runs while what it refers to is there */
+        HMODULE vulkan = GetModuleHandleW( L"winevulkan.dll" );
+        void (CDECL *batch_end)(void) = vulkan ? (void *)GetProcAddress( vulkan, "pw_vk_batch_guest_end" ) : NULL;
+
+        if (batch_end) batch_end();
+    }
+''',"An ended guest's queued Vulkan records are replayed before its memory is released (04.86, W303 run-0188).")
+
 # alpha-1 (run-0215, 2026-11-17, 04.17: GTA San Andreas, exit status 0, lost 0.47 and 0.39 GB of direct memory that
 # was not Wine's own commits after its device memory was freed): a guest that ended by itself (not terminated by the
 # overlay's close or a crash, W209) also has its Vulkan devices destroyed by win32u, with a time limit
@@ -6867,40 +7522,521 @@ revise('ntdll','loader','''             * As these might reference our wm, we do
             }
             *module = NULL;''','A guest EXE whose imports fail is unmapped (alpha-1, run-0121).')
 
+# 04.39 (run-0301/0302: GTA IV's PlayGTAIV.exe from Steam said Windows 7 and 8 are no longer supported, with
+# winecfg's Applications tab set to Windows 10 for it): kernelbase's GetVersionEx works out the version once per
+# process, from the process's activation context and the EXE header (Peb->ImageBaseAddress), which are explorer's.
+# explorer.exe declares no supportedOS, so every guest was told Windows 8 (6.2.9200). ntdll's version_init reads
+# HKCU\Software\Wine\AppDefaults\<exe>\Version only for explorer.exe too. A guest now gets its own answer: its
+# AppDefaults Version (winecfg's Applications tab), else the process's, capped as Windows does by the supportedOS
+# GUIDs of its own manifest (RT_MANIFEST 1) or, without any, by the OS version of its own PE header.
+revise('kernelbase','version','#include "kernelbase.h"','#include "winreg.h"\n#include "kernelbase.h"\n#include "ps4_guest.h"','Guest state.')
+revise('kernelbase','version','''/**********************************************************************
+ *  find_entry_by_id
+''','''/* PS4 hardware build (04.39): a guest program's Windows version (see tools/build-guest-hw.py). */
+static BOOL ps4_text_has( const char *text, SIZE_T size, const char *what )
+{
+    SIZE_T i, j, len = strlen( what );
+
+    for (i = 0; i + len <= size; i++)
+    {
+        for (j = 0; j < len; j++)
+        {
+            char c = text[i + j];
+            if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+            if (c != what[j]) break;
+        }
+        if (j == len) return TRUE;
+    }
+    return FALSE;
+}
+
+static void ps4_guest_version( HMODULE module, RTL_OSVERSIONINFOEXW *version )
+{
+    static const struct { const WCHAR *name; struct version_info info; } names[] =
+    {
+        { L"win11", { 10, 0, 22000 } }, { L"win10", { 10, 0, 19045 } }, { L"win81", { 6, 3, 9600 } },
+        { L"win8", { 6, 2, 9200 } }, { L"win7", { 6, 1, 7601 } }, { L"win2008", { 6, 0, 6002 } },
+        { L"vista", { 6, 0, 6002 } }, { L"winxp64", { 5, 2, 3790 } }, { L"winxp", { 5, 1, 2600 } },
+    };
+    static const char *guids[] = { "1f676c76-80e1-4239-95bb-83d0f6d0da78", "8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a" };
+    static HMODULE logged;
+    const struct version_info *ver = NULL;
+    WCHAR path[MAX_PATH], key[MAX_PATH + 40], name[32], *exe;
+    LDR_RESOURCE_INFO info = { 24 /* RT_MANIFEST */, 1, 0 };
+    IMAGE_RESOURCE_DATA_ENTRY *entry;
+    const char *manifest = NULL;
+    IMAGE_NT_HEADERS *nt;
+    ULONG manifest_size = 0;
+    DWORD size = sizeof(name);
+    int idx, i;
+
+    if (!GetModuleFileNameW( module, path, ARRAY_SIZE(path) )) path[0] = 0;
+    exe = wcsrchr( path, '\\\\' ) ? wcsrchr( path, '\\\\' ) + 1 : path;
+    swprintf( key, ARRAY_SIZE(key), L"Software\\\\Wine\\\\AppDefaults\\\\%s", exe );
+    if (exe[0] && !RegGetValueW( HKEY_CURRENT_USER, key, L"Version", RRF_RT_REG_SZ, NULL, name, &size ))
+    {
+        for (i = 0; i < ARRAY_SIZE(names); i++)
+            if (!wcsicmp( name, names[i].name ))
+            {
+                version->dwMajorVersion = names[i].info.major;
+                version->dwMinorVersion = names[i].info.minor;
+                version->dwBuildNumber  = names[i].info.build;
+                break;
+            }
+    }
+    else size = sizeof(name);
+
+    for (idx = ARRAY_SIZE(version_data); idx--;)
+        if (version->dwMajorVersion > version_data[idx].info.major ||
+            (version->dwMajorVersion == version_data[idx].info.major &&
+             version->dwMinorVersion >= version_data[idx].info.minor))
+            break;
+    if (idx >= 0)
+    {
+        ver = &windows8_version_info;
+        if (!LdrFindResource_U( module, (ULONG_PTR *)&info, 3, &entry ))
+            LdrAccessResource( module, entry, (void **)&manifest, &manifest_size );
+        if (manifest && ps4_text_has( manifest, manifest_size, "supportedos" ))
+        {
+            for (; idx >= 0; idx--)
+                if (ps4_text_has( manifest, manifest_size, guids[idx] ))
+                {
+                    ver = &version_data[idx].info;
+                    if (ver->major == version->dwMajorVersion && ver->minor == version->dwMinorVersion) ver = NULL;
+                    break;
+                }
+        }
+        else if (version->dwMajorVersion >= 10 && (nt = RtlImageNtHeader( module )) &&
+                 (nt->OptionalHeader.MajorOperatingSystemVersion > 6 ||
+                  (nt->OptionalHeader.MajorOperatingSystemVersion == 6 &&
+                   nt->OptionalHeader.MinorOperatingSystemVersion >= 3)))
+            ver = nt->OptionalHeader.MajorOperatingSystemVersion >= 10 ? NULL : &windows8_1_version_info;
+    }
+    if (ver)
+    {
+        version->dwMajorVersion = ver->major;
+        version->dwMinorVersion = ver->minor;
+        version->dwBuildNumber  = ver->build;
+    }
+    if (logged != module && ps4_pw_traced())
+    {
+        logged = module;
+        ERR( "PWGUEST version %s: %lu.%lu.%lu (AppDefaults %s, manifest %lu bytes)\\n", debugstr_w(exe),
+             version->dwMajorVersion, version->dwMinorVersion, version->dwBuildNumber,
+             size != sizeof(name) ? debugstr_w(name) : "none", manifest_size );
+    }
+}
+
+/**********************************************************************
+ *  find_entry_by_id
+''','A guest program\'s own Windows version for GetVersionEx (04.39).')
+revise('kernelbase','version','''    if (!InitOnceExecuteOnce(&init_once, init_current_version, NULL, NULL)) return FALSE;
+
+    info->dwMajorVersion = current_version.dwMajorVersion;
+    info->dwMinorVersion = current_version.dwMinorVersion;
+    info->dwBuildNumber  = current_version.dwBuildNumber;
+    info->dwPlatformId   = current_version.dwPlatformId;
+    wcscpy( info->szCSDVersion, current_version.szCSDVersion );
+
+    if (info->dwOSVersionInfoSize == sizeof(OSVERSIONINFOEXW))
+    {
+        OSVERSIONINFOEXW *vex = (OSVERSIONINFOEXW *)info;
+        vex->wServicePackMajor = current_version.wServicePackMajor;
+        vex->wServicePackMinor = current_version.wServicePackMinor;
+        vex->wSuiteMask        = current_version.wSuiteMask;
+        vex->wProductType      = current_version.wProductType;
+    }''','''    if (!InitOnceExecuteOnce(&init_once, init_current_version, NULL, NULL)) return FALSE;
+
+    {
+        /* PS4 hardware build (04.39): a guest's own version, not explorer's */
+        struct ps4_guest *guest = ps4_guest_or_loading();
+        RTL_OSVERSIONINFOEXW *v = &current_version;
+
+        if (guest && InitOnceExecuteOnce( &guest->version_once, ps4_init_guest_version, guest, NULL ))
+            v = &guest->version_info;
+        info->dwMajorVersion = v->dwMajorVersion;
+        info->dwMinorVersion = v->dwMinorVersion;
+        info->dwBuildNumber  = v->dwBuildNumber;
+        info->dwPlatformId   = v->dwPlatformId;
+        wcscpy( info->szCSDVersion, v->szCSDVersion );
+
+        if (info->dwOSVersionInfoSize == sizeof(OSVERSIONINFOEXW))
+        {
+            OSVERSIONINFOEXW *vex = (OSVERSIONINFOEXW *)info;
+            vex->wServicePackMajor = v->wServicePackMajor;
+            vex->wServicePackMinor = v->wServicePackMinor;
+            vex->wSuiteMask        = v->wSuiteMask;
+            vex->wProductType      = v->wProductType;
+        }
+    }''','GetVersionEx answers a guest with its own version (04.39).')
+
+revise('kernelbase','version','''BOOL WINAPI GetVersionExW( OSVERSIONINFOW *info )''','''static BOOL CALLBACK ps4_init_guest_version( INIT_ONCE *once, void *param, void **context )
+{
+    struct ps4_guest *guest = param;
+    guest->version_info.dwOSVersionInfoSize = sizeof(guest->version_info);
+    if (RtlGetVersion( &guest->version_info )) return FALSE;
+    ps4_guest_version( GetModuleHandleW(NULL), &guest->version_info );
+    return TRUE;
+}
+
+BOOL WINAPI GetVersionExW( OSVERSIONINFOW *info )''',
+       'Cache the version once per guest, avoiding registry/resource work in repeated game queries.')
+
+
+# 04.59: guests must use their own application directory before a process-wide SetDllDirectory.
+# HL1 run-0013 loaded a 0x5e000 Source filesystem_stdio.dll instead of its 0x10000 GoldSrc module,
+# then asserted g_pFileSystem at launcher.cpp:439. This keeps Wine's normal order/search flags.
+revise('ntdll','loader','''NTSTATUS WINAPI LdrGetDllPath( PCWSTR module, ULONG flags, PWSTR *path, PWSTR *unknown )''','''static WCHAR *ps4_guest_dll_image(void)
+{
+    const struct { void *exit_process; void *atexit_table[3]; HMODULE module; } *guest =
+        *(void **)NtCurrentTeb()->UserReserved;
+    WINE_MODREF *wm;
+    HMODULE module = guest ? guest->module : NULL;
+    LIST_ENTRY *list, *entry;
+    WCHAR *ret = NULL;
+    ULONG_PTR magic;
+
+    if ((!guest && NtCurrentTeb()->UserReserved[2] != 0x47345350) ||
+        LdrLockLoaderLock( 0, NULL, &magic )) return NULL;
+    list = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList;
+    if (NtCurrentTeb()->UserReserved[2] == 0x47345350)
+    {
+        module = NULL;
+        for (entry = list->Blink; entry != list && !module; entry = entry->Blink)
+        {
+            LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
+            if (!(mod->Flags & LDR_IMAGE_IS_DLL) && mod->DllBase != NtCurrentTeb()->Peb->ImageBaseAddress)
+                module = mod->DllBase;
+        }
+    }
+    if (module && (wm = get_modref( module )) && wm->ldr.FullDllName.Buffer &&
+        (ret = RtlAllocateHeap( GetProcessHeap(), 0, wm->ldr.FullDllName.Length + sizeof(WCHAR) )))
+    {
+        memcpy( ret, wm->ldr.FullDllName.Buffer, wm->ldr.FullDllName.Length );
+        ret[wm->ldr.FullDllName.Length / sizeof(WCHAR)] = 0;
+    }
+    LdrUnlockLoaderLock( 0, magic );
+    return ret;
+}
+
+NTSTATUS WINAPI LdrGetDllPath( PCWSTR module, ULONG flags, PWSTR *path, PWSTR *unknown )''',
+       'Resolve default application search paths against the calling guest, not orbis32host.')
+revise('ntdll','loader','''    RtlEnterCriticalSection( &dlldir_section );
+
+    if (flags & load_library_search_flags)
+    {
+        status = get_dll_load_path_search_flags( module, flags, path );
+    }
+    else
+    {
+        const WCHAR *dlldir = dll_directory.Length ? dll_directory.Buffer : NULL;
+        if (!(flags & LOAD_WITH_ALTERED_SEARCH_PATH) || !wcschr( module, L'\\\\' ))
+            module = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+        status = get_dll_load_path( module, dlldir, dll_safe_mode, path );
+    }
+
+    RtlLeaveCriticalSection( &dlldir_section );''','''    WCHAR *guest_image = ps4_guest_dll_image();
+
+    RtlEnterCriticalSection( &dlldir_section );
+
+    if (flags & load_library_search_flags)
+    {
+        status = get_dll_load_path_search_flags( module, flags, path );
+    }
+    else
+    {
+        const WCHAR *dlldir = dll_directory.Length ? dll_directory.Buffer : NULL;
+        if (!(flags & LOAD_WITH_ALTERED_SEARCH_PATH) || !wcschr( module, L'\\\\' ))
+            module = guest_image ? guest_image : NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+        status = get_dll_load_path( module, dlldir, dll_safe_mode, path );
+    }
+
+    RtlLeaveCriticalSection( &dlldir_section );
+    RtlFreeHeap( GetProcessHeap(), 0, guest_image );''',
+       'Default LoadLibrary search starts at the guest EXE folder; explicit search flags remain authoritative.')
+
+revise('ntdll','loader','''static NTSTATUS get_dll_load_path_search_flags( LPCWSTR module, DWORD flags, WCHAR **path )''',
+       '''static NTSTATUS get_dll_load_path_search_flags( LPCWSTR module, DWORD flags, WCHAR **path, const WCHAR *application_image )''',
+       'Use the guest application image for explicit APPLICATION_DIR and DEFAULT_DIRS too.')
+revise('ntdll','loader','''        image = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;''',
+       '''        image = application_image ? application_image : NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;''',
+       'Explicit application-directory lookup selects the same guest image.')
+revise('ntdll','loader','''        status = get_dll_load_path_search_flags( module, flags, path );''',
+       '''        status = get_dll_load_path_search_flags( module, flags, path, guest_image );''',
+       'Pass the immutable guest image copy without changing the root PEB or global DLL directory.')
+
+# UCRT's WinMain argument helpers cache one process-global pointer. A second guest (Burn clean-room included)
+# must parse its own GetCommandLine every time, with exactly Wine's existing quoting/whitespace rules.
+for _kind, _ctype in (('narrow','char'),('wide','wchar_t')):
+    _api = 'A' if _kind == 'narrow' else 'W'
+    revise('ucrtbase','data',f'''  if ({_kind}_command_line)
+      return {_kind}_command_line;''',
+           f'''  if (!*(void **)NtCurrentTeb()->UserReserved && {_kind}_command_line)
+      return {_kind}_command_line;''',
+           'Only the root process may reuse its cached WinMain arguments.','dlls/msvcrt/data.c')
+    revise('ucrtbase','data',f'''  return {_kind}_command_line = s;''',
+           f'''  if (*(void **)NtCurrentTeb()->UserReserved) return s;
+  return {_kind}_command_line = s;''',
+           'Guest WinMain arguments cannot replace the root process cache.','dlls/msvcrt/data.c')
+
+# Guest process handles are end events (W267), but DuplicateHandle's process arguments still refer
+# to the shared host handle table. Recognize only registered guest objects; arbitrary events remain invalid.
+revise('kernelbase','process','''BOOL WINAPI DECLSPEC_HOTPATCH DuplicateHandle( HANDLE source_process, HANDLE source,''','''static BOOL ps4_guest_exit_code( HANDLE process, DWORD *exit_code );
+
+BOOL WINAPI DECLSPEC_HOTPATCH DuplicateHandle( HANDLE source_process, HANDLE source,''',
+       'Allow the shared handle table behind a registered guest process handle.')
+revise('kernelbase','process','''    return set_ntstatus( NtDuplicateObject( source_process, source, dest_process, dest,
+                                            access, inherit ? OBJ_INHERIT : 0, options ));''','''    if (source_process != GetCurrentProcess() && ps4_guest_exit_code( source_process, NULL ))
+        source_process = GetCurrentProcess();
+    if (dest_process && dest_process != GetCurrentProcess() && ps4_guest_exit_code( dest_process, NULL ))
+        dest_process = GetCurrentProcess();
+    return set_ntstatus( NtDuplicateObject( source_process, source, dest_process, dest,
+                                            access, inherit ? OBJ_INHERIT : 0, options ));''',
+       'Duplicate real handles through guest process end events; preserve errors/access/close-source semantics.')
+
+revise('kernelbase','process','''DWORD WINAPI DECLSPEC_HOTPATCH GetProcessId( HANDLE process )
+{
+    PROCESS_BASIC_INFORMATION pbi;''','''DWORD WINAPI DECLSPEC_HOTPATCH GetProcessId( HANDLE process )
+{
+    PROCESS_BASIC_INFORMATION pbi;
+
+    if (process != GetCurrentProcess() && ps4_guest_exit_code( process, NULL ))
+        return GetCurrentProcessId();''',
+       'A registered guest process handle reports the same shared PID returned by CreateProcess.')
+
+
 # (out/guest-hw-i386): the i386 ones are the guests' ntdll, kernelbase and ucrtbase in explorer's
 # 32-bit world, in wine/lib/wine/i386-guest (tools/build-wine-hardware.py), which ntdll Unix searches
 # only in a 64-bit process (tools/build-wow64-world-ps4.py).
+# 04.52: a signalled server thread handle is not proof of native quiescence.
+for name in ('pw_thread_quiesce.h','pw_guest_quiesce.inc.c'):
+    shutil.copyfile(ROOT/'platform/ps4'/name,overlay/'kernelbase'/name)
+revise('kernelbase','process','#include "ps4_guest.h"',
+       '#include "ps4_guest.h"\n#include "pw_thread_quiesce.h"',
+       'Native thread exit acknowledgement before guest unload (04.52).')
+revise('kernelbase','process','WINE_DEFAULT_DEBUG_CHANNEL(process);',
+       'WINE_DEFAULT_DEBUG_CHANNEL(process);\n#include "pw_guest_quiesce.inc.c"',
+       'Compile the acknowledgement helper after the debug channel (04.52).')
+revise('kernelbase','process','''static void ps4_guest_unload( struct ps4_guest *guest )
+{''','''static void ps4_guest_unload( struct ps4_guest *guest )
+{
+    if(!ps4_guest_native_quiet(guest,2000))return;
+''','No guest resources are freed while native execution is active or unknown (04.52).')
+revise('kernelbase','process','''    ps4_guest_unload( guest );
+    ps4_overlay_tray_front();''','''    if(!ps4_guest_native_quiet(guest,2000))return "kept";
+    ps4_guest_unload( guest );
+    ps4_overlay_tray_front();''','A close that cannot confirm native exit reports kept, not closed (04.52).')
+
+shutil.copyfile(ROOT/'platform/ps4/pw_guest_fault_context.inc.c',overlay/'kernelbase/pw_guest_fault_context.inc.c')
+revise('kernelbase','process','''static LONG CALLBACK ps4_guest_fault_trace( EXCEPTION_POINTERS *ptrs )
+{''','''#include "pw_guest_fault_context.inc.c"
+
+static LONG CALLBACK ps4_guest_fault_trace( EXCEPTION_POINTERS *ptrs )
+{''','Bounded exception register and safe instruction/stack reads; handlers remain unchanged.')
+revise('kernelbase','process','''    context = *ptrs->ContextRecord;
+#ifdef __i386__''','''    context = *ptrs->ContextRecord;
+    ps4_guest_fault_context( n, &context );
+#ifdef __i386__''','Capture the original fault context before walking its stack.')
+for name in ('pw_compiler_policy.h','pw_compiler_guest.inc.c'):
+    shutil.copyfile(ROOT/'platform/ps4'/name,overlay/'kernelbase'/name)
+revise('kernelbase','process','#include "pw_guest_quiesce.inc.c"',
+       '#include "pw_guest_quiesce.inc.c"\n#include "pw_compiler_policy.h"\n#include "pw_compiler_guest.inc.c"',
+       'Retire generated compiler overrides before guest DLL initialization; preserve user options.')
+revise('kernelbase','process','''    ps4_guest_loading = guest;  /* W274 */''',
+       '''    ps4_guest_compiler_cleanup();
+    ps4_guest_loading = guest;  /* W274 */''',
+       'Remove only marked legacy compiler environment; overlay.ini compiler keys are ignored.')
+
+# 04.78 (GTA IV: the Rockstar Games Launcher installer ran "RockstarService.exe install", whose OpenSCManager failed
+# with 1722, RPC server unavailable, service_log.txt of 20261125T162118Z; the installer then rolled back): no service
+# control manager runs in this title (tools/prepare-wine-boot.py lists services.exe among Wine's helpers). The first
+# 64-bit OpenSCManager that finds none starts services.exe as a guest of this process and waits for its started event.
+revise('sechost','service','''SC_HANDLE WINAPI DECLSPEC_HOTPATCH OpenSCManagerW( const WCHAR *machine, const WCHAR *database, DWORD access )
+{''','''#ifdef _WIN64
+/* 04.78: services.exe as a guest of this process, started by the first OpenSCManager that finds no manager;
+ * 0, or why it did not start */
+static DWORD ps4_scm_start( void )
+{
+    static const WCHAR started_name[] = SVCCTL_STARTED_EVENT;
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    WCHAR path[MAX_PATH];
+    HANDLE started;
+    DWORD wait, err = 0;
+
+    if (!(started = CreateEventW( NULL, TRUE, FALSE, started_name ))) return GetLastError();
+    if (GetLastError() != ERROR_ALREADY_EXISTS)  /* the first caller starts it, the others wait */
+    {
+        GetSystemDirectoryW( path, MAX_PATH - 14 );
+        lstrcatW( path, L"\\\\services.exe" );
+        if (CreateProcessW( path, NULL, NULL, NULL, FALSE, DETACHED_PROCESS, NULL, NULL, &si, &pi ))
+        {
+            CloseHandle( pi.hThread );
+            CloseHandle( pi.hProcess );
+        }
+        else err = GetLastError();
+        ERR( "PWSCM start %s error=%lu\\n", debugstr_w(path), err );
+    }
+    wait = err ? WAIT_FAILED : WaitForSingleObject( started, 30000 );
+    if (wait != WAIT_OBJECT_0) ERR( "PWSCM started wait=%lu\\n", wait );
+    CloseHandle( started );
+    if (err) return err;
+    return wait == WAIT_OBJECT_0 ? 0 : ERROR_SERVICE_REQUEST_TIMEOUT;
+}
+
+/* 04.79: whether a return address is in the named module */
+static BOOL ps4_scm_caller_is( void *address, const WCHAR *name )
+{
+    HMODULE module = GetModuleHandleW( name ), caller = NULL;
+
+    return module && RtlPcToFileHeader( address, (void **)&caller ) && caller == module;
+}
+#endif
+
+SC_HANDLE WINAPI DECLSPEC_HOTPATCH OpenSCManagerW( const WCHAR *machine, const WCHAR *database, DWORD access )
+{''','The first OpenSCManager with no manager starts services.exe as a guest (04.78).')
+revise('sechost','service','''        err = svcctl_OpenSCManagerW( machine, database, access, &handle );
+    }
+    __EXCEPT(rpc_filter)
+    {
+        err = map_exception_code( GetExceptionCode() );
+    }
+    __ENDTRY
+
+    SetLastError( err );
+    return handle;''','''        err = svcctl_OpenSCManagerW( machine, database, access, &handle );
+    }
+    __EXCEPT(rpc_filter)
+    {
+        err = map_exception_code( GetExceptionCode() );
+    }
+    __ENDTRY
+#ifdef _WIN64
+    /* 04.78: no manager yet: start it once, then ask again.
+     * 04.79 (run-0122 of 20261125T182114Z: explorer's COM start_rpcss started it at every boot): not for combase,
+     * whose RpcSs the title has always run without */
+    if (err == RPC_S_SERVER_UNAVAILABLE && !machine && !ps4_scm_caller_is( __builtin_return_address(0), L"combase.dll" ) &&
+        !ps4_scm_start())
+    {
+        handle = NULL;
+        __TRY
+        {
+            err = svcctl_OpenSCManagerW( machine, database, access, &handle );
+        }
+        __EXCEPT(rpc_filter)
+        {
+            err = map_exception_code( GetExceptionCode() );
+        }
+        __ENDTRY
+        ERR( "PWSCM OpenSCManager retry error=%lu handle=%p\\n", err, handle );
+    }
+#endif
+
+    SetLastError( err );
+    return handle;''','The first OpenSCManager with no manager starts services.exe as a guest (04.78).')
+# 04.79 (run-0122 of 20261125T182114Z: rpcss.exe, started by services.exe as a guest, called
+# StartServiceCtrlDispatcher, which made the whole title a Wine system process; with no user process left the server
+# ended it, "PWEXIT last thread aborted nb_threads=0", 10 s after boot): a service run as a guest leaves the title
+# a user process; its shutdown event is its own and never set
+revise('sechost','service','''    NtSetInformationProcess( GetCurrentProcess(), ProcessWineMakeProcessSystem,
+                             &wait_handles[0], sizeof(HANDLE *) );''','''    /* 04.79: a service runs as a guest of the OrbisDesk title, which stays a user process */
+    wait_handles[0] = CreateEventW( NULL, TRUE, FALSE, NULL );''','A service run as a guest does not make the title a system process (04.79).')
+revise('services','rpc','''    if (service->service_entry->config.dwStartType == SERVICE_DISABLED)
+        return ERROR_SERVICE_DISABLED;
+''','''    if (service->service_entry->config.dwStartType == SERVICE_DISABLED)
+        return ERROR_SERVICE_DISABLED;
+    /* 04.79: the title has always run COM without RpcSs; starting it inside would change every program's COM */
+    if (!wcsicmp( service->service_entry->name, L"RpcSs" ))
+    {
+        WINE_ERR("PWSCM RpcSs not started in the title\\n");
+        return ERROR_SERVICE_DISABLED;
+    }
+''','services.exe as a guest does not start RpcSs (04.79).',source='programs/services/rpc.c')
+# services.exe as a guest: the title is not made a Wine system process (that would end it with the last user
+# process), so the exit event is its own and never set; services start only on request, no autostart (drivers,
+# plug and play: the title has its own)
+revise('services','rpc','''    NtSetInformationProcess( GetCurrentProcess(), ProcessWineMakeProcessSystem,
+                             &exit_event, sizeof(HANDLE *) );''','''    /* 04.78: a guest of the OrbisDesk title: not a system process; this event is never set */
+    exit_event = CreateEventW( NULL, TRUE, FALSE, NULL );''','services.exe as a guest is not a system process (04.78).',
+       source='programs/services/rpc.c')
+revise('services','services','''        scmdatabase_autostart_services(active_database);''','''        /* 04.78: a guest of the OrbisDesk title: services start only when asked */
+        (void)scmdatabase_autostart_services;
+        {
+            WCHAR trace[4];  /* OrbisDesk's trace switch (PW_TRACE=0|1); unset counts as on */
+            if (!(GetEnvironmentVariableW( L"PW_TRACE", trace, 4 ) == 1 && trace[0] == '0'))
+                WINE_ERR("PWSCM services.exe ready, no autostart\\n");
+        }''','services.exe as a guest starts services only on request (04.78).',
+       source='programs/services/services.c')
+
+# 04.80 (installer_log.txt of 20261125T190712Z: the Rockstar Games Launcher installer read "Exit code: 108" for
+# RockstarService.exe, which ended with 0, and "63007496" for vc_redist, then rolled back): kernel32 has its own
+# GetExitCodeProcess, straight to NtQueryInformationProcess, which a guest's process handle (its end event, W267)
+# does not answer; the programs that import it from kernel32, most of them, got FALSE and kept stale memory.
+# kernel32's asks kernelbase's, which answers for guests (W267, and the bridge's 32-bit guests, 04.76).
+revise('kernel32','process','''BOOL WINAPI GetExitCodeProcess( HANDLE hProcess, LPDWORD lpExitCode )
+{
+    PROCESS_BASIC_INFORMATION pbi;
+
+    if (!set_ntstatus( NtQueryInformationProcess( hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), NULL )))
+        return FALSE;
+    if (lpExitCode) *lpExitCode = pbi.ExitStatus;
+    return TRUE;
+}''','''BOOL WINAPI GetExitCodeProcess( HANDLE hProcess, LPDWORD lpExitCode )
+{
+    /* 04.80: kernelbase's, which answers for a guest's process handle (W267) */
+    static BOOL (WINAPI *kernelbase_get)( HANDLE, LPDWORD );
+    PROCESS_BASIC_INFORMATION pbi;
+
+    if (!kernelbase_get)
+        kernelbase_get = (void *)GetProcAddress( GetModuleHandleW( L"kernelbase.dll" ), "GetExitCodeProcess" );
+    if (kernelbase_get) return kernelbase_get( hProcess, lpExitCode );
+    if (!set_ntstatus( NtQueryInformationProcess( hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), NULL )))
+        return FALSE;
+    if (lpExitCode) *lpExitCode = pbi.ExitStatus;
+    return TRUE;
+}''',"kernel32's GetExitCodeProcess answers for guests through kernelbase's (04.80).")
+
+# 04.78: programs built like the DLLs (their folder and file); 64-bit only, the i386 guests start none of them
+PROGRAMS={'services':('programs/services','services.exe')}
 def build(arch,work,out):
     for folder in (work,out):folder.mkdir(parents=True,exist_ok=True)
     modules={}
     for module in sources:
+        if module in PROGRAMS and arch!='x86_64':continue
         units=sorted(sources[module])
-        target=f'dlls/{module}/{arch}-windows/{module}.dll'
+        base,name=PROGRAMS.get(module,(f'dlls/{module}',module+'.dll'))
+        target=f'{base}/{arch}-windows/{name}'
         dry=subprocess.run(['make','-n']+[f'-W../../source/{sources[module][u]}' for u in units]+[target],
                            cwd=BUILD,capture_output=True,text=True,check=True).stdout.replace('\\\n',' ')
         (work/module).mkdir(parents=True,exist_ok=True)
         commands=[]
         for line in dry.splitlines():
-            if f'dlls/{module}/' not in line:continue
+            if f'{base}/' not in line:continue
             for u in units:
                 line=line.replace(f'../../source/{sources[module][u]}',str(overlay/module/(u+'.c')))
-                line=re.sub(r'(?<![\w/.])dlls/%s/%s-windows/%s\.o\b'%(module,arch,u),str(work/module/(u+'.o')),line)
-            line=re.sub(r'(?<![\w/.])%s(?![\w.])'%re.escape(target),str(work/module/(module+'.dll')),line)
+                line=re.sub(r'(?<![\w/.])%s/%s-windows/%s\.o\b'%(re.escape(base),arch,u),str(work/module/(u+'.o')),line)
+            line=re.sub(r'(?<![\w/.])%s(?![\w.])'%re.escape(target),str(work/module/name),line)
             commands.append(line)
-        if not any(str(work/module/(module+'.dll')) in c for c in commands):
+        if not any(str(work/module/name) in c for c in commands):
             raise SystemExit('make -n did not give the %s link:\n%s'%(module,dry[-2000:]))
         for command in commands:
             run=subprocess.run(command,shell=True,cwd=BUILD,capture_output=True,text=True)
             if run.returncode:raise SystemExit(command[:300]+'\n'+run.stdout+run.stderr)
-        shutil.copyfile(work/module/(module+'.dll'),out/(module+'.dll'))
-        modules[module+'.dll']={'path':module+'.dll','sha256':sha(out/(module+'.dll')),'units':units,'commands':commands}
+        shutil.copyfile(work/module/name,out/name)
+        modules[name]={'path':name,'sha256':sha(out/name),'units':units,'commands':commands}
     manifest={'schema_version':1,'wine_commit':commit,'modules':modules,'revisions':revisions,
+              'quiescence_sources':{name:sha(ROOT/name) for name in ('platform/ps4/pw_thread_quiesce.h','platform/ps4/pw_guest_quiesce.inc.c')},
+              'compiler_sources':{name:sha(ROOT/name) for name in ('platform/ps4/pw_compiler_policy.h','platform/ps4/pw_compiler_guest.inc.c')},
+              'fault_context_sources':{'platform/ps4/pw_guest_fault_context.inc.c':sha(ROOT/'platform/ps4/pw_guest_fault_context.inc.c')},
               'input_sha256':{str((ROOT/'platform/ps4'/p.name).relative_to(ROOT)):sha(p) for p in
                               (overlay/'kernelbase/pw_execution_mode.h',overlay/'kernelbase/pw_execution_policy.h')},
               'overlay_sha256':{str(p.relative_to(overlay)):sha(p) for p in sorted(overlay.rglob('*')) if p.is_file()}}
     if arch=='i386':manifest['builder_sha256']=sha(pathlib.Path(__file__))
     (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     return modules
+if guest_cli.prepare_only:
+    print(json.dumps({'overlay':str(overlay),'revisions':len(revisions),'status':'prepared, not built'}))
+    raise SystemExit(0)
 modules=build('x86_64',work,out)
 modules32=build('i386',ROOT/'build/guest-hw-i386',ROOT/'out/guest-hw-i386')
 print(json.dumps({name:e['sha256'] for name,e in modules.items()}|{'i386:'+name:e['sha256'] for name,e in modules32.items()}|{'revisions':len(revisions)}))

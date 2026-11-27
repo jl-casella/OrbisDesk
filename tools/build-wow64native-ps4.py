@@ -47,6 +47,15 @@ adaptations=[]
 # Unix side
 unix_c=work/'src/unix.c'
 adaptations.append(adapt(MODULE/'unix.c',unix_c,[
+    ('#include <time.h>\n', '#include <time.h>\n#ifdef __ORBIS__\nvoid (*pw_perf_thread_hook)(unsigned);\n#endif\n'),
+    ('''    if (!p) return;
+    WINE_MESSAGE("PW_NATIVE_PROFILE version=2''',
+     '''    if (!p) return;
+#ifdef __ORBIS__
+    /* Host FS is active here; pair Wine's thread id with real per-thread kernel counters. */
+    if (pw_perf_thread_hook) pw_perf_thread_hook(state->tid);
+#endif
+    WINE_MESSAGE("PW_NATIVE_PROFILE version=2'''),
     ('#ifdef __PROSPERO__\n    extern int sysarch(int, void *);\n    /* Called with host FS active',
      '#if defined(__PROSPERO__) || defined(__ORBIS__)\n    extern int sysarch(int, void *);\n    /* Called with host FS active'),
     ('#ifdef __PROSPERO__\n    {\n        extern int sysarch(int, void *);',
