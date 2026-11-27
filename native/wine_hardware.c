@@ -36,7 +36,7 @@
 /* the release name shown next to the version on the start screen; HW_BUILD stays the technical identity
  * (logs, state folder, update ledger) */
 #ifndef HW_RELEASE
-#define HW_RELEASE "ALPHA-2"
+#define HW_RELEASE "ALPHA-3"
 #endif
 #ifndef HW_VERSION
 #define HW_VERSION "04.02"
