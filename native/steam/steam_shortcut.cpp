@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // S5's game shortcuts (steam_shortcut.h).
 #include "steam_shortcut.h"
+#include "steam_storage.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -118,16 +119,14 @@ bool Write(const std::string& path, const std::string& bytes) {
 
 }  // namespace
 
+std::string LauncherArguments(std::uint32_t app) { return "--play " + std::to_string(app); }
+
 std::string GameWindowsPath(std::uint32_t app, const std::string& relative) {
-  std::string path = "Z:\\orbisdesk\\steam-games\\" + std::to_string(app);
-  if (!relative.empty()) path += "\\" + relative;
-  for (auto& c : path)
-    if (c == '/') c = '\\';
-  return path;
+  return StorageWindowsPath(FindGameRoot(app),relative);
 }
 
 std::string ShortcutBytes(const std::string& target, const std::string& description, const std::string& arguments,
-                          const std::string& working_dir) {
+                          const std::string& working_dir, const std::string& icon) {
   const std::uint32_t flags = kHasLinkInfo | kHasName | kHasWorkingDir | kHasIconLocation | kIsUnicode |
                               (arguments.empty() ? 0 : kHasArguments);
   std::string out;
@@ -165,7 +164,7 @@ std::string ShortcutBytes(const std::string& target, const std::string& descript
   PutString(out, description);
   PutString(out, working_dir);
   if (!arguments.empty()) PutString(out, arguments);
-  PutString(out, target);  // icon: the program's own, icon 0
+  PutString(out, icon.empty() ? target : icon);  // icon 0 of the program, or of the one given
   Put32(out, 0);           // terminal extra-data block
   return out;
 }
@@ -180,7 +179,8 @@ std::string SourceLanguageArguments(const std::string& root, const Launch& launc
 }
 
 ShortcutResult WriteGameShortcuts(std::uint32_t app, const std::string& name, const InstallResult& result,
-                                  const std::string& root, const std::string& language) {
+                                  const std::string& root, const std::string& language, const std::string& previous_root,
+                                  bool through_launcher) {
   ShortcutResult shortcut;
   const std::string prefix = kPrefix;
   shortcut.prefix = PathExists(prefix + "/drive_c");
@@ -188,32 +188,81 @@ ShortcutResult WriteGameShortcuts(std::uint32_t app, const std::string& name, co
     shortcut.skipped = "no OrbisDesk prefix";
     return shortcut;
   }
-  bool steamstub = false;  // an entry was skipped for SteamStub alone
-  for (std::size_t i = 0; i < result.launches.size() && i < result.checks.size(); ++i) {
-    const auto& launch = result.launches[i];
-    const auto& check = result.checks[i];
-    if (check.present && check.pe && check.steamstub) steamstub = true;
-    if (!check.present || !check.pe || check.steamstub) continue;
-    const std::string target = GameWindowsPath(app, launch.executable);
-    const std::string folder = GameWindowsPath(app, launch.working_dir);
-    if (!Ascii(target) || !Ascii(folder)) {
-      shortcut.skipped = "non-ASCII path";  // LinkInfo's local base path is ANSI
-      continue;
+  LaunchEntry entry = ChooseLaunchEntry(result.launches, result.checks, root, language, through_launcher);
+  // A SteamStub game: the shortcut starts it the way Play does (steam-open.exe --play, which runs the launch plan
+  // Big Picture keeps for it: the game, or gbe_fork's ColdClient loader), with the game's own icon
+  LaunchEntry icon;
+  if (through_launcher ? entry.ok : !entry.ok && entry.skipped == "steamstub") {
+    icon = ChooseLaunchEntry(result.launches, result.checks, root, language, true);
+    if (icon.ok) {
+      entry = icon;
+      entry.image = kLauncherImage;
+      entry.arguments = LauncherArguments(app);
+      entry.directory = kLauncherFolder;
+      entry.language_arguments.clear();
+      shortcut.launcher = true;
     }
+  }
+  if (entry.ok) {
+    const std::string& target = entry.image;
+    const std::string& folder = entry.directory;
     const std::string file = FileName(name, app) + ".lnk";
-    std::string arguments = launch.arguments;
-    shortcut.language_arguments = SourceLanguageArguments(root, launch, language);
-    if (!shortcut.language_arguments.empty())
-      arguments += (arguments.empty() ? "" : " ") + shortcut.language_arguments;
-    const std::string bytes = ShortcutBytes(target, name, arguments, folder);
-    if (Write(prefix + kDesktop + "/" + file, bytes)) shortcut.desktop = file;
-    if (Write(prefix + kStartMenu + "/" + file, bytes)) shortcut.start = file;
+    const std::string& arguments = entry.arguments;
+    shortcut.language_arguments = entry.language_arguments;
+    const std::string bytes = ShortcutBytes(target, name, arguments, folder, shortcut.launcher ? icon.image : "");
+    const auto update=[&](const std::string& where){
+      if(!previous_root.empty()){
+        const int old=open(where.c_str(),O_RDONLY|O_NOFOLLOW);
+        if(old>=0){std::string content;char block[4096];ssize_t n;
+          while((n=read(old,block,sizeof(block)))>0&&content.size()<(1u<<20))content.append(block,static_cast<std::size_t>(n));
+          close(old);if(n<0){shortcut.failed=true;return false;}
+          const auto before=StorageWindowsPath(previous_root,"")+"\\",after=StorageWindowsPath(root,"")+"\\";
+          // the launcher's names no folder of the game in ANSI: its --play <app> (UTF-16) says it is this game's
+          std::string play;PutString(play,LauncherArguments(app));play.erase(0,2);
+          const bool launcher_ours=shortcut.launcher&&content.find(play)!=std::string::npos;
+          if(content.find(before)==std::string::npos&&content.find(after)==std::string::npos&&!launcher_ours)return false;
+        }else if(errno!=ENOENT){shortcut.failed=true;return false;}
+      }
+      if(Write(where,bytes))return true;shortcut.failed=true;return false;
+    };
+    if (update(prefix + kDesktop + "/" + file)) shortcut.desktop = file;
+    if (update(prefix + kStartMenu + "/" + file)) shortcut.start = file;
     if (shortcut.desktop.empty() && shortcut.start.empty()) shortcut.skipped = "write failed errno=" + std::to_string(errno);
     else shortcut.skipped.clear();
     return shortcut;
   }
-  if (shortcut.skipped.empty()) shortcut.skipped = steamstub ? "steamstub" : "no usable launch entry";
+  shortcut.skipped = entry.skipped;
   return shortcut;
+}
+
+LaunchEntry ChooseLaunchEntry(const std::vector<Launch>& launches, const std::vector<LaunchCheck>& checks,
+                              const std::string& root, const std::string& language, bool allow_steamstub) {
+  LaunchEntry entry;
+  bool steamstub = false;  // an entry was skipped for SteamStub alone
+  for (std::size_t i = 0; i < launches.size() && i < checks.size(); ++i) {
+    const auto& launch = launches[i];
+    const auto& check = checks[i];
+    if (check.present && check.pe && check.steamstub) steamstub = true;
+    if (!check.present || !check.pe || (check.steamstub && !allow_steamstub)) continue;
+    const std::string target = StorageWindowsPath(root, launch.executable);
+    const std::string folder = StorageWindowsPath(root, launch.working_dir);
+    if (!Ascii(target) || !Ascii(folder)) {
+      entry.skipped = "non-ASCII path";  // LinkInfo's local base path is ANSI
+      continue;
+    }
+    entry.ok = true;
+    entry.index = i;
+    entry.image = target;
+    entry.directory = folder;
+    entry.arguments = launch.arguments;
+    entry.language_arguments = SourceLanguageArguments(root, launch, language);
+    if (!entry.language_arguments.empty())
+      entry.arguments += (entry.arguments.empty() ? "" : " ") + entry.language_arguments;
+    entry.skipped.clear();
+    return entry;
+  }
+  if (entry.skipped.empty()) entry.skipped = steamstub ? "steamstub" : "no usable launch entry";
+  return entry;
 }
 
 ShortcutRemoval RemoveGameShortcuts(std::uint32_t app, const std::string& name) {
@@ -223,6 +272,9 @@ ShortcutRemoval RemoveGameShortcuts(std::uint32_t app, const std::string& name) 
   const std::string file = FileName(name, app) + ".lnk";
   // the LinkInfo's ANSI target: Z:\orbisdesk\steam-games\<app>\...
   const std::string ours = GameWindowsPath(app, "") + "\\";
+  std::string play;
+  PutString(play, LauncherArguments(app));
+  play.erase(0, 2);  // without the count: the units alone
   const auto remove = [&](const std::string& path) -> std::string {
     const int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0) {
@@ -235,7 +287,10 @@ ShortcutRemoval RemoveGameShortcuts(std::uint32_t app, const std::string& name) 
     ssize_t got;
     while (bytes.size() < (1u << 20) && (got = read(fd, buffer, sizeof(buffer))) > 0) bytes.append(buffer, static_cast<std::size_t>(got));
     close(fd);
-    if (bytes.find(ours) == std::string::npos) return "not_ours";
+    // the game's own exe in the LinkInfo, or the launcher with this game's --play (its arguments are UTF-16)
+    if (bytes.find(ours) == std::string::npos &&
+        !(bytes.find(std::string(kLauncherImage) + '\0') != std::string::npos && bytes.find(play) != std::string::npos))
+      return "not_ours";
     if (unlink(path.c_str())) {
       if (!removal.error) removal.error = errno;
       return "failed";

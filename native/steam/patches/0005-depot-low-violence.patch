@@ -1,0 +1,23 @@
+diff -ru a/src/steam/backend/app_info.cpp b/src/steam/backend/app_info.cpp
+--- a/src/steam/backend/app_info.cpp	2026-11-25 00:12:34.506167882 -0300
++++ b/src/steam/backend/app_info.cpp	2026-11-25 00:12:34.574167851 -0300
+@@ -132,6 +132,7 @@
+   depot.dlc_app_id = ChildU32(&value, "dlcappid");
+   depot.is_dlc = depot.dlc_app_id.has_value();
+   depot.optional_dlc = ChildU32(config, "optionaldlc").value_or(0) != 0;
++  depot.low_violence = ChildU32(config, "lowviolence").value_or(0) != 0;
+   // Every branch's manifest. Old appinfo format: the gid directly as a string; new: a dict {gid, size, download}.
+   if (const VdfNode* manifests = value.Find("manifests"); manifests != nullptr && manifests->is_dict) {
+     for (const auto& [branch, entry] : manifests->children) {
+diff -ru a/src/steam/backend/app_info.h b/src/steam/backend/app_info.h
+--- a/src/steam/backend/app_info.h	2026-11-25 00:12:34.454167906 -0300
++++ b/src/steam/backend/app_info.h	2026-11-25 00:12:34.574167851 -0300
+@@ -32,6 +32,8 @@
+   std::optional<std::uint32_t> dlc_app_id;
+   // config/optionaldlc: the DLC this depot belongs to doesn't download by itself (tools, language packs).
+   bool optional_dlc = false;
++  // OrbisDesk: config/lowviolence, content for low-violence regions only (Steam installs it there alone)
++  bool low_violence = false;
+   // The public branch's manifest; in SelectDepots' result, the selected branch's.
+   std::optional<std::uint64_t> manifest_gid;
+   std::uint64_t size = 0;

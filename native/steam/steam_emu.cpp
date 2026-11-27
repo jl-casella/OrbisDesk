@@ -220,12 +220,19 @@ bool RestoreEmulator(const std::string& root, EmuNoteFn note, std::string* failu
     *failure = "THE EMULATOR RECORD WAS NOT FOUND.";
     return false;
   }
-  int restored = 0, removed = 0, problems = 0;
+  int restored = 0, already = 0, removed = 0, problems = 0;
+  // the first problem's step and errno, for the log and the page (hardware 2026-11-26: GTA IV said only "not
+  // everything could be restored", and Verify then refused for the same reason)
+  const char* first_step = "none";
+  int first_errno = 0;
+  auto problem = [&](const char* step) {
+    if (!problems++) first_step = step, first_errno = errno;
+  };
   // files first, then folders (deepest last made first), then the DLLs
   for (auto it = marker.entries.rbegin(); it != marker.entries.rend(); ++it) {
     const std::string path = root + "/" + it->second;
     if (it->first == "file") {
-      if (unlink(path.c_str()) && errno != ENOENT) ++problems;
+      if (unlink(path.c_str()) && errno != ENOENT) problem("file");
       else ++removed;
     } else if (it->first == "dir") {
       rmdir(path.c_str());  // only when empty: the game may have put its own files there
@@ -235,20 +242,44 @@ bool RestoreEmulator(const std::string& root, EmuNoteFn note, std::string* failu
     if (kind != "dll") continue;
     const std::string path = root + "/" + relative, original = path + ".orig";
     if (!PathExists(original)) {
-      ++problems;
+      // a restore that stopped halfway put this one back already: no .orig, and the DLL there is not gbe_fork's
+      std::string current, emulator;
+      const bool x64 = Base(relative) == "steam_api64.dll";
+      if (ReadFile(path, &current) &&
+          ReadFile(std::string(kEmuAssets) + (x64 ? "x64-steam_api64.dll" : "x86-steam_api.dll"), &emulator) &&
+          emulator.size() >= 4096 && current != emulator) {
+        ++already;
+        continue;
+      }
+      errno = ENOENT;
+      problem("orig_missing");
       continue;
     }
-    unlink(path.c_str());
-    if (rename(original.c_str(), path.c_str())) ++problems;
+    if (unlink(path.c_str()) && errno != ENOENT) {
+      problem("dll_unlink");
+      continue;
+    }
+    if (rename(original.c_str(), path.c_str())) problem("dll_rename");
     else ++restored;
   }
-  note("PWSTEAM emu restore dlls=%d files=%d problems=%d", restored, removed, problems);
+  note("PWSTEAM emu restore dlls=%d already=%d files=%d problems=%d first=%s errno=%d", restored, already, removed,
+       problems, first_step, first_errno);
   if (problems) {
-    *failure = "NOT EVERYTHING COULD BE RESTORED. VERIFYING THE GAME FROM THE LIST REPAIRS IT.";
+    if (first_errno == EROFS)
+      *failure = "THE DRIVE IS READ-ONLY NOW: NO FILE OF THE GAME CAN BE CHANGED. CONNECT IT AGAIN OR CHECK IT ON A PC.";
+    else if (first_errno == EBUSY || first_errno == ETXTBSY)
+      *failure = "A FILE OF THE GAME IS IN USE. CLOSE THE GAME AND ITS LAUNCHER, THEN TRY AGAIN.";
+    else
+      *failure = "NOT EVERYTHING COULD BE RESTORED (" + std::string(first_step) + ", ERROR " + std::to_string(first_errno) +
+                 "). VERIFY REPLACES THE GAME'S STEAM FILES WITH STEAM'S.";
     return false;
   }
   unlink((root + "/" + kMarker).c_str());
   return true;
+}
+
+bool ForgetEmulator(const std::string& root) {
+  return !unlink((root + "/" + kMarker).c_str()) || errno == ENOENT;
 }
 
 bool EnableEmulator(const std::string& root, std::uint32_t app, const std::vector<std::string>& steam_api_paths,

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // S4's installer (steam_install.h).
+#include "../../platform/ps4/pw_trace.h"  // diagnostic lines only with traces
 #include "steam_install.h"
 
 #include <errno.h>
@@ -428,6 +429,7 @@ long RawSyscall(long number, long a1, long a2, long a3, int* error) {
 struct Statfs {
   bool plausible = false;
   std::uint64_t bytes = 0;
+  std::uint64_t total_bytes = 0;
   std::string on, text;
 };
 
@@ -453,7 +455,10 @@ Statfs ReadStatfs(const std::uint8_t* fs) {
   out.on = on;
   out.plausible = version == 0x20030518 && bsize >= 512 && bsize <= (1u << 20) && !(bsize & (bsize - 1)) && blocks > 0 &&
                   bfree <= blocks;
-  if (out.plausible) out.bytes = bavail > 0 ? static_cast<std::uint64_t>(bavail) * bsize : 0;
+  if (out.plausible && blocks <= UINT64_MAX/bsize) {
+    out.total_bytes=blocks*bsize;
+    out.bytes=bavail>0&&static_cast<std::uint64_t>(bavail)<=blocks?static_cast<std::uint64_t>(bavail)*bsize:0;
+  } else out.plausible=false;
   char text[256];
   snprintf(text, sizeof(text), "version=%08x type=%u bsize=%llu blocks=%llu bfree=%llu bavail=%lld fstype=%s on=%s", version,
            type, static_cast<unsigned long long>(bsize), static_cast<unsigned long long>(blocks),
@@ -485,6 +490,7 @@ FreeSpace MeasureFreeSpace(const std::string& path) {
   if (rc || !fs.f_frsize || !fs.f_blocks) return space;
   space.ok = true;
   space.bytes = static_cast<std::uint64_t>(fs.f_bavail) * fs.f_frsize;
+  space.total_bytes=static_cast<std::uint64_t>(fs.f_blocks)*fs.f_frsize;
 #else
   // In order, each tried only when the one before gave nothing (S4 01.10: this title's sandbox
   // answers fstatfs with EPERM, on "/" and on /data/orbisdesk/steam-games alike):
@@ -505,6 +511,7 @@ FreeSpace MeasureFreeSpace(const std::string& path) {
     if (!read.plausible) return false;
     space.ok = true;
     space.bytes = read.bytes;
+    space.total_bytes = read.total_bytes;
     space.detail += " used=" + std::string(how);
     return true;
   };
@@ -521,7 +528,10 @@ FreeSpace MeasureFreeSpace(const std::string& path) {
       if (attempt("fstatfs", at, rc, error)) return space;
     }
   }
-  for (const std::string& where : {at, std::string("/data/orbisdesk"), std::string("/data")}) {
+  std::vector<std::string> candidates{at};
+  const bool external=path.compare(0,8,"/mnt/usb")==0;
+  if(!external){candidates.push_back("/data/orbisdesk");candidates.push_back("/data");}
+  for (const std::string& where : candidates) {
     memset(fs, 0, sizeof(fs));
     int error = 0;
     const long rc = RawSyscall(396, reinterpret_cast<long>(where.c_str()), reinterpret_cast<long>(fs), 0, &error);
@@ -542,7 +552,8 @@ FreeSpace MeasureFreeSpace(const std::string& path) {
       space.detail += " [" + read.on + (read.plausible ? "" : " implausible") + "]";
       const bool prefix = !read.on.empty() && at.compare(0, read.on.size(), read.on) == 0 &&
                           (at.size() == read.on.size() || at[read.on.size()] == '/' || read.on == "/");
-      if (read.plausible && prefix && read.on.size() > best) {
+      const bool correct_volume=!external || (read.on.compare(0,8,"/mnt/usb")==0 && read.on.size()>=9);
+      if (read.plausible && prefix && correct_volume && read.on.size() > best) {
         best = read.on.size();
         chosen = read;
       }
@@ -550,6 +561,7 @@ FreeSpace MeasureFreeSpace(const std::string& path) {
     if (best) {
       space.ok = true;
       space.bytes = chosen.bytes;
+      space.total_bytes = chosen.total_bytes;
       space.detail += " chosen " + chosen.text + " used=getfsstat";
     }
   }
@@ -569,15 +581,18 @@ bool Installed(const std::string& root) {
 }
 
 bool ReadInstallRecord(const std::string& root, InstalledRecord* record) {
-  const int fd = open((root + "/" + kRecord).c_str(), O_RDONLY);
+  const int fd = open((root + "/" + kRecord).c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
   if (fd < 0) return false;
   std::string text;
   char buffer[16384];
   ssize_t got;
   while ((got = read(fd, buffer, sizeof(buffer))) > 0 && text.size() < (1u << 20)) text.append(buffer, static_cast<std::size_t>(got));
   close(fd);
+  if(got < 0 || text.size() >= (1u << 20)) return false;
   const auto parsed = steam::json::Parse(text);
   if (!parsed || !parsed->is_object()) return false;
+  *record=InstalledRecord{};
+  if(const auto* app=parsed->Find("app");app&&app->AsUint64()&&*app->AsUint64()<=UINT32_MAX)record->app=static_cast<std::uint32_t>(*app->AsUint64());
   auto string = [&](const char* key) -> std::string {
     const auto* value = parsed->Find(key);
     return value && value->is_string() ? value->text() : std::string();
@@ -595,15 +610,83 @@ bool ReadInstallRecord(const std::string& root, InstalledRecord* record) {
   record->steam_api = boolean("steam_api");
   if (const auto* bytes = parsed->Find("bytes"); bytes && bytes->AsUint64()) record->bytes = *bytes->AsUint64();
   record->steam_api_paths.clear();
+  if(const auto* entries=parsed->Find("launches");entries&&entries->is_array())for(const auto& entry:entries->array()) {
+    if(!entry.is_object())continue;
+    auto text_value=[&](const char* key){const auto* v=entry.Find(key);return v&&v->is_string()?v->text():std::string();};
+    auto flag=[&](const char* key){const auto* v=entry.Find(key);return v&&v->is_bool()&&v->boolean();};
+    Launch launch;launch.executable=text_value("executable");launch.arguments=text_value("arguments");launch.working_dir=text_value("working_dir");launch.description=text_value("description");launch.type=text_value("type");
+    if(launch.executable.empty()||steam::RelativeGamePath(launch.executable)!=launch.executable)continue;
+    if(!launch.working_dir.empty()&&steam::RelativeGamePath(launch.working_dir)!=launch.working_dir)continue;
+    LaunchCheck check;check.present=flag("present");check.pe=flag("pe");check.steamstub=flag("steamstub");check.arch=text_value("arch");
+    record->launches.push_back(launch);record->checks.push_back(check);
+  }
   if (const auto* paths = parsed->Find("steam_api_paths"); paths && paths->is_array())
     for (const auto& path : paths->array())
       if (path.is_string() && steam::RelativeGamePath(path.text()) == path.text()) record->steam_api_paths.push_back(path.text());
   return true;
 }
 
+namespace {
+// A depot whose content another app lists: sharedinstall "1" (a redistributable), or a depotfromapp depot the
+// game lists with no public manifest of its own (Counter-Strike's Half-Life engine and content, sharedinstall
+// "2", which Steam installs into the game's own folder). Low-violence content is left out, as Steam does
+// outside low-violence regions.
+bool Borrowed(const steam::DepotInfo& depot, std::uint32_t app) {
+  if (!depot.depot_from_app || *depot.depot_from_app == app || depot.low_violence) return false;
+  return depot.shared_install || !depot.manifest_gid || *depot.manifest_gid == 0;
+}
+}  // namespace
+
+std::vector<std::uint32_t> SharedDepotSources(const steam::AppInfo& app) {
+  std::vector<std::uint32_t> sources;
+  for (const auto& depot : app.depots)
+    if (Borrowed(depot, app.app_id) &&
+        std::find(sources.begin(), sources.end(), *depot.depot_from_app) == sources.end())
+      sources.push_back(*depot.depot_from_app);
+  return sources;
+}
+
+std::set<std::uint32_t> AdoptSharedDepots(steam::AppInfo* app, const std::map<std::uint32_t, steam::AppInfo>& sources,
+                                          NoteFn note) {
+  std::set<std::uint32_t> adopted;
+  std::size_t shared = 0, unlisted = 0;
+  for (auto& depot : app->depots) {
+    if (!Borrowed(depot, app->app_id)) continue;
+    ++shared;
+    const auto source = sources.find(*depot.depot_from_app);
+    const steam::DepotInfo* listed = nullptr;
+    if (source != sources.end())
+      for (const auto& candidate : source->second.depots)
+        if (candidate.id == depot.id) listed = &candidate;
+    // the source app must list the depot with a public manifest: SelectDepots installs the public branch only,
+    // and a depot adopted with other branches alone was rejected there as "branch" (Counter-Strike on 04.68)
+    if (!listed || !listed->manifest_gid || *listed->manifest_gid == 0) {
+      if (listed && pw_trace_on()) note("PWSTEAM plan shared depot=%u public_manifest=0 branches=%zu", depot.id, listed->branches.size());
+      ++unlisted;
+      continue;
+    }
+    depot.manifest_gid = listed->manifest_gid;
+    depot.size = listed->size;
+    depot.download_size = listed->download_size;
+    depot.branches = listed->branches;
+    if (depot.os_list.empty()) depot.os_list = listed->os_list;
+    if (depot.os_arch.empty()) depot.os_arch = listed->os_arch;
+    // a shared redistributable is installed whatever the content language, as Steam does: a language the source
+    // gives it would drop it from a game installed in another language ("language"). A depotfromapp depot keeps
+    // the language the game itself lists for it (Counter-Strike lists Half-Life's French, German... content).
+    if (depot.shared_install) depot.language.clear();
+    depot.shared_install = false;
+    adopted.insert(depot.id);
+  }
+  if (shared && pw_trace_on())
+    note("PWSTEAM plan shared_depots=%zu adopted=%zu unlisted=%zu sources=%zu", shared, adopted.size(), unlisted,
+         sources.size());
+  return adopted;
+}
+
 bool PlanInstall(const steam::AppInfo& app, const std::vector<steam::AppInfo>& dlc_apps,
                  const steam::AcquisitionResult& licenses, const std::string& language, NoteFn note,
-                 InstallPlan* plan) {
+                 InstallPlan* plan, const std::set<std::uint32_t>& adopted) {
   plan->app = app.app_id;
   plan->name = app.name;
   plan->install_dir = app.install_dir;
@@ -624,6 +707,18 @@ bool PlanInstall(const steam::AppInfo& app, const std::vector<steam::AppInfo>& d
        dlc_apps.size(), selected.rejected.size(), reason_text.c_str(), selected.effective_language.c_str(),
        selection.language.c_str(), selected.languages.size());
   plan->languages = selected.languages;
+  // each adopted shared depot: kept, or the gate that dropped it (depot ids only)
+  for (const auto id : adopted) {
+    const char* result = "kept";
+    for (const auto& rejected : selected.rejected)
+      if (rejected.id == id) result = rejected.reason.c_str();
+    const steam::DepotInfo* depot = nullptr;
+    for (const auto& candidate : app.depots)
+      if (candidate.id == id) depot = &candidate;
+    if (pw_trace_on()) note("PWSTEAM plan adopted depot=%u result=%s public_manifest=%d os=%s language=%s", id, result,
+         depot && depot->manifest_gid && *depot->manifest_gid != 0, depot ? depot->os_list.c_str() : "-",
+         depot && !depot->language.empty() ? depot->language.c_str() : "-");
+  }
   const auto missing = steam::MissingBaseDepots(app, owned_depots, selected.depots);
   if (!any || !missing.empty()) {
     note("PWSTEAM plan none missing_base=%zu", missing.size());
@@ -633,6 +728,9 @@ bool PlanInstall(const steam::AppInfo& app, const std::vector<steam::AppInfo>& d
     return false;
   }
   plan->depots = std::move(selected.depots);
+  // an adopted shared depot's key and manifest request code come from the app whose appinfo lists its manifest
+  for (auto& depot : plan->depots)
+    if (adopted.count(depot.id) && depot.depot_from_app) depot.source_app = *depot.depot_from_app;
   plan->language = selected.effective_language;
   steam::DepotBytes(plan->depots, &plan->install_bytes, &plan->download_bytes);
   std::vector<steam::AppLaunch> launches;
@@ -670,7 +768,8 @@ bool PlanInstall(const steam::AppInfo& app, const std::vector<steam::AppInfo>& d
 
 InstallResult RunInstall(const std::string& ca, steam::CmClient& cm, const playden::StoredSession& session,
                          const InstallPlan& plan, const std::string& root, const std::atomic<bool>& cancel,
-                         bool unmeasured_ok, InstallProgress* progress, NoteFn note, const Precheck* precheck) {
+                         bool unmeasured_ok, InstallProgress* progress, NoteFn note, const Precheck* precheck,
+                         const std::function<bool()>& storage_available) {
   InstallResult result;
   const auto started = NowMs();
   auto fail = [&](const char* step, std::string text) {
@@ -722,6 +821,7 @@ InstallResult RunInstall(const std::string& ca, steam::CmClient& cm, const playd
 
   // the folder, its space and every file at its final size (what is there already counts). A record
   // from an earlier install goes first: until this one passes, the folder is not a finished install.
+  if(storage_available&&!storage_available())return fail("storage","STORAGE DRIVE DISCONNECTED OR CHANGED.");
   if (!MakeParents(root + "/")) return fail("mkdir", "COULD NOT CREATE THE GAME FOLDER.");
   unlink((root + "/" + kRecord).c_str());
   std::uint64_t present = 0;
@@ -743,9 +843,12 @@ InstallResult RunInstall(const std::string& ca, steam::CmClient& cm, const playd
   if (space.ok && space.bytes < need + kSpaceMargin)
     return fail("space", "NOT ENOUGH FREE SPACE: NEEDS " + std::to_string((need + kSpaceMargin) >> 20) +
                              " MB AND THERE ARE " + std::to_string(space.bytes >> 20) + " MB.");
-  for (const auto& folder : folders)
+  for (const auto& folder : folders) {
+    if(storage_available&&!storage_available())return fail("storage","STORAGE DRIVE DISCONNECTED OR CHANGED.");
     if (!MakeParents(root + "/" + folder + "/")) return fail("mkdir", "COULD NOT CREATE A GAME FOLDER.");
+  }
   for (const auto& [key, placed] : files) {
+    if(storage_available&&!storage_available())return fail("storage","STORAGE DRIVE DISCONNECTED OR CHANGED.");
     const std::string path = root + "/" + placed.file->path;
     int fd = -1;
     if (!MakeParents(path) || (fd = open(path.c_str(), O_RDWR | O_CREAT, 0644)) < 0)
@@ -758,6 +861,7 @@ InstallResult RunInstall(const std::string& ca, steam::CmClient& cm, const playd
   // matches) and fetch them no more
   std::size_t prefetched = 0;
   for (const auto& chunk : prepared->chunks) {
+    if(storage_available&&!storage_available())return fail("storage","STORAGE DRIVE DISCONNECTED OR CHANGED.");
     const auto found = files.find(Lower(chunk.path));
     if (found == files.end() || chunk.offset + chunk.plain.size() > found->second.file->size) continue;
     const int fd = open((root + "/" + found->second.file->path).c_str(), O_RDWR);
@@ -795,6 +899,7 @@ InstallResult RunInstall(const std::string& ca, steam::CmClient& cm, const playd
   std::atomic<std::uint64_t> fetched{0}, reused{0};
   std::atomic<std::uint32_t> chunk_failures{0};
   std::atomic<bool> full{false};  // a write met ENOSPC: every worker stops
+  std::atomic<bool> storage_lost{false};
   // A file all of whose chunks were found in place, matching their SHA-1, needs no second read: the
   // chunks cover it end to end (ValidateDepotManifest), so its bytes are already checked. A file with a
   // chunk written in this run is hashed whole against the manifest.
@@ -833,6 +938,7 @@ InstallResult RunInstall(const std::string& ca, steam::CmClient& cm, const playd
     std::vector<std::uint8_t> present_bytes, encrypted, plain;
     for (;;) {
       if (cancel.load() || full.load()) return;
+      if(storage_available&&!storage_available()){storage_lost=true;full=true;return;}
       const std::size_t at = next++;
       if (at >= tasks.size()) return;
       const auto& task = tasks[at];
@@ -896,6 +1002,7 @@ InstallResult RunInstall(const std::string& ca, steam::CmClient& cm, const playd
        result.files, result.verified, result.failed, static_cast<unsigned long long>(result.fetched),
        static_cast<unsigned long long>(result.reused), files_rehashed.load(), static_cast<unsigned long long>(result.ms),
        static_cast<unsigned long long>(result.ms ? result.fetched * 1000 / 1024 / result.ms : 0), cancel.load());
+  if(storage_lost.load()||(storage_available&&!storage_available()))return fail("storage","STORAGE DRIVE DISCONNECTED OR CHANGED. DOWNLOAD CAN BE RESUMED.");
   if (cancel.load()) return fail("download", "");
   if (full.load())
     return fail("drive_full", "THE CONSOLE RAN OUT OF SPACE. WHAT WAS DOWNLOADED STAYS: FREE SOME SPACE AND INSTALL AGAIN.");
@@ -952,6 +1059,7 @@ InstallResult RunInstall(const std::string& ca, steam::CmClient& cm, const playd
     record += std::string(i ? ", " : "") + JsonText(result.steam_api_paths[i]);
   record += "],\n \"installed_at\": " + std::to_string(time(nullptr)) + "\n}\n";
   const std::string record_path = root + "/" + kRecord;
+  if(storage_available&&!storage_available())return fail("storage","STORAGE DRIVE DISCONNECTED OR CHANGED.");
   const int fd = open((record_path + ".tmp").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   const bool written = fd >= 0 && write(fd, record.data(), record.size()) == static_cast<ssize_t>(record.size()) &&
                        fsync(fd) == 0;

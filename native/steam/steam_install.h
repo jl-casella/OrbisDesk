@@ -16,7 +16,9 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -63,9 +65,21 @@ struct InstallPlan {
 // is English). Playden falls back to English, then to the first language listed, when the game doesn't
 // carry the one asked for: plan->language says which it got. dlc_apps: the appinfo of the app's DLC
 // Steam described. False with plan->failure when nothing can be installed.
+// `adopted`: the shared depots AdoptSharedDepots took into `app`; their keys and manifests are asked for
+// under the app that lists them.
 bool PlanInstall(const playden::steam::AppInfo& app, const std::vector<playden::steam::AppInfo>& dlc_apps,
                  const playden::steam::AcquisitionResult& licenses, const std::string& language, NoteFn note,
-                 InstallPlan* plan);
+                 InstallPlan* plan, const std::set<std::uint32_t>& adopted = {});
+
+// Counter-Strike (app 10, 2026-11-24): GoldSrc games list Half-Life's engine (hl.exe, hw.dll...) as depots
+// with sharedinstall and depotfromapp 70, without a manifest of their own. Steam on Windows installs every
+// GoldSrc game into one Half-Life folder, where the engine is once; here each game has a folder of its own, so
+// those depots install into the game's folder like its own, with the manifests the source app's appinfo lists.
+// SharedDepotSources: the apps whose appinfo the game's shared depots need.
+std::vector<std::uint32_t> SharedDepotSources(const playden::steam::AppInfo& app);
+// Takes into `app` each shared depot whose source app lists it with a manifest; the ids it took.
+std::set<std::uint32_t> AdoptSharedDepots(playden::steam::AppInfo* app,
+                                          const std::map<std::uint32_t, playden::steam::AppInfo>& sources, NoteFn note);
 
 struct InstallProgress {
   std::atomic<std::uint64_t> total_bytes{0};  // the merged files' bytes
@@ -97,6 +111,7 @@ struct InstallResult {
 struct FreeSpace {
   bool ok = false;
   std::uint64_t bytes = 0;
+  std::uint64_t total_bytes = 0;
   std::string detail;  // what was measured and how it went, for the log
 };
 FreeSpace MeasureFreeSpace(const std::string& path);
@@ -131,19 +146,23 @@ Precheck PrecheckExecutables(const std::string& ca, playden::steam::CmClient& cm
 // manifests and chunks are used instead of fetching them again (may be null).
 InstallResult RunInstall(const std::string& ca, playden::steam::CmClient& cm, const playden::StoredSession& session,
                          const InstallPlan& plan, const std::string& root, const std::atomic<bool>& cancel,
-                         bool unmeasured_ok, InstallProgress* progress, NoteFn note, const Precheck* precheck = nullptr);
+                         bool unmeasured_ok, InstallProgress* progress, NoteFn note, const Precheck* precheck = nullptr,
+                         const std::function<bool()>& storage_available = {});
 
 // Whether `root` holds a finished install (its record).
 bool Installed(const std::string& root);
 
 // What a finished install's record says, for the game's page.
 struct InstalledRecord {
+  std::uint32_t app = 0;
   int format = 0;  // 2 from 01.11; 0 for 01.08..01.10's records (no launches or steam_api paths)
   std::string language;
   std::string executable, arch;
   bool steamstub = false;
   bool steam_api = false;
   std::vector<std::string> steam_api_paths;
+  std::vector<Launch> launches;
+  std::vector<LaunchCheck> checks;
   std::uint64_t bytes = 0;
 };
 bool ReadInstallRecord(const std::string& root, InstalledRecord* record);

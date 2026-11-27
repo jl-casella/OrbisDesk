@@ -1,0 +1,41 @@
+diff -ru a/src/steam/backend/native_network.cpp b/src/steam/backend/native_network.cpp
+--- a/src/steam/backend/native_network.cpp	2026-11-25 00:17:48.792966011 -0300
++++ b/src/steam/backend/native_network.cpp	2026-11-25 00:17:48.828965996 -0300
+@@ -14,6 +14,7 @@
+ #include <cerrno>
+ #include <netinet/in.h>
+ #include <sys/socket.h>
++#include <sys/time.h>
+ #include <unistd.h>
+ 
+ extern "C" {
+@@ -67,13 +68,13 @@
+   }
+   // A failed or ignored nonblocking option must not leave either receive blocked. The watchdog
+   // operates on the actual connected client, independent of server accept scheduling.
+-  std::atomic<bool> release_watchdog{false};
+-  std::thread watchdog([client, &release_watchdog] {
+-    const auto deadline = Clock::now() + std::chrono::milliseconds(50);
+-    while (!release_watchdog.load(std::memory_order_acquire) && Clock::now() < deadline)
+-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+-    if (!release_watchdog.load(std::memory_order_acquire)) shutdown(client, SHUT_RDWR);
+-  });
++  // OrbisDesk: a 50 ms receive timeout instead of a watchdog thread. Inside OrbisDesk's title the
++  // client started while Wine was still booting, and a std::thread that could not be created there
++  // aborted the title (no exceptions: libc++ calls abort). A receive that times out still takes
++  // 50 ms, so the checks below fail as they did with the watchdog.
++  struct timeval receive_timeout{};
++  receive_timeout.tv_usec = 50000;
++  setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
+   int enabled = 1;
+   const int option_result = connected
+                                 ? sceNetSetsockopt(client, kSceNetSolSocket, kSceNetSoNonblock,
+@@ -92,8 +93,6 @@
+   const auto posix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+       Clock::now() - posix_start).count();
+ 
+-  release_watchdog.store(true, std::memory_order_release);
+-  watchdog.join();
+   close(client);
+   close(listener);
+   return option_result == 0 && native_result < 0 && native_error == EWOULDBLOCK &&
