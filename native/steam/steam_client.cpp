@@ -62,6 +62,7 @@
 #include "steam_storage.h"
 #include "steam_nonsteam.h"
 #include "steam_bp.h"
+#include "../../platform/ps4/pw_steamstub_profile.h"
 #include "steam_covers.h"
 #include "steam_draw.h"
 #include "steam_ui.h"

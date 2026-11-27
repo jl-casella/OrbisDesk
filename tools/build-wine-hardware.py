@@ -742,6 +742,8 @@ for name in games['system32']+games['notices']:
 # W052: ntdll and kernelbase that run 64-bit GUI programs as guests of this process
 # (tools/build-guest-hw.py), in the library directory and wherever the prefix has a copy.
 guest64=json.loads((ROOT/'out/guest-hw/manifest.json').read_text())
+for source,digest in guest64['startup_sources'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('PE64 startup input differs from build: '+source)
 for source,digest in guest64['quiescence_sources'].items():
     if sha(ROOT/source)!=digest:raise SystemExit('guest quiescence input differs from build: '+source)
 for source,digest in guest64['compiler_sources'].items():
@@ -758,6 +760,8 @@ for name,e in guest64['modules'].items():
 # 32-bit world (tools/build-guest-hw.py), in wine/lib/wine/i386-guest only: ntdll Unix looks there first
 # in a 64-bit process (tools/build-wow64-world-ps4.py); a relaunched 32-bit program keeps the stock ones.
 guest32=json.loads((ROOT/'out/guest-hw-i386/manifest.json').read_text())
+for source,digest in guest32['startup_sources'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('i386 startup input differs from build: '+source)
 if guest32['builder_sha256']!=sha(ROOT/'tools/build-guest-hw.py'):raise SystemExit('i386 guest DLLs differ from their builder')
 for source,digest in guest32['compiler_sources'].items():
     if sha(ROOT/source)!=digest:raise SystemExit('i386 guest compiler policy input differs from build: '+source)
@@ -1245,6 +1249,16 @@ for item in sorted((windows/'system32').iterdir()):
     if item.suffix.lower()=='.nls' and not (windows/'syswow64'/item.name).exists():shutil.copyfile(item,windows/'syswow64'/item.name)
 if (windows/'system32/winmetadata').is_dir():
     shutil.copytree(windows/'system32/winmetadata',windows/'syswow64/winmetadata',dirs_exist_ok=True)
+# A real PE32 child uses stock ntdll rather than i386-guest. Its only added
+# behavior is the same explicit per-EXE startup helper, with no guest model.
+startup32=json.loads((ROOT/'out/steamstub-process32/manifest.json').read_text())
+if startup32['builder_sha256']!=sha(ROOT/'tools/build-guest-hw.py'):
+    raise SystemExit('process32 startup DLL differs from its builder')
+for source,digest in {**startup32['input_sha256'],**startup32['startup_sources']}.items():
+    if sha(ROOT/source)!=digest:raise SystemExit('process32 startup input differs from build: '+source)
+startup_ntdll=startup32['modules']['ntdll.dll']
+for target in (data/'wine/lib/wine/i386-windows/ntdll.dll',windows/'syswow64/ntdll.dll'):
+    copy_verified(ROOT/'out/steamstub-process32'/startup_ntdll['path'],target,startup_ntdll['sha256'])
 # W303: Control Panel applets a complete host tree adds that do not load here (CPlApplet not found: no Bluetooth or
 # infrared stack); the user's choice keeps appwiz, desk and inetcpl, which open
 REMOVED_APPLETS=('bthprops.cpl','irprops.cpl')
@@ -1730,6 +1744,9 @@ manifest['request_writer']={
     'writer_object_sha256':sha(request_writer)}
 manifest['source_hashes'][str(request_writer_source.relative_to(ROOT))]=sha(request_writer_source)
 for source in ('platform/ps4/pw_brand.h','tools/project_brand.py','tools/orbis_package.py'):
+    manifest['source_hashes'][source]=sha(ROOT/source)
+manifest['steamstub_process32']=startup32
+for source in ('platform/ps4/pw_guest_steamstub.inc.c','platform/ps4/pw_steamstub_profile.h','tools/wine_steamstub_startup.py'):
     manifest['source_hashes'][source]=sha(ROOT/source)
 (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
 print(json.dumps({'package':manifest['package'],'runtime_files':len(manifest['runtime_files']),

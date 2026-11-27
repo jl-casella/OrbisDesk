@@ -487,6 +487,7 @@ constexpr char kColdClientWindows[] = "C:\\orbis\\steam\\coldclient";
 
 struct ColdClientState {
   bool on = false;
+  bool compatibility = false;
   long long last_seconds = -1;
   unsigned last_code = 0;
 };
@@ -497,6 +498,7 @@ ColdClientState ReadColdClient(const std::string& root) {
   int error = 0;
   if (!ReadAll(root + "/" + kColdClientFile, &text, &error)) return state;
   state.on = text.rfind("on", 0) == 0;
+  state.compatibility = state.on && text.find("\ncompatibility=steamstub\n") != std::string::npos;
   const auto seconds = text.find("last_seconds=");
   if (seconds != std::string::npos) state.last_seconds = strtoll(text.c_str() + seconds + 13, nullptr, 10);
   const auto code = text.find("last_code=");
@@ -507,6 +509,7 @@ ColdClientState ReadColdClient(const std::string& root) {
 bool WriteColdClient(const std::string& root, const ColdClientState& state) {
   if (!state.on && state.last_seconds < 0) return !unlink((root + "/" + kColdClientFile).c_str()) || errno == ENOENT;
   std::string text = state.on ? "on\n" : "off\n";
+  if (state.on && state.compatibility) text += "compatibility=steamstub\n";
   if (state.last_seconds >= 0)
     text += "last_seconds=" + std::to_string(state.last_seconds) + "\nlast_code=" + std::to_string(state.last_code) + "\n";
   return WriteText(root + "/" + kColdClientFile, text, 0644);
@@ -540,10 +543,23 @@ std::string SecondLauncher(const std::string& root) {
   return "";
 }
 
-bool ColdClientFilesReady() {
+bool ColdClientFilesReady(bool compatibility = false) {
   for (const char* name : {"steamclient.dll", "steamclient64.dll", "steamclient_loader_x86.exe", "steamclient_loader_x64.exe"})
     if (!orbisdesk::PathExists(std::string(kColdClientDir) + "/" + name)) return false;
+  if (compatibility)
+    for (const char* name : {"orbisdesk_steamstub_x86.dll", "orbisdesk_steamstub_x64.dll"})
+      if (!orbisdesk::PathExists(std::string(kColdClientDir) + "/" + name)) return false;
   return true;
+}
+
+// The Wine adapter consumes this exact marker next to the selected executable.
+// No arbitrary DLL paths or profile inheritance to other executables.
+bool ColdClientCompatibilityProfile(const orbisdesk::LaunchEntry& entry, bool enabled) {
+  const auto image = orbisdesk::WindowsToUnix(entry.image);
+  if (image.empty()) return false;
+  const auto path = image + PW_STEAMSTUB_SUFFIX;
+  if (enabled) return WriteText(path, PW_STEAMSTUB_MAGIC, 0644);
+  return !unlink(path.c_str()) || errno == ENOENT;
 }
 
 // The loader's ini for a start of `game_entry` (Play writes it for each start; a shortcut's launch plan keeps one).
@@ -569,8 +585,10 @@ bool SetUpColdClient(const Game& game, const orbisdesk::InstalledRecord& record,
   const std::string arch = game_entry.index < record.checks.size() ? record.checks[game_entry.index].arch : record.arch;
   const bool x64 = arch == "x64";
   const std::string ini = ColdClientIni(game.app, game_entry);
-  const bool files = ColdClientFilesReady();
-  const bool wrote = files && WriteText(std::string(kColdClientDir) + "/ColdClientLoader.ini", ini, 0644);
+  const bool compatibility = ReadColdClient(GameRoot(game.app)).compatibility;
+  const bool files = ColdClientFilesReady(compatibility);
+  const bool wrote = files && ColdClientCompatibilityProfile(game_entry, compatibility) &&
+                     WriteText(std::string(kColdClientDir) + "/ColdClientLoader.ini", ini, 0644);
   note("PWSTEAM coldclient setup app=%u arch=%s files=%d ini=%d", game.app, x64 ? "x64" : "x86", files, wrote);
   if (!wrote) return false;
   loader->ok = true;
@@ -612,12 +630,16 @@ LaunchPlan PlanLaunch(std::uint32_t app, const orbisdesk::InstalledRecord& recor
     plan.message = "There is no Windows executable to start (" + entry.skipped + ").";
     return plan;
   }
+  if (!ColdClientCompatibilityProfile(entry, full_emulation && cold.compatibility)) {
+    plan.message = "The executable startup compatibility profile could not be saved.";
+    return plan;
+  }
   if (!full_emulation) {
     plan.ok = true;
     plan.start = entry;
     return plan;
   }
-  if (!ColdClientFilesReady()) {
+  if (!ColdClientFilesReady(cold.compatibility)) {
     plan.message = "Full emulation could not be set up: its files are missing from C:\\orbis\\steam. Update OrbisDesk.";
     return plan;
   }
@@ -733,14 +755,14 @@ void CreateAllShortcuts(Shell& shell) {
 // own state, the emulator's record and the ColdClient choice in its folder, so a game keeps the mode it had; the
 // recommended one is only marked. The user's choice is also written to kLaunchModeFile in the game's folder, which
 // moves with it. Nothing here gets past an online ownership check (Rockstar's launcher checks GTA IV's with Valve).
-enum LaunchMode { kModeDirect = 0, kModeApi = 1, kModeCold = 2, kModeCount = 3 };
+enum LaunchMode { kModeDirect = 0, kModeApi = 1, kModeCold = 2, kModeCompat = 3, kModeCount = 4 };
 constexpr char kLaunchModeFile[] = ".orbisdesk-launch-mode.txt";
-const char* const kModeNames[] = {"direct", "api", "coldclient"};
-const char* const kModeLabels[] = {"Direct", "Steam API emulator", "Full emulation (ColdClient)"};
+const char* const kModeNames[] = {"direct", "api", "coldclient", "compat"};
+const char* const kModeLabels[] = {"Direct", "Steam API emulator", "Full emulation (ColdClient)", "ColdClient + SteamStub compatibility"};
 
 int CurrentLaunchMode(const std::string& root) {
   const auto cold = ReadColdClient(root);
-  if (cold.on) return kModeCold;
+  if (cold.on) return cold.compatibility ? kModeCompat : kModeCold;
   return orbisdesk::EmulatorEnabled(root) ? kModeApi : kModeDirect;
 }
 
@@ -748,9 +770,9 @@ bool ApiEmulatorPossible(const orbisdesk::InstalledRecord& record) {
   return record.format >= 2 && !record.steam_api_paths.empty();
 }
 
-// SteamStub: full emulation; Steam API: the emulator; else Direct
+// SteamStub: explicit startup compatibility; Steam API: the emulator; else Direct
 int RecommendedLaunchMode(const orbisdesk::InstalledRecord& record) {
-  if (HasSteamStub(record)) return kModeCold;
+  if (HasSteamStub(record)) return kModeCompat;
   if (record.steam_api && ApiEmulatorPossible(record)) return kModeApi;
   return kModeDirect;
 }
@@ -768,10 +790,11 @@ std::string LaunchModeUnavailable(int mode, const std::string& root, const orbis
     if (ApiEmulatorPossible(record) || orbisdesk::EmulatorEnabled(root)) return "";
     return record.steam_api && record.format < 2 ? "VERIFY THE GAME FIRST" : "THE GAME HAS NO STEAM_API.DLL";
   }
-  if (mode == kModeCold) {
+  if (mode >= kModeCold) {
+    if (mode == kModeCompat && !HasSteamStub(record)) return "THE GAME HAS NO STEAMSTUB";
     if (!orbisdesk::ChooseLaunchEntry(record.launches, record.checks, root, record.language, true).ok)
       return "NO WINDOWS EXECUTABLE TO START";
-    if (!ColdClientFilesReady()) return "COLDCLIENT FILES MISSING";
+    if (!ColdClientFilesReady(mode == kModeCompat)) return "COLDCLIENT OR COMPATIBILITY FILES MISSING";
   }
   return "";
 }
@@ -856,13 +879,17 @@ void PlayGame(Shell& shell, const Game& game) {
     return;
   }
   if (!full_emulation) {
+    if (!ColdClientCompatibilityProfile(entry, false)) {
+      StorageMessage("PLAY\nTHE PREVIOUS STARTUP COMPATIBILITY PROFILE COULD NOT BE REMOVED.");
+      return;
+    }
     AfterPlay(shell, game, root, record, LaunchAndWait(shell, game, entry));
     return;
   }
   orbisdesk::LaunchEntry loader;
   if (!SetUpColdClient(game, record, entry, &loader)) {
-    StorageMessage("PLAY\n" + game.name + "\nFULL EMULATION COULD NOT BE SET UP: ITS FILES ARE MISSING FROM C:\\ORBIS\\STEAM. "
-                   "UPDATE ORBISDESK.");
+    StorageMessage("PLAY\n" + game.name + "\nFULL EMULATION COULD NOT BE SET UP: ITS FILES ARE MISSING, OR THE EXECUTABLE'S "
+                   "STARTUP PROFILE COULD NOT BE SAVED.");
     return;
   }
   AfterPlay(shell, game, root, record, LaunchAndWait(shell, game, loader));
@@ -956,6 +983,10 @@ std::string LaunchModeText(int mode, bool stub) {
     case kModeApi:
       return "Steam API emulator: gbe_fork's steam_api.dll in place of the game's, so it starts without a Steam client. "
              "The game's own DLL is kept and comes back when another mode is chosen.";
+    case kModeCompat:
+      return "ColdClient with an additional per-executable SteamStub startup compatibility addon. "
+             "It applies on next start and changes memory only; the game EXE on disk stays unchanged. "
+             "Supported startup variants vary, and publisher launchers and online ownership checks remain separate.";
     default:
       return "Full emulation starts the game through gbe_fork's ColdClient loader with its own steamclient.dll. It is not "
              "Steam: online features, achievements and other launchers (Ubisoft, Rockstar, EA) are not provided.";
@@ -1005,12 +1036,14 @@ bool LaunchModeMenu(const Game& game, const bp::GameView& page, const orbisdesk:
     }
     if (selected == current) return false;
     if (!why[selected].empty()) continue;
-    if (selected == kModeCold && !cold.on) {
+    if (selected >= kModeCold && (selected != current)) {
       const std::string other = SecondLauncher(root);
       std::string text = stub ? "This game is protected by SteamStub. Full emulation gives it gbe_fork's Steam client, "
                                 "which may let it start, or may not."
                               : "Full emulation gives the game gbe_fork's Steam client through the ColdClient loader, "
                                 "which may let it start, or may not.";
+      if (selected == kModeCompat)
+        text += " This extra mode enables startup compatibility in memory for the selected executable. Its EXE on disk is unchanged. Unsupported variants can still fail.";
       if (other == "Rockstar")
         text += " This game also starts Rockstar's launcher, which checks ownership with Steam's servers: an emulator "
                 "can't pass that check, so it will probably stop there. Only an offline mode of the launcher, if it "
@@ -1045,16 +1078,25 @@ bool LaunchModeMenu(const Game& game, const bp::GameView& page, const orbisdesk:
       if (!orbisdesk::EmulatorEnabled(root)) return false;  // it said why
     }
     const bool want = selected >= kModeCold;
-    if (want != cold.on) {
+    if (want != cold.on || cold.compatibility != (selected == kModeCompat)) {
       const auto previous = cold;
+      const auto entry = orbisdesk::ChooseLaunchEntry(record.launches, record.checks, root, record.language, true);
+      if (!entry.ok || !ColdClientCompatibilityProfile(entry, selected == kModeCompat)) {
+        StorageMessage("LAUNCH MODE\nTHE EXECUTABLE STARTUP PROFILE COULD NOT BE SAVED.");
+        return false;
+      }
       cold.on = want;
+      cold.compatibility = selected == kModeCompat;
       const bool saved = WriteColdClient(root, cold);
       note("PWSTEAM coldclient set on=%d app=%u saved=%d second_launcher=%d", want, game.app, saved,
            want && !SecondLauncher(root).empty());
       if (!saved) {
+        const bool profile_restored = ColdClientCompatibilityProfile(entry, previous.on && previous.compatibility);
         const bool state_restored = WriteColdClient(root, previous);
+        note("PWSTEAM coldclient profile_restored=%d", profile_restored);
         note("PWSTEAM coldclient save_failed state_restored=%d", state_restored);
         StorageMessage("FULL EMULATION\n" + game.name + "\nTHE CHOICE COULD NOT BE SAVED IN THE GAME'S FOLDER.");
+        return false;
       }
     }
     // the choice, kept in the game's folder; then the plan and the shortcuts follow it

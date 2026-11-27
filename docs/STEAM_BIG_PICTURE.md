@@ -71,7 +71,8 @@ Since the review approved on 2026-11-26, Triangle on any installed Steam game's 
 | --- | --- | --- | --- |
 | Direct | The game's exe with its own Steam files | Never; on a SteamStub game it says Play stays off | Games without Steam API or SteamStub |
 | Steam API emulator | The exe with gbe_fork's `steam_api(64).dll` in place of the game's | The game has no `steam_api` DLL (or its record needs a Verify) | Games that use Steam API |
-| Full emulation (ColdClient) | gbe_fork's ColdClient loader, which starts the exe | No usable exe, or ColdClient's files are missing | SteamStub games (experimental) |
+| Full emulation (ColdClient) | gbe_fork's ColdClient loader, which starts the exe | No usable exe, or ColdClient's files are missing | Experimental fallback |
+| ColdClient + SteamStub compatibility | The loader plus the per-EXE startup addon | No SteamStub, usable EXE or compatibility payload | Supported SteamStub startup variants (experimental) |
 
 A game keeps the mode it uses: the mode is read from the game's own state (the emulator's record, the ColdClient choice in its folder), and the recommended one is only marked (RECOMMENDED; the one in use is CURRENT). A mode that can't apply stays listed, dimmed, with its reason, and the cursor skips it. Choosing ColdClient asks first, with the game's second launcher when its folder shows one: for Rockstar's, that its launcher checks ownership with Steam's servers, which no emulator passes, so at most an offline mode of the launcher might go on. Nothing in OrbisDesk tries to get past such a check. Switching goes through the existing paths (the emulator's enable and restore, ColdClient's choice and profile); a restore that fails doesn't block the change: the emulator's record goes and Verify puts Steam's files back. The choice is also written to `.orbisdesk-launch-mode.txt` in the game's folder (it moves with the game). Then the launch plan is rewritten and the shortcuts too: a game started through the loader gets the launcher's shortcut (`steam-open.exe --play`), any other the exe's, so Play, the shortcuts and `steam://run` start the same thing. The page's LAUNCH MODE line names the mode, and the recommended one when the user chose another. When a game started from Play closes within 30 seconds, in any mode, a dialog offers "Choose another mode". Log: `PWSTEAM launch_mode app=… mode=direct|api|coldclient recommended=… source=user|default` when the menu opens and after a change, `launch_mode set app=… mode=… saved=… shortcut_launcher=…`, and `play ended mode=… started=… ended=… seconds=…`.
 
@@ -98,6 +99,18 @@ Loading the library asks Steam three things in a row (owned games, the account's
 - A truncated or damaged file is ignored and the library loads as before, with "LOADING THE LIBRARY...".
 
 The log has counts only: `PWSTEAM library cache hit owned=… windows=…` or `cache none`, `library refresh start threaded=…`, `library refresh end complete=… canceled=… ms=…`, `library refresh applied games=… changed=…` and `library cache write=…`.
+
+## Experimental SteamStub startup compatibility
+
+The launch-mode menu also offers **ColdClient + SteamStub compatibility** for SteamStub games. Existing ColdClient choices keep the additional mode off; it must be selected explicitly and applies to the selected EXE's next start. Play, Desktop/Start shortcuts and `steam://run` use the same saved choice and launch plan. Switching back removes the selected EXE's compatibility marker.
+
+The hosted producer builds `orbisdesk_steamstub_x86.dll` and `orbisdesk_steamstub_x64.dll` from the pinned gbe source, with per-guest context guards, checked writes and hook restoration. Wine loads the addon before the EXE entry in its guest context, or after loader initialization in a separate Wine process. The game EXE on disk is unchanged. A missing payload, malformed marker or overlapping addon instance fails visibly. Publisher launchers and online ownership checks are separate and are not provided by this mode.
+
+`/data/orbisdesk/steamstub-startup.log` records `armed`, `matched`, `write_failed` and restoration outcomes. Alice passed its initial startup block with this mode in the physical 04.87 build (runs 0205/0206), but later closed. This restores only that startup compatibility; it does not claim the Alpha 3 integration or complete gameplay is hardware validated. The subsequent memory investigation and diagnostics are outside this change.
+
+`tests/test_steamstub_launch_mode_host.py` exercises the actual launch menu and plans: old ColdClient defaults, explicit opt-in, marker cleanup, failed-save rollback and missing payloads.
+
+`tests/test_steamstub_startup_host.py` exercises the actual startup helper with PE32/PE64 fixtures in a private host Wine prefix. An optional private `.bind` input checks recognition and hook restoration without executing the game's code; game binaries are not repository fixtures. The build retains gbe's LGPL attribution and the bundled Detours MIT notice.
 
 ## Non-Steam games
 

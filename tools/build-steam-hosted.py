@@ -199,6 +199,18 @@ for arch,name in (('x86','steam_api.dll'),('x64','steam_api64.dll')):
     shutil.copyfile(unpack/'release/regular'/arch/name,steam/('gbe-%s-%s'%(arch,name)))
 coldclient=steam/'coldclient';coldclient.mkdir()
 for name in COLDCLIENT:shutil.copyfile(unpack/'release/steamclient_experimental'/name,coldclient/name)
+# The compatibility addon is built from the same pinned source, with guest-thread
+# guards. Never silently fall back to the unguarded prebuilt extra_dlls payload.
+run(['python3',ROOT/'tools/build-steamstub-addon.py'])
+addon_root=ROOT/'build/steamstub-addon'
+addon_manifest=json.loads((addon_root/'manifest.json').read_text())
+if addon_manifest['source_archive_sha256']!=GBE['gbe_fork-release-2026_09_27-source.tar.gz']:
+    raise SystemExit('SteamStub addon source identity mismatch')
+for name in ('orbisdesk_steamstub_x86.dll','orbisdesk_steamstub_x64.dll'):
+    if sha(addon_root/name)!=addon_manifest['files'][name]['sha256']:
+        raise SystemExit('SteamStub addon hash mismatch: '+name)
+    shutil.copyfile(addon_root/name,coldclient/name)
+shutil.copyfile(ROOT/'LICENSES/Detours-MIT.txt',steam/'Detours-MIT.txt')
 run(['tar','-xzf',GBEDIR/'gbe_fork-release-2026_09_27-source.tar.gz','-C',unpack,'gbe_fork-release-2026_09_27/LICENSE'])
 shutil.copyfile(unpack/'gbe_fork-release-2026_09_27/LICENSE',steam/'gbe-LICENSE-LGPL-3.0.txt')
 (steam/'gbe-SOURCE.txt').write_text('gbe_fork '+GBE_TAG+' (LGPL-3.0)\n'
@@ -207,6 +219,9 @@ shutil.copyfile(unpack/'gbe_fork-release-2026_09_27/LICENSE',steam/'gbe-LICENSE-
     +''.join('sha256 %s %s\n'%(h,n) for n,h in GBE.items())+
     'Used unmodified: release/regular/x86/steam_api.dll and release/regular/x64/steam_api64.dll;\n'
     'in coldclient/: release/steamclient_experimental/'+', '.join(COLDCLIENT)+'.\n'
+    'orbisdesk_steamstub_x86.dll and orbisdesk_steamstub_x64.dll are rebuilt from the same source\n'
+    'with guest-context guards, checked writes and hook restoration by tools/build-steamstub-addon.py.\n'
+    'Optional per executable; changes memory at startup, never the game EXE on disk.\n'
 )
 # The helper's icon. Wine's explorer (programs/explorer/desktop.c, add_launcher) leaves out a Desktop
 # link whose IconLocation and target have no icon, so the helper carries one: the Start menu glyph's blue
@@ -261,11 +276,12 @@ sources=['native/steam/steam_client.cpp','native/steam/steam_storage_ui.inc.cpp'
          'native/steam/steam_ui.h','native/steam/steam_install.cpp','native/steam/steam_storage.cpp','native/steam/steam_storage.h','native/steam/steam_install.h','native/steam/steam_shortcut.h','native/steam/steam_shortcut.cpp',
          'native/steam/steam_emu.cpp','native/steam/steam_session.cpp','native/steam/steam_ui.c','native/steam/steam_tls.c',
          'native/steam/orbis/orbis_clock.c','native/steam/orbis/orbis_net_fix.h','native/steam/orbis/curl_config.h',
-         'native/steam/orbis_steam_open.c','native/steam/mbedtls_user_config.h']
+         'native/steam/orbis_steam_open.c','native/steam/mbedtls_user_config.h',
+         'platform/ps4/pw_steamstub_profile.h','tools/build-steamstub-addon.py','LICENSES/Detours-MIT.txt']
 manifest={'build':BUILD,'object':str(out.relative_to(ROOT)),'object_sha256':sha(out),'exports':EXPORTS,
     'checked_against':str(wine.relative_to(ROOT)),'new_imports':new,'playden_revision':REVISION,
     'patches':{p.name:sha(p) for p in sorted((ROOT/'native/steam/patches').glob('*.patch'))},
-    'gbe_fork':{'tag':GBE_TAG,**GBE},
+    'gbe_fork':{'tag':GBE_TAG,**GBE},'steamstub_addon':addon_manifest,
     'qrcodegen':QRCODEGEN,'stb_truetype_sha256':STBTT[1],'sources_sha256':{s:sha(ROOT/s) for s in sources},
     'prefix_files':{str(p.relative_to(work/'prefix')):sha(p) for p in sorted((work/'prefix').rglob('*')) if p.is_file()},
     'link_needs':['the vk sysroot libc++/libc++abi the hardware ELF already links','-lSceNet','-lScePad (types only)']}
