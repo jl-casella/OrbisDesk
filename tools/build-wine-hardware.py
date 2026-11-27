@@ -695,7 +695,10 @@ for arch,windows in (('x86_64-windows','system32'),('i386-windows','syswow64')):
 shutil.copyfile(prefix/'drive_c/windows/Fonts/tahoma.ttf',prefix/'drive_c/orbis/tahoma.ttf')
 # W044: the hardware explorer (tools/build-explorer-hw.py: Start glyph, Run/Exit glyphs,
 # clock) replaces the pinned one in every place Wine may load it from.
-explorer=json.loads((ROOT/'out/explorer-hw/manifest.json').read_text())['explorer']
+explorer_build=json.loads((ROOT/'out/explorer-hw/manifest.json').read_text())
+if explorer_build.get('registry_worker_source_sha256')!=sha(ROOT/'platform/ps4/pw_overlay_registry_guest.inc.c'):
+    raise SystemExit('Explorer registry worker source differs from its compiled proof')
+explorer=explorer_build['explorer']
 protocol_sha=sha(ROOT/'platform/ps4/pw_shell_open.h')
 for proof in ('out/explorer-hw/manifest.json','out/wfm/manifest.json'):
     if json.loads((ROOT/proof).read_text()).get('open_protocol_sha256')!=protocol_sha:

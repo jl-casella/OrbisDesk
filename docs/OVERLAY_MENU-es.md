@@ -4,14 +4,40 @@
 
 Al apretar L3 y R3 juntos se abre el menú de OrbisDesk sobre el programa en curso. El programa sigue corriendo, y el mando maneja sólo el menú hasta que se cierra. Desde 04.31 el menú es un menú de acceso rápido: una barra de íconos de secciones a la izquierda y los ajustes de la sección elegida a la derecha, que se cambian ahí mismo.
 
-El código es `native/hw_overlay.c` (`draw_panel`, `panel_input`). Los ajustes, las claves con que se guardan y lo que hacen son los mismos de antes. Sólo cambian la disposición y la navegación.
+El código es `native/hw_overlay.c` (`draw_panel`, `panel_input`), con el selector de perfiles en `native/hw_overlay_profiles.inc.c`. Las claves existentes siguen siendo compatibles.
+
+## Perfiles de ejecutables (04.57)
+
+Todas las secciones tienen un encabezado seleccionable del EXE. Subí desde el primer ítem, o desde RENDIMIENTO en la barra, y apretá X sobre el nombre. Una lista nativa desplazable muestra los últimos ejecutables iniciados, incluidos programas cerrados o fallados, y los perfiles guardados del overlay. Se excluyen File Manager (`wfm.exe`), Explorer y los ejecutables internos de servicios y del host; los nombres se deduplican sin distinguir mayúsculas. No hay explorador de archivos.
+
+**Agregar EXE** abre un campo local con teclado en pantalla: ingresá un nombre como `hl2.exe`, no una ruta, y apretá OPTIONS o Enter. Este teclado no envía teclas a la aplicación en ejecución. Círculo vuelve a la lista; L1/R1 mueven el cursor, Cuadrado borra, L2 cambia Shift y R2 cambia los símbolos.
+
+Al abrirse, el editor elige el programa actual del runtime, o el último nombre elegible si está al frente el escritorio. El perfil permanece fijo hasta elegir otro o reabrir el menú, aunque arranque o cierre un programa. EN EJECUCIÓN refleja el seguimiento de inicios/cierres, no una detección independiente de la ventana al frente. El historial conserva 128 nombres y su arquitectura conocida como `profile.<exe>=0|32|64` en `overlay.ini`, separados de los 64 lugares de preferencias; las preferencias guardadas también aparecen si salen del historial. Los inicios anteriores a esta función necesitan una preferencia del overlay ya guardada o agregar el nombre manualmente. No se enumeran AppDefaults que sólo existan en el registro.
+
+FPS, generación de cuadros, estirar, cursor, tipo de control y mapeo de teclas editan el EXE elegido. Los cambios se aplican de inmediato sólo si es dueño de los ajustes actuales del runtime; otro perfil aplica en su próximo inicio sin alterar los ajustes ni la entrada en curso. El pie indica este alcance. Renderer siempre aplica al próximo inicio, mediante el puente existente de Wine AppDefaults del escritorio; un EXE conocido como de 64 bits conserva la restricción de sólo 32 bits después de reiniciar. Un pedido de renderer en curso impide cambiar de perfil hasta completarse/vencer y sobrevive al cierre del programa. Si falla el guardado de preferencias, conserva los valores anteriores en memoria y en disco. Los mapeos se guardan de forma atómica.
+
+Estadísticas, emulación de mouse de la sesión, teclado común y Cerrar el programa siguen actuando sobre la sesión/ventana actual, independientemente del perfil elegido; el idioma sigue siendo global. Para comparar renderers de Portal, elegí/agregá `hl2.exe`, guardá GRÁFICOS → RENDERER → WINED3D + OPENGL y volvé a iniciar el juego. Esto no establece la causa del cierre.
+
+Validación: las pruebas de host ejercitan el aislamiento del overlay real, persistencia, fallos de guardado, respuestas del renderer para un EXE cerrado durante el cierre de otro, filtrado interno, conservación de arquitectura, navegación, teclado local de nombres y mapeo inactivo. Las vistas previas en inglés/español usan las funciones nativas reales de dibujo y la compilación para PS4 pasa. La interacción física y la compatibilidad de Portal quedan pendientes de pruebas en consola.
+
+### Inicio y recuperación del renderer (04.58)
+
+La corrida física de la 04.57 mostró una dependencia de inicio: el consumidor del registro recién arrancaba al intentar abrir el primer programa, dejando un GET desde el escritorio en LEYENDO indefinidamente. Explorer ahora inicia un worker de registro independiente al inicializar el escritorio. Usa el protocolo nativo existente y las reglas de lectura/escritura de Wine AppDefaults; la marca nativa de pedido tomado admite un solo consumidor, incluso si también corre el cerrador anterior del juego. No hace falta abrir un juego para inicializarlo.
+
+Todos los pedidos GET y SET tienen ahora un límite de tres segundos, incluso un GET que ningún worker haya tomado. Si falla la lectura aparece **SIN RESPUESTA; X: REINTENTAR**, en vez de un renderer predeterminado; X vuelve a leer. Los errores de lectura son visibles y un reintento exitoso permite editar. Un SET fallido conserva el aviso de error al guardar; no informa éxito. Las pruebas de host cubren timeouts con/sin consumidor, reintento, errores, un único consumidor y el parser del worker. Compilan el PE de Explorer y el overlay nativo; falta validar físicamente esta corrección.
+
+### Intercambios del control
+
+CONTROLES suma dos interruptores independientes, apagados por defecto y guardados para el EXE elegido: **INTERCAMBIAR STICKS** (`swapsticks.<exe>=on`) intercambia los dos ejes de los sticks izquierdo/derecho y L3/R3; **INVERTIR A/B Y X/Y** (`swapbuttons.<exe>=on`) intercambia Cruz/Círculo y Cuadrado/Triángulo. Intercambiar sticks pasa una función de mouse del stick izquierdo al stick físico derecho y viceversa, sin reescribir el perfil de teclas.
+
+Ambos usan el mismo alcance inmediato/al próximo inicio que los demás ajustes del perfil. La entrada se transforma una sola vez, después de que el overlay y los menús nativos de Steam lean el mando físico y antes de publicar el estado del control o generar eventos de mouse/teclas. Así XInput, las rutas HID/DualSense y los perfiles de teclas/mouse comparten la misma disposición lógica. Los botones de confirmar/volver y la navegación del overlay no cambian; el teclado/mouse USB tampoco. No se agregan lecturas de configuración durante el sondeo de entrada. Las pruebas de host cubren todas las combinaciones de botones frontales/clics, direcciones de ejes, ambos interruptores juntos, persistencia, reversión ante fallos y aislamiento de perfiles inactivos; falta probar el comportamiento en consola.
 
 ## Disposición
 
 - **Barra.** Un ícono por sección: RENDIMIENTO (rayo), GRÁFICOS (monitor), CONTROLES (mando), SISTEMA (engranaje). SALIR es el ícono de encendido al pie de la barra, en rojo. La sección elegida lleva una barra de acento a su izquierda.
 - **Sección.**
   - El título de la sección, y `ORBISDESK L3+R3` a la derecha.
-  - Las secciones cuyos ajustes se guardan por programa muestran `PROGRAMA: <exe>` bajo el título: el último programa abierto que sigue abierto, al que se aplican los ajustes. Cumple el papel de la línea "Using - <juego>" de la Steam Deck. GRÁFICOS muestra el programa para el que se leyó su renderizado.
+  - Todas las secciones muestran el encabezado seleccionable `PERFIL DE EXE` descrito arriba, con el perfil a editar y un indicador EN EJECUCIÓN/CERRADO.
   - Después vienen los ítems, cada uno en una de tres formas:
     - un interruptor: sí o no, con la perilla a la derecha y la pista en color de acento cuando está en sí;
     - un deslizador de pasos para una elección. El paso vigente se nombra en color de acento, y la perilla queda en el paso pendiente. El nombre completo del valor pendiente va a la derecha del nombre del ítem, en color de acento mientras difiere del vigente;
@@ -33,6 +59,8 @@ Los colores son los del cliente de Steam: página `#1b2838`, franja `#171a21`, r
 | GRÁFICOS | RENDERIZADO: DXVK o wined3d, Vulkan u OpenGL | deslizador | por programa de 32 bits, registro de Wine (desde el próximo arranque) |
 | | ESTIRAR | interruptor | por programa, `stretch.<exe>=on` |
 | CONTROLES | CONTROL: genérico, Xbox 360, Xbox One, DualSense | deslizador | por programa, `pad.<exe>=` |
+| | INTERCAMBIAR STICKS | interruptor | por programa, `swapsticks.<exe>=on` |
+| | INVERTIR A/B Y X/Y | interruptor | por programa, `swapbuttons.<exe>=on` |
 | | MOUSE | interruptor | sólo esta sesión |
 | | CURSOR: juego, siempre, oculto | deslizador | por programa, `cursor.<exe>=` |
 | | MAPEO DE TECLAS (04.36) | acción: una pantalla con los botones del mando y sus teclas | por programa, `C:\orbis\padmaps\<exe>.ini` |
@@ -68,11 +96,11 @@ SALIR pide dos pulsaciones: X en la barra entra a la sección, y X en CERRAR EL 
 
 ## MAPEO DE TECLAS (04.36)
 
-CONTROLES → MAPEO DE TECLAS le da a cada botón y dirección de stick del mando una tecla del teclado o un clic del mouse, para el programa al frente. Es para juegos que sólo leen el teclado y el mouse. X sobre el ítem abre una pantalla sobre toda la salida; sin ningún programa abierto, X sólo muestra el aviso `MAPEO: NINGÚN PROGRAMA ABIERTO`.
+CONTROLES → MAPEO DE TECLAS le da a cada botón y dirección de stick una tecla o un clic del mouse para el perfil de EXE elegido. Es para juegos que sólo leen el teclado y el mouse. X abre una pantalla sobre toda la salida, incluso con ese programa cerrado; primero elegí/agregá un EXE si no hay un perfil seleccionado.
 
 **Qué edita.** El perfil de teclas del mando para ese programa, `C:\orbis\padmaps\<exe>.ini`, que `native/hw_pad.c` ya lee al arrancar el programa (W181, W213). La pantalla escribe líneas `fuente = tecla` y deja igual todas las demás: los comentarios, `stick = mouse`, `rstick = mouse` y los valores `rstick_speed` / `rstick_deadzone`.
 
-- **Al guardar.** Con OPTIONS se escribe el archivo, y el hilo del mando lo vuelve a cargar en su próxima lectura (`pw_hw_pad_profile_reload`). Las teclas nuevas valen enseguida.
+- **Al guardar.** OPTIONS escribe el archivo de forma atómica. Si el EXE elegido es dueño de la entrada actual del runtime, el hilo del mando lo recarga en su próxima lectura (`pw_hw_pad_profile_reload`); los otros perfiles aplican en su próximo inicio.
 - **Un archivo sin ninguna línea de tecla se borra.** El mando funciona entonces como sin perfil.
 - **Un archivo nuevo** empieza con un comentario que nombra el programa y esta pantalla.
 

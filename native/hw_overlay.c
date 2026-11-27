@@ -62,8 +62,10 @@
 #include <unistd.h>
 #include <orbis/libkernel.h>
 #include <orbis/Pad.h>
+#include "hw_pad_remap.h"
 #include "hw_text.h"
 #include "pw_telemetry.h"
+#include "pw_overlay_profiles.h"
 
 extern void pw_hw_pad_key(uint32_t vk,int down);     /* native/hw_pad.c */
 extern void pw_hw_pad_set_mouse(int on);
@@ -75,16 +77,21 @@ extern uint32_t pw_ps4_telemetry_query(void *info,uint32_t bytes,uint32_t *retur
 extern unsigned int pw_wine_vk_presents(void);  /* 04.26: native/wine_vk_runtime.c */
 extern void pw_hw_pad_profile_reload(const char *exe);  /* 04.36: native/hw_pad.c */
 
+#ifndef TYPE_FILE
 #define TYPE_FILE "/data/wine-prefix/drive_c/orbis/padtype.txt"
+#endif
+#ifndef CONFIG_FILE
 #define CONFIG_FILE "/data/wine-prefix/drive_c/orbis/overlay.ini"
+#endif
 /* W213: while it exists, a program with no CONTROL choice gets Xbox 360 instead of the generic gamepad (04.26) */
 #define XINPUT_SWITCH "/data/wine-prefix/drive_c/orbis/padhid-xinput.txt"
 /* 04.31: the items, grouped in sections (section_items below); EXIT is the rail's last section, drawn at its foot */
-enum {IT_FPS,IT_FRAMEGEN,IT_STATS,IT_RENDER,IT_STRETCH,IT_CONTROL,IT_KEYMAP,IT_MOUSE,IT_CURSOR,IT_KEYBOARD,IT_LANG,IT_EXIT,
-      ITEMS};
+enum {IT_FPS,IT_FRAMEGEN,IT_STATS,IT_RENDER,IT_STRETCH,IT_CONTROL,IT_SWAPSTICKS,IT_SWAPBUTTONS,IT_KEYMAP,IT_MOUSE,IT_CURSOR,IT_KEYBOARD,IT_LANG,IT_EXIT,
+      IT_STEAM,ITEMS};
 enum {SEC_PERF,SEC_GRAPHICS,SEC_CONTROLS,SEC_SYSTEM,SEC_EXIT,SECTIONS};
-enum {FOCUS_RAIL,FOCUS_ITEMS};
-enum {VIEW_CLOSED,VIEW_PANEL,VIEW_KEYBOARD,VIEW_MAPPER};  /* 04.36: VIEW_MAPPER, KEY MAPPING's screen */
+enum {FOCUS_RAIL,FOCUS_ITEMS,FOCUS_PROFILE};
+enum {NAV_UP=1,NAV_DOWN=2,NAV_LEFT=4,NAV_RIGHT=8};
+enum {VIEW_CLOSED,VIEW_PANEL,VIEW_KEYBOARD,VIEW_MAPPER,VIEW_PROFILES,VIEW_PROFILE_NAME};  /* 04.36: VIEW_MAPPER, KEY MAPPING's screen */
 enum {TYPE_GENERIC,TYPE_X360,TYPE_XONE,TYPE_DUALSENSE,TYPES};  /* 04.26: generic first */
 enum {VK_BACK=0x08,VK_TAB=0x09,VK_RETURN=0x0d,VK_SHIFT=0x10,VK_ESCAPE=0x1b,VK_SPACE=0x20,VK_END=0x23,VK_HOME=0x24,
       VK_LEFT=0x25,VK_RIGHT=0x27,VK_DELETE=0x2e,VK_F12=0x7b,VK_F24=0x87};
@@ -124,9 +131,39 @@ enum {S_ENTRY_EXIT,S_ENTRY_STATS,S_ENTRY_KEYBOARD,S_ENTRY_MOUSE,S_ENTRY_CONTROL,
       S_ITEM_KEYMAP,S_HELP_KEYMAP,S_KM_HELP,S_KM_PICK_HELP,S_KM_FOOT,S_KM_FOOT_DIRTY,S_KM_PICK_TITLE,S_KM_PICK_FOOT,
       S_KM_MOUSE,S_KM_SYSTEM,S_KM_AUTO,S_KEY_UP,S_KEY_DOWN,S_KEY_LEFT,S_KEY_RIGHT,S_KEY_PGUP,S_KEY_PGDN,
       S_KEY_MOUSE_LEFT,S_KEY_MOUSE_RIGHT,S_KEY_MOUSE_MIDDLE,S_KEY_WHEEL_UP,S_KEY_WHEEL_DOWN,
-      S_T_KM_SAVED,S_T_KM_NOT_SAVED,S_T_KM_NO_PROGRAM,S_T_KM_SHARE,S_T_KM_DEFAULT,S_T_KM_NO_DEFAULT,STRINGS};
+      S_T_KM_SAVED,S_T_KM_NOT_SAVED,S_T_KM_NO_PROGRAM,S_T_KM_SHARE,S_T_KM_DEFAULT,S_T_KM_NO_DEFAULT,
+      S_PROFILE_TITLE,S_PROFILE_ADD,S_PROFILE_NAME,S_PROFILE_INVALID,S_PROFILE_WAIT,S_PROFILE_RUNNING,S_PROFILE_CLOSED,
+      S_PROFILE_PICK_HELP,S_PROFILE_PICK_FOOT,S_PROFILE_NAME_HELP,S_PROFILE_NAME_FOOT,S_PROFILE_NOW,S_PROFILE_NEXT,
+      S_PROFILE_SESSION,S_PROFILE_EMPTY,S_PROFILE_READING,S_PROFILE_NAME_HINT,
+      S_SWAPSTICKS,S_SWAPBUTTONS,S_HELP_SWAPSTICKS,S_HELP_SWAPBUTTONS,S_RENDER_RETRY,S_RENDER_RETRY_FOOT,S_ITEM_STEAM,S_HELP_STEAM,STRINGS};
 static const char *const strings[LANGS][STRINGS]={
     [LANG_ES]={
+        [S_RENDER_RETRY]="SIN RESPUESTA; X: REINTENTAR",
+        [S_RENDER_RETRY_FOOT]="X: REINTENTAR     O: VOLVER",
+        [S_ITEM_STEAM]="STEAM BIG PICTURE",
+        [S_HELP_STEAM]="ABRE EL CLIENTE DE STEAM SOBRE LO QUE ESTÁ EN PANTALLA. EL JUEGO SIGUE ABIERTO DEBAJO.",
+        [S_SWAPSTICKS]="INTERCAMBIAR STICKS",[S_SWAPBUTTONS]="INVERTIR A/B Y X/Y",
+        [S_HELP_SWAPSTICKS]="INTERCAMBIA LOS STICKS IZQUIERDO Y DERECHO, INCLUIDOS L3/R3, PARA ESTE EXE. EL MOUSE Y LAS "
+                            "TECLAS DEL PERFIL SIGUEN AL STICK INTERCAMBIADO. EL MENÚ CONSERVA SUS CONTROLES.",
+        [S_HELP_SWAPBUTTONS]="INTERCAMBIA A CON B Y X CON Y: CRUZ/CÍRCULO Y CUADRADO/TRIÁNGULO. APLICA AL JUEGO Y A SU "
+                             "MAPEO DE TECLAS; LOS BOTONES DEL MENÚ NO CAMBIAN.",
+        [S_PROFILE_READING]="LEYENDO...",
+        [S_PROFILE_NAME_HINT]="L1 / R1: CURSOR   L2: SHIFT   R2: SÍMBOLOS   O: VOLVER",
+        [S_PROFILE_TITLE]="PERFIL DE EXE",
+        [S_PROFILE_ADD]="Agregar EXE...",
+        [S_PROFILE_NAME]="NOMBRE DEL EXE",
+        [S_PROFILE_INVALID]="EXE NO VÁLIDO O COMPONENTE INTERNO",
+        [S_PROFILE_WAIT]="ESPERÁ LA RESPUESTA DEL RENDERER",
+        [S_PROFILE_RUNNING]="EN EJECUCIÓN",
+        [S_PROFILE_CLOSED]="CERRADO",
+        [S_PROFILE_PICK_HELP]="X sobre el nombre abre la lista. Editar otro perfil no cambia el programa en ejecución.",
+        [S_PROFILE_PICK_FOOT]="ARRIBA / ABAJO: ELEGIR   X: EDITAR   O: VOLVER",
+        [S_PROFILE_NAME_HELP]="Solo nombre, por ejemplo hl2.exe; no una ruta.",
+        [S_PROFILE_NAME_FOOT]="X: TECLA   CUADRADO: BORRAR   OPTIONS: AGREGAR   O: VOLVER",
+        [S_PROFILE_NOW]="PERFIL ELEGIDO: APLICA AHORA",
+        [S_PROFILE_NEXT]="PERFIL ELEGIDO: PRÓXIMO INICIO",
+        [S_PROFILE_SESSION]="ACCIÓN SOBRE LA SESIÓN / VENTANA ACTUAL",
+        [S_PROFILE_EMPTY]="Elegir o agregar EXE",
         [S_ENTRY_EXIT]="SALIR",[S_ENTRY_STATS]="ESTADÍSTICAS",[S_ENTRY_KEYBOARD]="TECLADO",[S_ENTRY_MOUSE]="MOUSE",
         [S_ENTRY_CONTROL]="CONTROL",
         [S_SEC_PERF]="RENDIMIENTO",[S_SEC_GRAPHICS]="GRÁFICOS",[S_SEC_CONTROLS]="CONTROLES",[S_SEC_SYSTEM]="SISTEMA",
@@ -153,8 +190,8 @@ static const char *const strings[LANGS][STRINGS]={
         [S_PAD_GENERIC]="GENÉRICO",[S_T_PAD_NO_PROGRAM]="CONTROL: NINGÚN PROGRAMA ABIERTO",
         [S_HELP_FRAMEGEN]="CON LÍMITE FPS EN 30 MUESTRA 60: UN CUADRO INTERPOLADO ENTRE CADA DOS DEL JUEGO. SUMA UN CUADRO "
                           "DE RETRASO. SI LA GPU NO ALCANZA, SOLO LOS REALES. EXPERIMENTAL.",
-        [S_HELP_STRETCH]="LA IMAGEN LLENA TODA LA PANTALLA, SIN FRANJAS NEGRAS, O MANTIENE SU PROPORCIÓN. NO CAMBIA CON EL "
-                         "ESCRITORIO AL FRENTE.",
+        [S_HELP_STRETCH]="LA IMAGEN DEL EXE ELEGIDO LLENA TODA LA PANTALLA, SIN FRANJAS NEGRAS, O MANTIENE SU PROPORCIÓN. "
+                         "SE GUARDA TAMBIÉN CON EL PROGRAMA CERRADO.",
         [S_HELP_CURSOR]="JUEGO: LA FLECHA SE VE, SALVO EN PANTALLA COMPLETA SI EL JUEGO NO PONE CURSOR. SIEMPRE: SE VE "
                         "SIEMPRE. OCULTO: NO MIENTRAS EL PROGRAMA SIGA ABIERTO. EL MANDO LA MUEVE IGUAL.",
         [S_ON]="SÍ",[S_OFF]="NO",
@@ -204,6 +241,32 @@ static const char *const strings[LANGS][STRINGS]={
         [S_T_KM_NO_PROGRAM]="MAPEO: NINGÚN PROGRAMA ABIERTO",[S_T_KM_SHARE]="SHARE ES DEL SISTEMA",
         [S_T_KM_DEFAULT]="PREDETERMINADO: OPTIONS LO GUARDA",[S_T_KM_NO_DEFAULT]="SIN PERFIL PREDETERMINADO: VACÍO"},
     [LANG_EN]={
+        [S_RENDER_RETRY]="NO RESPONSE; X: RETRY",
+        [S_RENDER_RETRY_FOOT]="X: RETRY     O: BACK",
+        [S_ITEM_STEAM]="STEAM BIG PICTURE",
+        [S_HELP_STEAM]="OPENS THE STEAM CLIENT OVER WHAT IS ON SCREEN. THE GAME STAYS OPEN UNDERNEATH.",
+        [S_SWAPSTICKS]="SWAP STICKS",[S_SWAPBUTTONS]="SWAP A/B AND X/Y",
+        [S_HELP_SWAPSTICKS]="SWAPS THE LEFT AND RIGHT STICKS, INCLUDING L3/R3, FOR THIS EXE. PROFILE MOUSE AND KEY "
+                            "MAPPINGS FOLLOW THE SWAPPED STICKS. MENU CONTROLS STAY THE SAME.",
+        [S_HELP_SWAPBUTTONS]="SWAPS A WITH B AND X WITH Y: CROSS/CIRCLE AND SQUARE/TRIANGLE. APPLIES TO THE GAME AND "
+                             "ITS KEY MAPPING; MENU BUTTONS STAY THE SAME.",
+        [S_PROFILE_READING]="READING...",
+        [S_PROFILE_NAME_HINT]="L1 / R1: CURSOR   L2: SHIFT   R2: SYMBOLS   O: BACK",
+        [S_PROFILE_TITLE]="EXE PROFILE",
+        [S_PROFILE_ADD]="Add EXE...",
+        [S_PROFILE_NAME]="EXE NAME",
+        [S_PROFILE_INVALID]="INVALID EXE OR INTERNAL COMPONENT",
+        [S_PROFILE_WAIT]="WAIT FOR THE RENDERER RESPONSE",
+        [S_PROFILE_RUNNING]="RUNNING",
+        [S_PROFILE_CLOSED]="CLOSED",
+        [S_PROFILE_PICK_HELP]="Press X on the name to choose a profile. Editing another profile leaves the running program unchanged.",
+        [S_PROFILE_PICK_FOOT]="UP / DOWN: CHOOSE   X: EDIT   O: BACK",
+        [S_PROFILE_NAME_HELP]="Name only, for example hl2.exe; no path.",
+        [S_PROFILE_NAME_FOOT]="X: KEY   SQUARE: ERASE   OPTIONS: ADD   O: BACK",
+        [S_PROFILE_NOW]="SELECTED PROFILE: APPLIES NOW",
+        [S_PROFILE_NEXT]="SELECTED PROFILE: NEXT START",
+        [S_PROFILE_SESSION]="ACTION ON THE CURRENT SESSION / WINDOW",
+        [S_PROFILE_EMPTY]="Choose or add EXE",
         [S_ENTRY_EXIT]="EXIT",[S_ENTRY_STATS]="STATISTICS",[S_ENTRY_KEYBOARD]="KEYBOARD",[S_ENTRY_MOUSE]="MOUSE",
         [S_ENTRY_CONTROL]="CONTROLLER",
         [S_SEC_PERF]="PERFORMANCE",[S_SEC_GRAPHICS]="GRAPHICS",[S_SEC_CONTROLS]="CONTROLS",[S_SEC_SYSTEM]="SYSTEM",
@@ -230,8 +293,8 @@ static const char *const strings[LANGS][STRINGS]={
         [S_PAD_GENERIC]="GENERIC",[S_T_PAD_NO_PROGRAM]="CONTROLLER: NO PROGRAM OPEN",
         [S_HELP_FRAMEGEN]="WITH FPS LIMIT AT 30 IT SHOWS 60: AN INTERPOLATED FRAME BETWEEN EACH TWO OF THE GAME'S. IT ADDS "
                           "ONE FRAME OF DELAY. IF THE GPU CANNOT KEEP UP, REAL FRAMES ONLY. EXPERIMENTAL.",
-        [S_HELP_STRETCH]="THE PICTURE FILLS THE WHOLE SCREEN, WITHOUT BLACK BARS, OR KEEPS ITS PROPORTIONS. IT DOES NOT "
-                         "CHANGE WITH THE DESKTOP IN FRONT.",
+        [S_HELP_STRETCH]="THE SELECTED EXE'S PICTURE FILLS THE WHOLE SCREEN, WITHOUT BLACK BARS, OR KEEPS ITS PROPORTIONS. "
+                         "SAVED EVEN WHILE THE PROGRAM IS CLOSED.",
         [S_HELP_CURSOR]="GAME: THE ARROW SHOWS, EXCEPT FULL SCREEN WHEN THE GAME SETS NO CURSOR. ALWAYS: IT ALWAYS SHOWS. "
                         "HIDDEN: NOT WHILE THE PROGRAM STAYS OPEN. THE PAD STILL MOVES IT.",
         [S_ON]="ON",[S_OFF]="OFF",
@@ -286,20 +349,22 @@ enum {KIND_CHOICE,KIND_TOGGLE,KIND_ACTION};
 static const struct {int name,help,kind;} item_info[ITEMS]={
     [IT_FPS]={S_ENTRY_FPS,S_HELP_FPS,KIND_CHOICE},[IT_FRAMEGEN]={S_ENTRY_FRAMEGEN,S_HELP_FRAMEGEN,KIND_TOGGLE},
     [IT_STATS]={S_ENTRY_STATS,S_HELP_STATS,KIND_TOGGLE},[IT_RENDER]={S_ENTRY_RENDER,S_HELP_RENDER,KIND_CHOICE},
+    [IT_SWAPSTICKS]={S_SWAPSTICKS,S_HELP_SWAPSTICKS,KIND_TOGGLE},
+    [IT_SWAPBUTTONS]={S_SWAPBUTTONS,S_HELP_SWAPBUTTONS,KIND_TOGGLE},
     [IT_STRETCH]={S_ENTRY_STRETCH,S_HELP_STRETCH,KIND_TOGGLE},[IT_CONTROL]={S_ENTRY_CONTROL,S_HELP_CONTROL,KIND_CHOICE},
     [IT_KEYMAP]={S_ITEM_KEYMAP,S_HELP_KEYMAP,KIND_ACTION},  /* 04.36 */
     [IT_MOUSE]={S_ENTRY_MOUSE,S_HELP_MOUSE,KIND_TOGGLE},[IT_CURSOR]={S_ENTRY_CURSOR,S_HELP_CURSOR,KIND_CHOICE},
     [IT_KEYBOARD]={S_ENTRY_KEYBOARD,S_HELP_KEYBOARD,KIND_ACTION},[IT_LANG]={S_ITEM_LANG,S_HELP_CONFIG,KIND_CHOICE},
-    [IT_EXIT]={S_ITEM_EXIT,S_HELP_EXIT,KIND_ACTION}};
+    [IT_EXIT]={S_ITEM_EXIT,S_HELP_EXIT,KIND_ACTION},[IT_STEAM]={S_ITEM_STEAM,S_HELP_STEAM,KIND_ACTION}};
 /* each section's items, -1 after the last; PERFORMANCE, GRAPHICS and CONTROLS hold per-program settings and show
  * the program they are saved for at their top */
-enum {SECTION_ITEMS=5};
+enum {SECTION_ITEMS=7};
 static const int section_items[SECTIONS][SECTION_ITEMS]={
-    [SEC_PERF]={IT_FPS,IT_FRAMEGEN,IT_STATS,-1,-1},[SEC_GRAPHICS]={IT_RENDER,IT_STRETCH,-1,-1,-1},
-    [SEC_CONTROLS]={IT_CONTROL,IT_KEYMAP,IT_MOUSE,IT_CURSOR,IT_KEYBOARD},[SEC_SYSTEM]={IT_LANG,-1,-1,-1,-1},
-    [SEC_EXIT]={IT_EXIT,-1,-1,-1,-1}};
+    [SEC_PERF]={IT_FPS,IT_FRAMEGEN,IT_STATS,-1,-1,-1,-1},[SEC_GRAPHICS]={IT_RENDER,IT_STRETCH,-1,-1,-1,-1,-1},
+    [SEC_CONTROLS]={IT_CONTROL,IT_SWAPSTICKS,IT_SWAPBUTTONS,IT_KEYMAP,IT_MOUSE,IT_CURSOR,IT_KEYBOARD},
+    [SEC_SYSTEM]={IT_LANG,IT_STEAM,-1,-1,-1,-1,-1},[SEC_EXIT]={IT_EXIT,-1,-1,-1,-1,-1,-1}};
 static const int section_names[SECTIONS]={S_SEC_PERF,S_SEC_GRAPHICS,S_SEC_CONTROLS,S_SEC_SYSTEM,S_ENTRY_EXIT};
-static const int section_per_program[SECTIONS]={1,1,1,0,0};
+
 static int section_count(int sec)
 {
     int n=0;
@@ -351,8 +416,38 @@ static const char *const cursor_words[CURSOR_MODES]={"game","always","hidden"};
 static const int cursor_names[CURSOR_MODES]={S_CURSOR_GAME,S_CURSOR_ALWAYS,S_CURSOR_HIDDEN};
 static char programs[PROGRAMS][64];  /* the most recent last */
 static int program_count;
+/* Steam refuses to move an installed game while one of its launch entries is live. */
+int pw_hw_steam_exe_running(const char *name);
+int pw_hw_steam_exe_running(const char *name)
+{
+    int running=0;
+    pthread_mutex_lock(&lock);
+    for(int i=0;i<program_count;i++) if(name && !strcasecmp(name,programs[i])) {running=1;break;}
+    pthread_mutex_unlock(&lock);
+    return running;
+}
+/* Steam Big Picture returns over the desktop once no program it started is still open (a launcher may end
+ * before its game): how many programs are open now */
+int pw_hw_open_programs(void);
+int pw_hw_open_programs(void)
+{
+    pthread_mutex_lock(&lock);
+    int count=program_count;
+    pthread_mutex_unlock(&lock);
+    return count;
+}
+/* Editor identity is independent of the runtime owner, and stays pinned until menu close. */
+static struct pw_profiles profile_history;
+enum {PROFILE_ROWS=PW_PROFILE_MAX+CURSOR_SAVED+PROGRAMS};
+static struct pw_profile profile_rows[PROFILE_ROWS];
+static int profile_rows_count,profile_row,profile_scroll,profile_default_pad;
+static char edit_program[64],profile_name[64];
+static int profile_caret;
+static void reset_choices(void);
+
 /* overlay.ini: cursor, stretch, fpslimit, framegen; 04.26: pad (a TYPE_, -1 without a line) */
-static struct {char name[64];int mode,stretch,fps,fg,pad;} cursor_saved[CURSOR_SAVED];
+static struct {char name[64];int mode,stretch,fps,fg,pad,swapsticks,swapbuttons;} cursor_saved[CURSOR_SAVED];
+static unsigned input_options; /* atomically published; no file reads in pad polling */
 static volatile int stretch_on;      /* W266: read by the sink without the lock */
 static int cursor_saved_count;
 static volatile int cursor_mode;     /* read by the sink without the lock */
@@ -384,7 +479,7 @@ static const int render_names[RENDERS]={S_RENDER_DXVK_VK,S_RENDER_DXVK_GL,S_REND
 static const char *const render_words[RENDERS]={"dxvk-vulkan","dxvk-gl","wined3d-vulkan","wined3d-gl"};
 static const char *const render_short[RENDERS]={"DXVK VK","DXVK GL","WD3D VK","WD3D GL"};
 static char render_program[64];
-static int render_saved=-1,render_choice,render_request,render_request_choice,render_taken;
+static int render_saved=-1,render_choice,render_request,render_request_choice,render_taken,render_error;
 static uint64_t render_deadline_us;
 /* 04.31: the world each program started in, 64 or 32, from kernelbase's guest launch through xinput's Unix library
  * (tools/build-xinput-hw.py: its 64-bit call table says 64, its WoW64 one 32), before pw_hw_overlay_program. RENDERER
@@ -414,6 +509,7 @@ static int render_unavailable(void)
 {
     if(!render_program[0]) return 0;
     for(int i=0;i<PROGRAM_BITS;i++) if(!strcasecmp(program_bits[i].name,render_program)) return program_bits[i].bits==64;
+    for(int i=0;i<profile_history.count;i++) if(!strcasecmp(profile_history.rows[i].name,render_program)) return profile_history.rows[i].bits==64;
     return 0;
 }
 /* lock held (or init): a program's saved entry, added with mode game if add; -1 when there is none */
@@ -426,6 +522,7 @@ static int cursor_slot(const char *name,int add)
     cursor_saved[cursor_saved_count].stretch=0;
     cursor_saved[cursor_saved_count].fps=FPS_DEFAULT;cursor_saved[cursor_saved_count].fg=0;
     cursor_saved[cursor_saved_count].pad=-1;
+    cursor_saved[cursor_saved_count].swapsticks=cursor_saved[cursor_saved_count].swapbuttons=0;
     return cursor_saved_count++;
 }
 
@@ -451,6 +548,17 @@ static void read_config(void)
         line[strcspn(line,"\r\n")]=0;
         for(int i=0;i<LANGS;i++)
             if(!strncmp(line,"lang=",5) && !strncmp(line+5,lang_words[i],strlen(lang_words[i]))) lang=i;
+        if(!strncmp(line,"profile.",8) && (eq=strrchr(line,'='))) {
+            *eq=0;int bits=!strcmp(eq+1,"64")?64:!strcmp(eq+1,"32")?32:0;
+            pw_profiles_note(&profile_history,line+8,bits,1);continue;
+        }
+        if((!strncmp(line,"swapsticks.",11) || !strncmp(line,"swapbuttons.",12)) && (eq=strrchr(line,'='))) {
+            int sticks=!strncmp(line,"swapsticks.",11);*eq=0;
+            if((strcmp(eq+1,"on") && strcmp(eq+1,"off")) || (slot=cursor_slot(line+(sticks?11:12),1))<0) continue;
+            if(sticks) cursor_saved[slot].swapsticks=!strcmp(eq+1,"on");
+            else cursor_saved[slot].swapbuttons=!strcmp(eq+1,"on");
+            continue;
+        }
         if(!strncmp(line,"stretch.",8) && (eq=strrchr(line,'=')) && eq>line+8) {  /* W266 */
             *eq=0;
             if((strcmp(eq+1,"on") && strcmp(eq+1,"off")) || (slot=cursor_slot(line+8,1))<0) {
@@ -501,11 +609,15 @@ static void read_config(void)
 /* lock held: the language and the cursor modes (W261) */
 static int write_config(int new_lang)
 {
-    FILE *file=fopen(CONFIG_FILE,"w");
+    FILE *file=fopen(CONFIG_FILE ".tmp","w");
     int ok=file && fprintf(file,"lang=%s\n",lang_words[new_lang])>0;
+    for(int i=0;ok && i<profile_history.count;i++)
+        ok=fprintf(file,"profile.%s=%d\n",profile_history.rows[i].name,profile_history.rows[i].bits)>0;
     for(int i=0;ok && i<cursor_saved_count;i++) {
         ok=fprintf(file,"cursor.%s=%s\n",cursor_saved[i].name,cursor_words[cursor_saved[i].mode])>0;
         if(ok && cursor_saved[i].stretch) ok=fprintf(file,"stretch.%s=on\n",cursor_saved[i].name)>0;  /* W266 */
+        if(ok && cursor_saved[i].swapsticks) ok=fprintf(file,"swapsticks.%s=on\n",cursor_saved[i].name)>0;
+        if(ok && cursor_saved[i].swapbuttons) ok=fprintf(file,"swapbuttons.%s=on\n",cursor_saved[i].name)>0;
         /* 04.18: 30 is the default and writes no line; off does */
         if(ok && cursor_saved[i].fps!=FPS_DEFAULT)
             ok=fprintf(file,"fpslimit.%s=%s\n",cursor_saved[i].name,fps_words[fps_index(cursor_saved[i].fps)])>0;
@@ -514,6 +626,8 @@ static int write_config(int new_lang)
             ok=fprintf(file,"pad.%s=%s\n",cursor_saved[i].name,type_words[cursor_saved[i].pad])>0;
     }
     if(file && fclose(file)) ok=0;
+    if(ok && rename(CONFIG_FILE ".tmp",CONFIG_FILE))ok=0;
+    if(!ok)unlink(CONFIG_FILE ".tmp");
     return ok;
 }
 /* lock held */
@@ -634,27 +748,86 @@ static int cursor_apply(const char *why)
     /* 04.18: a program with no choice saved runs at 30; the desktop (no program) is not limited */
     int fps=slot>=0?cursor_saved[slot].fps:name[0]?FPS_DEFAULT:0;
     int fg=slot>=0 && cursor_saved[slot].fg;  /* stage 5 */
+    unsigned remap=slot>=0?((cursor_saved[slot].swapsticks?PW_PAD_SWAP_STICKS:0)|
+                            (cursor_saved[slot].swapbuttons?PW_PAD_SWAP_BUTTONS:0)):0;
+    unsigned previous_remap=__atomic_exchange_n(&input_options,remap,__ATOMIC_RELAXED);
+    if(previous_remap!=remap)
+        fprintf(stderr,"PWPAD remap program=%s sticks=%d buttons=%d why=%s\n",name[0]?name:"-",
+                !!(remap&PW_PAD_SWAP_STICKS),!!(remap&PW_PAD_SWAP_BUTTONS),why);
     pad_apply(why);  /* 04.26: CONTROL follows the program */
-    if(strcmp(name,cursor_program)) ++program_serial;
+    if(strcmp(name,cursor_program)) {
+        extern void pw_vk_perf_flush(const char *) __attribute__((weak));
+        if(pw_vk_perf_flush) pw_vk_perf_flush("program-change");
+        ++program_serial;
+    }
     if(fg!=framegen_on) {
         fprintf(stderr,"PWOVERLAY framegen=%s program=%s why=%s\n",fg?"on":"off",name[0]?name:"-",why);
         framegen_on=fg;
     }
-    if(strcmp(name,render_program)) {  /* W287: GRAFICOS is read again for the new program */
-        if(render_request==RENDER_SET) fprintf(stderr,"PWOVERLAY render set for %s dropped: the program changed\n",render_program);
-        snprintf(render_program,sizeof(render_program),"%s",name);
-        render_saved=-1;render_choice=0;render_taken=0;
-        render_request=name[0]?RENDER_GET:RENDER_NONE;
-    }
     if(fps!=fps_limit) {
         fprintf(stderr,"PWOVERLAY fpslimit=%s program=%s why=%s\n",fps_words[fps_index(fps)],name[0]?name:"-",why);
-        fps_limit=fps;fps_choice=fps_index(fps);
+        fps_limit=fps;if(view==VIEW_CLOSED) fps_choice=fps_index(fps);
     }
     if(mode==cursor_mode && stretch==stretch_on && !strcmp(name,cursor_program)) return 0;
     snprintf(cursor_program,sizeof(cursor_program),"%s",name);
-    cursor_mode=mode;cursor_choice=mode;stretch_on=stretch;
+    cursor_mode=mode;if(view==VIEW_CLOSED) cursor_choice=mode;stretch_on=stretch;
     fprintf(stderr,"PWSINK cursor mode=%s stretch=%d program=%s saved=%d why=%s\n",cursor_words[mode],stretch,
             name[0]?name:"-",slot>=0,why);
+    return 1;
+}
+unsigned pw_hw_overlay_input_options(void);
+unsigned pw_hw_overlay_input_options(void) {return __atomic_load_n(&input_options,__ATOMIC_RELAXED);}
+/* lock held: editing another EXE never installs its settings into the live runtime. */
+static int profile_live(void)
+{
+    return edit_program[0] && program_count && !strcasecmp(edit_program,cursor_program)
+        && !strcasecmp(edit_program,programs[program_count-1]);
+}
+static int profile_value(int field)
+{
+    int slot=cursor_slot(edit_program,0);
+    if(slot<0) return field==IT_FPS?FPS_DEFAULT:field==IT_CONTROL?profile_default_pad:0;
+    switch(field) {
+    case IT_FPS:return cursor_saved[slot].fps;
+    case IT_FRAMEGEN:return cursor_saved[slot].fg;
+    case IT_CURSOR:return cursor_saved[slot].mode;
+    case IT_STRETCH:return cursor_saved[slot].stretch;
+    case IT_SWAPSTICKS:return cursor_saved[slot].swapsticks;
+    case IT_SWAPBUTTONS:return cursor_saved[slot].swapbuttons;
+    case IT_CONTROL:return cursor_saved[slot].pad>=0?cursor_saved[slot].pad:profile_default_pad;
+    }
+    return 0;
+}
+static int profile_store(int field,int value)
+{
+    unsigned char previous[sizeof(cursor_saved)];
+    int count=cursor_saved_count,slot;
+    if(!pw_profile_allowed(edit_program)) {set_toast(str(S_PROFILE_EMPTY));return 0;}
+    memcpy(previous,cursor_saved,sizeof(previous));
+    slot=cursor_slot(edit_program,1);
+    if(slot<0) {set_toast(str(S_T_CONFIG_NOT_SAVED));return 0;}
+    switch(field) {
+    case IT_FPS:cursor_saved[slot].fps=value;break;
+    case IT_FRAMEGEN:cursor_saved[slot].fg=value;break;
+    case IT_CURSOR:cursor_saved[slot].mode=value;break;
+    case IT_STRETCH:cursor_saved[slot].stretch=value;break;
+    case IT_SWAPSTICKS:cursor_saved[slot].swapsticks=value;break;
+    case IT_SWAPBUTTONS:cursor_saved[slot].swapbuttons=value;break;
+    case IT_CONTROL:cursor_saved[slot].pad=value;break;
+    default:return 0;
+    }
+    int ok=write_config(lang);
+    if(!ok) {
+        memcpy(cursor_saved,previous,sizeof(previous));cursor_saved_count=count;
+        set_toast(str(S_T_CONFIG_NOT_SAVED));return 0;
+    }
+    int live=profile_live();
+    if(live) {
+        cursor_apply("profile-menu");
+        if(field==IT_CONTROL && pad_type!=value) set_toast(str(S_T_TYPE_NOT_SAVED));
+        if(field==IT_FRAMEGEN && value) hud_conf_next_us=0;
+    }
+    fprintf(stderr,"PWOVERLAY profile save exe=%s item=%d value=%d live=%d\n",edit_program,field,value,live);
     return 1;
 }
 /* W293: the "app starting" pointer, as Windows' IDC_APPSTARTING: from a program's start (pw_hw_overlay_program with
@@ -757,6 +930,10 @@ void pw_hw_overlay_program(const char *exe,int load)
             memmove(programs+i,programs+i+1,(size_t)(program_count-i-1)*sizeof(programs[0]));program_count--;break;
         }
     if(load) {
+        int bits=0;
+        for(int i=0;i<PROGRAM_BITS;i++) if(!strcasecmp(program_bits[i].name,base)) bits=program_bits[i].bits;
+        if(pw_profiles_note(&profile_history,base,bits,0) && !write_config(lang))
+            fprintf(stderr,"PWOVERLAY profile history save failed errno=%d\n",errno);
         if(program_count==PROGRAMS) {memmove(programs,programs+1,(PROGRAMS-1)*sizeof(programs[0]));program_count--;}
         snprintf(programs[program_count++],sizeof(programs[0]),"%s",base);
     }
@@ -773,18 +950,7 @@ int pw_hw_cursor_mode(void) {return cursor_mode;}
 /* lock held: X on CURSOR saves the chosen mode for the last program opened and applies it */
 static void cursor_choose(void)
 {
-    const char *name=program_count?programs[program_count-1]:"";
-    int slot,ok=0;
-    if(!name[0]) {
-        set_toast(str(S_T_CURSOR_NO_PROGRAM));
-        fprintf(stderr,"PWSINK cursor mode=%s not saved: no program open\n",cursor_words[cursor_choice]);
-        cursor_choice=cursor_mode;return;
-    }
-    if((slot=cursor_slot(name,1))>=0) {cursor_saved[slot].mode=cursor_choice;ok=write_config(lang);}
-    cursor_mode=cursor_choice;
-    fprintf(stderr,"PWSINK cursor mode=%s program=%s saved=%d errno=%d why=menu%s\n",cursor_words[cursor_mode],name,ok,
-            ok?0:errno,slot<0?" (overlay.ini has 64 programs already)":"");
-    if(!ok) set_toast(str(S_T_CONFIG_NOT_SAVED));
+    profile_store(IT_CURSOR,cursor_choice);
 }
 /* W266: the sink, on each frame: 1 when the picture fills the whole output */
 int pw_hw_overlay_stretch(void);
@@ -793,14 +959,7 @@ int pw_hw_overlay_stretch(void) {return stretch_on;}
  * (desktop_front, as Estadisticas) or no program it does nothing, only logged */
 static void stretch_toggle(void)
 {
-    const char *name=program_count?programs[program_count-1]:"";
-    int slot,ok=0;
-    if(desktop_front || !name[0]) {fprintf(stderr,"PWOVERLAY stretch refused: %s\n",desktop_front?"desktop":"no program");return;}
-    stretch_on=!stretch_on;
-    if((slot=cursor_slot(name,1))>=0) {cursor_saved[slot].stretch=stretch_on;ok=write_config(lang);}
-    fprintf(stderr,"PWSINK stretch=%d program=%s saved=%d errno=%d why=menu%s\n",stretch_on,name,ok,ok?0:errno,
-            slot<0?" (overlay.ini has 64 programs already)":"");
-    if(!ok) set_toast(str(S_T_CONFIG_NOT_SAVED));
+    profile_store(IT_STRETCH,!profile_value(IT_STRETCH));
 }
 /* the sink, on each Vulkan present: LIMITE FPS for the last program opened (0 off, 30, 60, -1 auto) */
 int pw_hw_overlay_fps_limit(void);
@@ -808,58 +967,34 @@ int pw_hw_overlay_fps_limit(void) {return fps_limit;}
 /* lock held: X on LIMITE FPS saves the choice for the last program opened and applies it at once */
 static void fps_choose(void)
 {
-    const char *name=program_count?programs[program_count-1]:"";
-    int slot,ok=0;
-    if(!name[0]) {
-        set_toast(str(S_T_FPS_NO_PROGRAM));
-        fprintf(stderr,"PWOVERLAY fpslimit=%s not saved: no program open\n",fps_words[fps_choice]);
-        fps_choice=fps_index(fps_limit);return;
-    }
-    if((slot=cursor_slot(name,1))>=0) {cursor_saved[slot].fps=fps_values[fps_choice];ok=write_config(lang);}
-    fps_limit=fps_values[fps_choice];
-    fprintf(stderr,"PWOVERLAY fpslimit=%s program=%s saved=%d errno=%d why=menu%s\n",fps_words[fps_choice],name,ok,
-            ok?0:errno,slot<0?" (overlay.ini has 64 programs already)":"");
-    if(!ok) set_toast(str(S_T_CONFIG_NOT_SAVED));
+    profile_store(IT_FPS,fps_values[fps_choice]);
 }
 /* the sink, on each Vulkan present: GENERAR CUADROS for the last program opened (1 on), and a number that changes with
  * that program */
 int pw_hw_overlay_framegen(void);
 int pw_hw_overlay_framegen(void) {return framegen_on;}
+/* Startup preparation only: do not select a program or enable generation. */
+int pw_hw_overlay_framegen_saved(void)
+{
+    int wanted=0;
+    pthread_once(&once,init);
+    pthread_mutex_lock(&lock);
+    for(int i=0;i<cursor_saved_count;i++) if(cursor_saved[i].fg) {wanted=1;break;}
+    pthread_mutex_unlock(&lock);
+    return wanted;
+}
 unsigned pw_hw_overlay_program_serial(void);
 unsigned pw_hw_overlay_program_serial(void) {return program_serial;}
 /* lock held: X on GENERAR CUADROS turns it on or off for the last program opened, saves it and applies it at once */
 static void framegen_toggle(void)
 {
-    const char *name=program_count?programs[program_count-1]:"";
-    int slot,ok=0;
-    if(!name[0]) {
-        set_toast(str(S_T_FRAMEGEN_NO_PROGRAM));
-        fprintf(stderr,"PWOVERLAY framegen not saved: no program open\n");return;
-    }
-    framegen_on=!framegen_on;
-    if(framegen_on) hud_conf_next_us=0;   /* MangoHud's rectangle is read again soon */
-    if((slot=cursor_slot(name,1))>=0) {cursor_saved[slot].fg=framegen_on;ok=write_config(lang);}
-    fprintf(stderr,"PWOVERLAY framegen=%s program=%s saved=%d errno=%d why=menu fpslimit=%s%s\n",framegen_on?"on":"off",
-            name,ok,ok?0:errno,fps_words[fps_index(fps_limit)],slot<0?" (overlay.ini has 64 programs already)":"");
-    if(!ok) set_toast(str(S_T_CONFIG_NOT_SAVED));
+    profile_store(IT_FRAMEGEN,!profile_value(IT_FRAMEGEN));
 }
 /* 04.26, lock held: X on CONTROL saves the type for the last program opened and applies it at once: winebus replaces
  * the device within about a quarter of a second, xinput and dinput read it within a second */
 static void pad_choose(void)
 {
-    const char *name=program_count?programs[program_count-1]:"";
-    int slot,ok=0;
-    if(type_choice<0 || type_choice>=TYPES) {type_choice=pad_type;return;}
-    if(!name[0]) {
-        set_toast(str(S_T_PAD_NO_PROGRAM));
-        fprintf(stderr,"PWOVERLAY control type=%s not saved: no program open\n",type_words[type_choice]);
-        type_choice=pad_type;return;
-    }
-    if((slot=cursor_slot(name,1))>=0) {cursor_saved[slot].pad=type_choice;ok=write_config(lang);}
-    fprintf(stderr,"PWOVERLAY control pad.%s=%s saved=%d errno=%d why=menu%s\n",name,type_words[type_choice],ok,
-            ok?0:errno,slot<0?" (overlay.ini has 64 programs already)":"");
-    if(!ok) set_toast(str(S_T_CONFIG_NOT_SAVED));
-    if(type_choice!=pad_type && !write_type(type_choice,name,"menu")) set_toast(str(S_T_TYPE_NOT_SAVED));
+    if(type_choice>=0 && type_choice<TYPES) profile_store(IT_CONTROL,type_choice);
 }
 /* W287: kernelbase's closer, every 150 ms (through native/hw_pad.c): GRAFICOS's request, "-" for none:
  * "get <exe>" or "set <choice> <exe>" */
@@ -888,13 +1023,14 @@ void pw_hw_overlay_render_result(const char *result)
     }
     if(choice_text[0]>='0' && choice_text[0]<'0'+RENDERS && !choice_text[1]) choice=choice_text[0]-'0';
     pthread_mutex_lock(&lock);
-    if(!render_taken || strcasecmp(exe,render_program)) {
+    if(!render_taken || strcasecmp(exe,render_program) || strcmp(what,render_request==RENDER_SET?"set":"get")) {
         fprintf(stderr,"PWOVERLAY render %s for %s ignored: not the request waiting (%s)\n",what,exe,
                 render_program[0]?render_program:"-");
         pthread_mutex_unlock(&lock);return;
     }
     if(!strcmp(what,"set")) toast_text=!status && choice==render_request_choice?S_T_RENDER_SAVED:S_T_RENDER_FAILED;
     if(!status) render_saved=choice;
+    render_error=status!=0;
     render_choice=render_saved>=0?render_saved:0;
     render_request=RENDER_NONE;render_taken=0;
     if(toast_text>=0) set_toast(str(toast_text));
@@ -908,12 +1044,24 @@ static void render_choose(void)
     if(!render_program[0]) {
         set_toast(str(S_T_RENDER_NO_PROGRAM));fprintf(stderr,"PWOVERLAY render not saved: no program open\n");return;
     }
-    if(render_request==RENDER_SET) {fprintf(stderr,"PWOVERLAY render: a set is waiting already\n");return;}
+    if(render_request) {set_toast(str(S_PROFILE_WAIT));return;}
+    if(render_error && render_saved<0) {
+        render_request=RENDER_GET;render_taken=render_error=0;
+        render_deadline_us=sceKernelGetProcessTime()+RENDER_ANSWER_US;return;
+    }
     if(render_choice==render_saved) return;
     render_request=RENDER_SET;render_request_choice=render_choice;render_taken=0;
     render_deadline_us=sceKernelGetProcessTime()+RENDER_ANSWER_US;
     if(pw_trace_on()) fprintf(stderr,"PWOVERLAY render set %s for %s requested\n",render_words[render_choice],render_program);
 }
+static int render_expire(uint64_t now)
+{
+    if(!render_request || now<render_deadline_us) return 0;
+    fprintf(stderr,"PWOVERLAY render %s for %s timeout taken=%d\n",render_request==RENDER_SET?"set":"get",render_program,render_taken);
+    set_toast(str(S_T_RENDER_NO_ANSWER));render_error=1;
+    render_request=RENDER_NONE;render_taken=0;return 1;
+}
+#include "hw_overlay_profiles.inc.c"
 /* lock held: Estadisticas acts on MangoHud's HUD */
 /* 04.26 (run-0234): the closer's report alone. It names a window in front that Vulkan presented to and keeps it while
  * it does not present; vk_presenting went 0 two seconds after a page stopped changing, and ESTADISTICAS then toggled
@@ -1098,7 +1246,8 @@ static void press_key(void)
     if(kb_row==4 && kb_col/2==0) {kb_shift=!kb_shift;return;}
     if(kb_row==4 && kb_col/2==1) {kb_page=!kb_page;if(row_wide(kb_row)) kb_col&=~1;return;}
     if(!key.vk) return;
-    type_vk(key.vk,key.shift);
+    if(view==VIEW_PROFILE_NAME) profile_name_key(key.vk,key.label);
+    else type_vk(key.vk,key.shift);
     if(key.shift && kb_row<4 && key.label[0]>='A' && key.label[0]<='Z') kb_shift=0;  /* one letter, as on a phone */
 }
 
@@ -1269,7 +1418,7 @@ static void map_load(void)
 /* lock held: X on KEY MAPPING */
 static void map_open(void)
 {
-    const char *name=program_count?programs[program_count-1]:"";
+    const char *name=edit_program;
     if(!name[0]) {set_toast(str(S_T_KM_NO_PROGRAM));fprintf(stderr,"PWOVERLAY keymap: no program open\n");return;}
     snprintf(map_program,sizeof(map_program),"%s",name);
     map_load();
@@ -1311,15 +1460,19 @@ static int map_save(void)
     else {
         FILE *file;
         mkdir(PADMAP_DIR,0777);
-        file=fopen(path,"w");
+        char temporary[272];
+        snprintf(temporary,sizeof(temporary),"%s.tmp",path);
+        file=fopen(temporary,"w");
         ok=file && fwrite(text,1,at,file)==at;
         if(file && fclose(file)) ok=0;
+        if(ok && rename(temporary,path)) ok=0;
+        if(!ok) unlink(temporary);
     }
     fprintf(stderr,"PWOVERLAY keymap saved program=%s lines=%d %s ok=%d errno=%d\n",map_program,lines,
             lines?"written":"removed",ok,ok?0:errno);
     if(!ok) return 0;
     map_load();
-    pw_hw_pad_profile_reload(map_program);  /* the pad thread applies it at its next read */
+    if(program_count && !strcasecmp(map_program,cursor_program)) pw_hw_pad_profile_reload(map_program);  /* the pad thread applies it at its next read */
     return 1;
 }
 /* lock held: TRIANGLE: the profile OrbisDesk ships for the program, or none; pending until OPTIONS */
@@ -1334,7 +1487,6 @@ static void map_default(void)
     fprintf(stderr,"PWOVERLAY keymap default program=%s file=%s\n",map_program,found?"yes":"none");
 }
 /* ---- input ---- */
-enum {NAV_UP=1,NAV_DOWN=2,NAV_LEFT=4,NAV_RIGHT=8};
 static uint32_t directions(const OrbisPadData *data)
 {
     uint32_t b=data->buttons,dirs=0;
@@ -1354,18 +1506,18 @@ static void close_overlay(void)
 /* 04.31, lock held: every choice back to the value in effect (a choice is only saved with X) */
 static void reset_choices(void)
 {
-    type_choice=pad_type;lang_choice=lang;cursor_choice=cursor_mode;
-    render_choice=render_saved>=0?render_saved:0;fps_choice=fps_index(fps_limit);
+    type_choice=profile_value(IT_CONTROL);lang_choice=lang;cursor_choice=profile_value(IT_CURSOR);
+    render_choice=render_saved>=0?render_saved:0;fps_choice=fps_index(profile_value(IT_FPS));
 }
 /* 04.31, lock held: a choice item's pending value, how many values it has and the value in effect (-1: none known);
  * NULL for an item that is not a choice */
 static int *choice_of(int it,int *count,int *current)
 {
     switch(it) {
-    case IT_FPS: *count=FPS_CHOICES;*current=fps_index(fps_limit);return &fps_choice;
+    case IT_FPS: *count=FPS_CHOICES;*current=fps_index(profile_value(IT_FPS));return &fps_choice;
     case IT_RENDER: *count=RENDERS;*current=render_saved;return &render_choice;
-    case IT_CONTROL: *count=TYPES;*current=pad_type;return &type_choice;
-    case IT_CURSOR: *count=CURSOR_MODES;*current=cursor_mode;return &cursor_choice;
+    case IT_CONTROL: *count=TYPES;*current=profile_value(IT_CONTROL);return &type_choice;
+    case IT_CURSOR: *count=CURSOR_MODES;*current=profile_value(IT_CURSOR);return &cursor_choice;
     case IT_LANG: *count=LANGS;*current=lang;return &lang_choice;
     }
     *count=0;*current=-1;
@@ -1379,8 +1531,14 @@ static int *choice_of(int it,int *count,int *current)
 static int panel_input(uint32_t pressed,uint32_t nav)
 {
     int it,count,current,*choice;
+    if(focus==FOCUS_PROFILE) {
+        if(pressed&ORBIS_PAD_BUTTON_CROSS) {profile_picker_open();return 0;}
+        if(nav&(NAV_DOWN|NAV_RIGHT)) {focus=FOCUS_ITEMS;item=0;reset_choices();}
+        if((nav&NAV_LEFT) || (pressed&ORBIS_PAD_BUTTON_CIRCLE)) focus=FOCUS_RAIL;
+        return 0;
+    }
     if(focus==FOCUS_RAIL) {
-        if(nav&NAV_UP) section=(section+SECTIONS-1)%SECTIONS;
+        if(nav&NAV_UP) {if(!section) {focus=FOCUS_PROFILE;return 0;}section--;}
         if(nav&NAV_DOWN) section=(section+1)%SECTIONS;
         if(pressed&ORBIS_PAD_BUTTON_CIRCLE) {close_overlay();return 0;}
         if((pressed&ORBIS_PAD_BUTTON_CROSS) || (nav&NAV_RIGHT)) {focus=FOCUS_ITEMS;item=0;reset_choices();}
@@ -1392,7 +1550,8 @@ static int panel_input(uint32_t pressed,uint32_t nav)
     if(it==IT_RENDER && render_unavailable()) choice=NULL;  /* a 64-bit program: nothing to choose */
     if(nav&(NAV_UP|NAV_DOWN)) {
         int n=section_count(section);
-        item=(item+(nav&NAV_UP?n-1:1))%n;
+        if((nav&NAV_UP) && !item) focus=FOCUS_PROFILE;
+        else item=(item+(nav&NAV_UP?n-1:1))%n;
         reset_choices();
         return 0;
     }
@@ -1403,6 +1562,12 @@ static int panel_input(uint32_t pressed,uint32_t nav)
     if(!(pressed&ORBIS_PAD_BUTTON_CROSS)) return 0;
     switch(it) {
     case IT_EXIT: close_overlay();return 1;
+    case IT_STEAM: {  /* Steam Big Picture over the program in front (native/steam/steam_client.cpp) */
+        extern const char *pw_hw_steam_open(void) __attribute__((weak));
+        close_overlay();
+        if(pw_hw_steam_open) fprintf(stderr,"PWOVERLAY steam open=%s\n",pw_hw_steam_open());
+        return 1;
+    }
     case IT_STATS:
         if(hud_mode()) {
             /* the overlay cannot read MangoHud's state: it says only that the key went */
@@ -1426,6 +1591,7 @@ static int panel_input(uint32_t pressed,uint32_t nav)
     case IT_MOUSE: mouse_on=!mouse_on;pw_hw_pad_set_mouse(mouse_on);break;
     case IT_CURSOR: cursor_choose();break;
     case IT_STRETCH: stretch_toggle();break;
+    case IT_SWAPSTICKS: case IT_SWAPBUTTONS: profile_store(it,!profile_value(it));break;
     case IT_RENDER:
         if(render_unavailable()) {
             set_toast(str(S_T_RENDER_64));
@@ -1447,6 +1613,7 @@ static int panel_input(uint32_t pressed,uint32_t nav)
 /* lock held */
 static void keyboard_input(uint32_t pressed,uint32_t nav)
 {
+    int name_input=view==VIEW_PROFILE_NAME;
     if(nav&NAV_UP) kb_row=(kb_row+4)%5;
     if(nav&NAV_DOWN) kb_row=(kb_row+1)%5;
     if(nav&(NAV_UP|NAV_DOWN) && row_wide(kb_row)) kb_col&=~1;
@@ -1458,6 +1625,18 @@ static void keyboard_input(uint32_t pressed,uint32_t nav)
         if(nav&NAV_RIGHT) kb_col=(kb_col+1)%10;
     }
     if(pressed&ORBIS_PAD_BUTTON_CROSS) press_key();
+    if(name_input) {
+        if(view!=VIEW_PROFILE_NAME) return;
+        if(pressed&ORBIS_PAD_BUTTON_SQUARE) profile_name_key(VK_BACK,"");
+        if(pressed&ORBIS_PAD_BUTTON_TRIANGLE) profile_name_key(VK_SPACE," ");
+        if(pressed&ORBIS_PAD_BUTTON_L1) profile_name_key(VK_LEFT,"");
+        if(pressed&ORBIS_PAD_BUTTON_R1) profile_name_key(VK_RIGHT,"");
+        if(pressed&ORBIS_PAD_BUTTON_L2) kb_shift=!kb_shift;
+        if(pressed&ORBIS_PAD_BUTTON_R2) {kb_page=!kb_page;if(row_wide(kb_row)) kb_col&=~1;}
+        if(pressed&ORBIS_PAD_BUTTON_OPTIONS) profile_name_key(VK_RETURN,"");
+        if(pressed&ORBIS_PAD_BUTTON_CIRCLE) view=VIEW_PROFILES;
+        return;
+    }
     if(pressed&ORBIS_PAD_BUTTON_SQUARE) type_vk(VK_BACK,0);
     if(pressed&ORBIS_PAD_BUTTON_TRIANGLE) type_vk(VK_SPACE,0);
     if(pressed&ORBIS_PAD_BUTTON_L1) type_vk(VK_LEFT,0);
@@ -1550,13 +1729,8 @@ int pw_hw_overlay_pad(const OrbisPadData *data)
     /* W293: the starting pointer's next frame, or its end after BUSY_US */
     if(busy_since_us && now-busy_since_us>=BUSY_US) changed|=busy_end("timeout",NULL,NULL);
     else if(busy_since_us && now>=busy_next_us) {busy_next_us=now+BUSY_FRAME_US;changed=1;}
-    /* W287: a set waits at most RENDER_ANSWER_US, a get once taken; a get no closer took waits */
-    if(render_request && (render_taken || render_request==RENDER_SET) && now>=render_deadline_us) {
-        fprintf(stderr,"PWOVERLAY render %s for %s: %s\n",render_request==RENDER_SET?"set":"get",render_program,
-                render_taken?"no answer from the closer":"not taken: no closer answered");
-        if(render_request==RENDER_SET) set_toast(str(S_T_RENDER_NO_ANSWER));
-        render_request=RENDER_NONE;render_taken=0;changed=1;
-    }
+    /* Every request is bounded, including a GET not taken by a registry worker. */
+    changed|=render_expire(now);
     /* a direction acts when pressed, then repeats while held */
     if(dirs&~nav_held) {nav=dirs&~nav_held;nav_next_us=now+REPEAT_FIRST_US;}
     else if(dirs && now>=nav_next_us) {nav=dirs;nav_next_us=now+REPEAT_US;}
@@ -1564,13 +1738,14 @@ int pw_hw_overlay_pad(const OrbisPadData *data)
     if((buttons&ORBIS_PAD_BUTTON_L3) && (buttons&ORBIS_PAD_BUTTON_R3) && (pressed&(ORBIS_PAD_BUTTON_L3|ORBIS_PAD_BUTTON_R3))) {
         if(view==VIEW_CLOSED) {
             /* 04.36: on the rail, always at PERFORMANCE (04.31 kept the last section, mostly EXIT after closing a game) */
-            view=VIEW_PANEL;focus=FOCUS_RAIL;section=SEC_PERF;item=0;reset_choices();
+            view=VIEW_PANEL;focus=FOCUS_RAIL;section=SEC_PERF;item=0;profile_editor_begin();reset_choices();
             if(pw_trace_on()) fprintf(stderr,"PWOVERLAY open\n");
         } else close_overlay();
         changed=1;
     } else if(view==VIEW_PANEL && (pressed || nav)) {exit_chosen=panel_input(pressed,nav);changed=1;}
-    else if(view==VIEW_KEYBOARD && (pressed || nav)) {keyboard_input(pressed,nav);changed=1;}
+    else if((view==VIEW_KEYBOARD || view==VIEW_PROFILE_NAME) && (pressed || nav)) {keyboard_input(pressed,nav);changed=1;}
     else if(view==VIEW_MAPPER && (pressed || nav)) {mapper_input(pressed,nav);changed=1;}  /* 04.36 */
+    else if(view==VIEW_PROFILES && (pressed || nav)) {profile_picker_input(pressed,nav);changed=1;}
     mine=view!=VIEW_CLOSED || swallow;
     if(swallow && view==VIEW_CLOSED && !buttons) swallow=0;
     if(toast_until_us && now>=toast_until_us) {toast_until_us=0;changed=1;}
@@ -1811,9 +1986,10 @@ static const char *item_buttons(int it,int hud)
 {
     int count,current,*choice=choice_of(it,&count,&current);
     if(it==IT_RENDER && render_unavailable()) return str(S_FOOT_BACK);
+    if(it==IT_RENDER && render_error && render_saved<0) return str(S_RENDER_RETRY_FOOT);
     if(choice) return str(*choice!=current?S_FOOT_SAVE:S_FOOT_CHOICE);
     if(it==IT_STATS && hud) return str(S_FOOT_HUD);
-    if(it==IT_KEYBOARD || it==IT_KEYMAP) return str(S_FOOT_OPEN);
+    if(it==IT_KEYBOARD || it==IT_KEYMAP || it==IT_STEAM) return str(S_FOOT_OPEN);
     if(it==IT_EXIT) return str(S_FOOT_EXIT);
     return str(S_FOOT_TOGGLE);
 }
@@ -1842,12 +2018,16 @@ static void draw_panel(const struct surface *s,int alone,int hud)
     hw_text(s->pixels,(int)s->pitch,s->height,x0+W-16-text_width("ORBISDESK  L3+R3",2),22,"ORBISDESK",C_DIM,2);
     text(s,x0+W-16-text_width("L3+R3",2),22,"L3+R3",C_DIM,2);
     y=54;
-    if(section_per_program[section]) {
-        char line[96];
-        const char *name=section==SEC_GRAPHICS && render_program[0]?render_program:program_count?programs[program_count-1]:"--";
-        snprintf(line,sizeof(line),"%s %s",str(S_CURSOR_PROGRAM),name);
-        text(s,cx+8,y+4,line,C_DIM,2);
-        y+=30;
+    {
+        char line[64];
+        const char *name=edit_program[0]?edit_program:str(S_PROFILE_EMPTY);
+        if(focus==FOCUS_PROFILE) fill(s,cx,y,cw,62,C_SELECTED);
+        text(s,cx+8,y+4,str(S_PROFILE_TITLE),C_DIM,1);
+        snprintf(line,sizeof(line),"%.32s%s",name,strlen(name)>32?"...":"");
+        text(s,cx+8,y+19,line,C_TEXT,2);
+        text(s,cx+8,y+43,profile_running(edit_program)?str(S_PROFILE_RUNNING):str(S_PROFILE_CLOSED),C_DIM,1);
+        text(s,cx+cw-20,y+20,">",C_EDGE,2);
+        y+=66;
     }
     fill(s,cx,y,cw,1,C_ITEM);
     y+=GAP;
@@ -1861,7 +2041,11 @@ static void draw_panel(const struct surface *s,int alone,int hud)
         if(selected) fill(s,cx,y,cw,rh,C_SELECTED);
         text(s,cx+12,y+15,name,it==IT_EXIT?C_OFF:off?C_DIM:C_TEXT,2);
         if(off) text(s,right-text_width(str(S_RENDER_32_ONLY),2),y+15,str(S_RENDER_32_ONLY),C_DIM,2);
-        else if(kind==KIND_CHOICE) {
+        else if(it==IT_RENDER && render_request==RENDER_GET) {
+            text(s,right-text_width(str(S_PROFILE_READING),2),y+15,str(S_PROFILE_READING),C_DIM,2);
+        } else if(it==IT_RENDER && render_error && render_saved<0) {
+            text(s,right-text_width(str(S_RENDER_RETRY),1),y+15,str(S_RENDER_RETRY),C_DIM,1);
+        } else if(kind==KIND_CHOICE) {
             const char *names[8]={0};
             int n,current,*choice=choice_of(it,&n,&current),pending=*choice;
             const char *value=choice_value(it,pending>=0 && pending<n?pending:current);
@@ -1870,7 +2054,7 @@ static void draw_panel(const struct surface *s,int alone,int hud)
             slider(s,cx+16,cw-32,y+44,names,n,pending>=0 && pending<n?pending:current,current);
         } else if(kind==KIND_TOGGLE) {
             if(it==IT_STATS && hud) text(s,right-text_width("MANGOHUD",2),y+15,"MANGOHUD",C_ON,2);
-            else toggle(s,right,y+11,it==IT_STATS?stats_on:it==IT_MOUSE?mouse_on:it==IT_STRETCH?stretch_on:framegen_on);
+            else toggle(s,right,y+11,it==IT_STATS?stats_on:it==IT_MOUSE?mouse_on:profile_value(it));
         } else text(s,right-text_width(">",2),y+15,">",selected?C_TEXT:C_DIM,2);
         y+=rh;
         fill(s,cx,y+GAP/2,cw,1,C_ITEM);
@@ -1881,10 +2065,15 @@ static void draw_panel(const struct surface *s,int alone,int hud)
     fill(s,x0+EDGE,foot+2,W-EDGE,FOOT_H-2,C_RAIL);
     {
         int it=section_items[section][in_items && item<count?item:0];
-        wrapped(s,x0+16,foot+14,(W-32)/12,item_help(it,alone,hud),C_DIM,2,h-40);
-        text(s,x0+16,h-28,in_items?item_buttons(it,hud):str(S_FOOT_RAIL),C_TEXT,2);
+        int scoped=it==IT_FPS || it==IT_FRAMEGEN || it==IT_RENDER || it==IT_STRETCH || it==IT_CONTROL || it==IT_KEYMAP || it==IT_CURSOR || it==IT_SWAPSTICKS || it==IT_SWAPBUTTONS;
+        const char *scope=scoped?str(it==IT_RENDER || !profile_live()?S_PROFILE_NEXT:S_PROFILE_NOW):str(S_PROFILE_SESSION);
+        text(s,x0+16,foot+10,scope,C_EDGE,1);
+        if(!scoped && cursor_program[0]) text(s,x0+16,foot+23,cursor_program,C_DIM,1);
+        wrapped(s,x0+16,foot+40,(W-32)/12,focus==FOCUS_PROFILE?str(S_PROFILE_PICK_HELP):item_help(it,alone,hud),C_DIM,2,h-40);
+        text(s,x0+16,h-28,focus==FOCUS_PROFILE?"X: EXE     O: <":in_items?item_buttons(it,hud):str(S_FOOT_RAIL),C_TEXT,2);
     }
 }
+#include "hw_overlay_profiles_draw.inc.c"
 /* lock held: key_at reads the page and shift */
 static void draw_keyboard(const struct surface *s)
 {
@@ -1892,7 +2081,15 @@ static void draw_keyboard(const struct surface *s)
     int total_w=10*KEY_W+9*GAP,x0=(s->width-total_w)/2,area_h=TOP_PAD+5*KEY_H+4*GAP+BOTTOM_PAD,y0=s->height-area_h-10;
     int row=kb_row,col=kb_col;
     box(s,x0-20,y0,total_w+40,area_h,C_PANEL,C_EDGE);
-    text(s,x0,y0+14,str(S_KB_TITLE),C_DIM,2);
+    if(view==VIEW_PROFILE_NAME) {
+        char line[68];
+        box(s,x0-20,y0-110,total_w+40,100,C_PANEL,C_EDGE);
+        text(s,x0,y0-94,str(S_PROFILE_NAME),C_TEXT,2);
+        snprintf(line,sizeof(line),"%.*s|%s",profile_caret,profile_name,profile_name+profile_caret);
+        text(s,x0,y0-62,line,C_EDGE,2);
+        text(s,x0,y0-30,str(S_PROFILE_NAME_HELP),C_DIM,1);
+    }
+    text(s,x0,y0+14,str(view==VIEW_PROFILE_NAME?S_PROFILE_NAME:S_KB_TITLE),C_DIM,2);
     text(s,x0+total_w-text_width(str(kb_shift?S_KB_CAPS:S_KB_LOWER),2),y0+14,str(kb_shift?S_KB_CAPS:S_KB_LOWER),
          kb_shift?C_ON:C_DIM,2);
     for(int r=0;r<5;r++) {
@@ -1908,8 +2105,8 @@ static void draw_keyboard(const struct surface *s)
         }
     }
     int hy=y0+TOP_PAD+5*KEY_H+4*GAP+10;
-    text(s,x0,hy,str(S_KB_HINT1),C_DIM,2);
-    text(s,x0,hy+22,str(S_KB_HINT2),C_DIM,2);
+    text(s,x0,hy,str(view==VIEW_PROFILE_NAME?S_PROFILE_NAME_FOOT:S_KB_HINT1),C_DIM,view==VIEW_PROFILE_NAME?1:2);
+    text(s,x0,hy+22,str(view==VIEW_PROFILE_NAME?S_PROFILE_NAME_HINT:S_KB_HINT2),C_DIM,view==VIEW_PROFILE_NAME?1:2);
 }
 /* MangoHud's default colours (overlay_params.cpp) */
 enum {HUD_BG=0xff020202,HUD_TEXT=0xffffffff,HUD_GPU=0xff2e9762,HUD_CPU=0xff2e97cb,HUD_VRAM=0xffad64c1,
@@ -2269,8 +2466,9 @@ void pw_hw_overlay_draw(uint32_t *pixels,unsigned pitch,unsigned width,unsigned 
         ft_last_us=now;
     }
     if(stats && hud_now.sampled && hud_conf.loaded) draw_stats(&s);
-    if(shown_view==VIEW_PANEL) draw_panel(&s,title_alone,hud_mode());
-    if(shown_view==VIEW_KEYBOARD) draw_keyboard(&s);
+    if(shown_view==VIEW_PANEL || shown_view==VIEW_PROFILES || shown_view==VIEW_PROFILE_NAME) draw_panel(&s,title_alone,hud_mode());
+    if(shown_view==VIEW_PROFILES) draw_profiles(&s);
+    if(shown_view==VIEW_KEYBOARD || shown_view==VIEW_PROFILE_NAME) draw_keyboard(&s);
     if(shown_view==VIEW_MAPPER) draw_mapper(&s);  /* 04.36 */
     pthread_mutex_unlock(&lock);
     if(toast_on) {  /* W240: at the bottom, away from the readout's and MangoHud's corner */
