@@ -44,6 +44,8 @@
 extern uint64_t sceKernelGetProcessTime(void);
 extern int pw_trace_level __attribute__((weak));   /* platform/ps4/pw_trace.h, not on this file's include path */
 static int fg_trace(void) {return &pw_trace_level?pw_trace_level>0:1;}
+extern int pw_perf_level __attribute__((weak));
+static int fg_perf(void) {return fg_trace() || (&pw_perf_level && pw_perf_level>0);}
 
 #define FG_FUNCTIONS(X) X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCmdPipelineBarrier) X(vkCreateQueryPool) \
     X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) X(vkCreateEvent) X(vkCmdSetEvent) \
@@ -435,6 +437,33 @@ static int fg_probe(void)
     return 0;
 }
 
+/* Caller owns fg_lock. Startup preparation and lazy first use share the same
+ * state machine and ISA/fence checks; preparation does not create any history. */
+static int fg_prepare_locked(void)
+{
+    if(fg.state<0) return -1;
+    if(fg.state==1) return 1;
+    const char *why=NULL;
+    if(pool_init() || !images) why="the sink reads no images by GPU address";
+    else if(fg_init()) why="initialisation";
+    else if(fg_probe()) why="a probe submission did not finish";
+    if(why) {fg_shutdown(why);return -1;}
+    fg.state=1;
+    return 1;
+}
+
+int pw_sink_gpu_fg_prepare(void)
+{
+    uint64_t start=sceKernelGetProcessTime();
+    pthread_mutex_lock(&fg_lock);
+    int result=fg_prepare_locked();
+    pthread_mutex_unlock(&fg_lock);
+    if(result<0||fg_perf())
+        fprintf(stderr,"PWFG prepare result=%d elapsed_us=%llu\n",result,
+                (unsigned long long)(sceKernelGetProcessTime()-start));
+    return result;
+}
+
 static void fg_report(void)
 {
     char line[512];int at=0;
@@ -495,13 +524,7 @@ int pw_sink_gpu_fg_frame(const void *swapchain,const void *pixels,unsigned pitch
     const char *why=NULL;
     uint64_t start=sceKernelGetProcessTime();
     pthread_mutex_lock(&fg_lock);
-    if(fg.state<0) {result=-1;goto done;}
-    if(!fg.state) {
-        if(pool_init() || !images) {why="the sink reads no images by GPU address";goto fail;}
-        if(fg_init()) {why="initialisation";goto fail;}
-        if(fg_probe()) {why="a probe submission did not finish";goto fail;}
-        fg.state=1;
-    }
+    if(fg_prepare_locked()<0) {result=-1;goto done;}
     if(swapchain!=fg.target) {
         if(fg.target && start-fg.target_us<FG_SWITCH_US) goto done;   /* the followed swapchain still presents */
         if(fg_trace()) fprintf(stderr,"PWFG target sc=%p %ux%u (was %p): history restarts\n",swapchain,width,height,fg.target);
@@ -579,7 +602,7 @@ int pw_sink_gpu_fg_frame(const void *swapchain,const void *pixels,unsigned pitch
         uint64_t spent=sceKernelGetProcessTime()-start;
         fg.block_sum_us+=spent;if(spent>fg.block_max_us) fg.block_max_us=spent;++fg.blocks;
     }
-    if(fg.blocks>=FG_REPORT) {if(fg_trace()) fg_report(); else fg.blocks=0;}
+    if(fg.blocks>=FG_REPORT) {if(fg_perf()) fg_report(); else fg.blocks=0;}
     goto done;
 fail:
     fg_shutdown(why?why:"unknown");

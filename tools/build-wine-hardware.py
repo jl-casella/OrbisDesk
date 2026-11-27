@@ -45,12 +45,22 @@ sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 for name,digest in base['object_hashes'].items():
     if sha(ROOT/name)!=digest:raise SystemExit('Wine object differs from proven link: '+name)
 flags=base['helper_compile_flags']
+present_pixels=json.loads((ROOT/'build/win32u-ps4/report.json').read_text())['pixel_sources']
+for name,digest in present_pixels.items():
+    if sha(ROOT/name)!=digest:raise SystemExit('Packed pixel presentation input differs from build: '+name)
+if 'win32u_refresh' in base:
+    refresh=base['win32u_refresh']
+    if refresh['builder_sha256']!=sha(ROOT/'tools/relink-win32u-boot.py'):
+        raise SystemExit('win32u boot consumer differs from its relink producer')
+    if refresh['producer_report_sha256']!=sha(ROOT/'build/win32u-ps4/report.json'):
+        raise SystemExit('win32u objects changed after boot relink')
 def run(command):
     with (work/'build.log').open('a') as log:
         subprocess.run(list(map(str,command)),cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True)
 renamed=work/'wine_boot_entry.o'
 run([*flags,'-Dmain=pw_wine_boot_main','-c',ROOT/'native/wine_boot.c','-o',renamed])
 wrapper=work/'wine_hardware.o';run([*flags,'-DPW_MANGOHUD_LAYER_ENABLED='+str(int(mangohud_enabled)),
+    '-DPW_PERF_DIAGNOSTICS='+str(int(args.performance_diagnostics)),
     '-DHW_VERSION="'+args.app_version+'"',
     '-I'+str(ROOT/'native'),'-c',ROOT/'native/wine_hardware.c','-o',wrapper])
 heap=work/'native_heap.o';run([*flags,'-c',ROOT/'native/native_heap.c','-o',heap])
@@ -296,7 +306,7 @@ pop_spec=importlib.util.spec_from_file_location('pop_wine_child_builder',ROOT/'t
 pop_builder=importlib.util.module_from_spec(pop_spec);pop_spec.loader.exec_module(pop_builder)
 pop_builder.build_wine_prx(command,{'client_object':str(request_client_chunked.relative_to(ROOT)),
     'client_object_sha256':sha(request_client_chunked),'writer_object':str(request_writer.relative_to(ROOT)),
-    'writer_object_sha256':sha(request_writer)})
+    'writer_object_sha256':sha(request_writer)},performance_diagnostics=args.performance_diagnostics)
 (data/'orbisdesk').mkdir(exist_ok=True)
 shutil.copyfile(pop_builder.WORK/'pop-wine-child.prx',data/'orbisdesk/pop-wine-child.prx')
 prefix=data/'wine-prefix';prefix.mkdir(exist_ok=True)
@@ -415,6 +425,9 @@ for target in (data/'wine/lib/wine/i386-windows/ddraw.dll',prefix/'drive_c/windo
 # over the staged one; its Unix side is in the ELF from the same tree (tools/build-winevulkan-ps4.py).
 vk_batch=json.loads((ROOT/'out/winevulkan-batch/manifest.json').read_text())
 if vk_batch['builder_sha256']!=sha(ROOT/'tools/build-winevulkan-batch.py'):raise SystemExit('winevulkan batch differs from its builder')
+if vk_batch.get('hotpath_patch_sha256')!=sha(ROOT/'tools/wine_vk_batch_hotpath.py'):raise SystemExit('winevulkan hotpath patch differs from its build')
+for name in ('tools/wine_vk_descriptor_cache.py','platform/ps4/pw_vk_descriptor_cache.h','platform/ps4/pw_vk_descriptor_cache_pe.inc.c'):
+    if vk_batch.get('descriptor_sources',{}).get(name)!=sha(ROOT/name):raise SystemExit('winevulkan descriptor cache differs from its build: '+name)
 for target in (data/'wine/lib/wine/i386-windows/winevulkan.dll',prefix/'drive_c/windows/syswow64/winevulkan.dll'):
     copy_verified(ROOT/'out/winevulkan-batch'/vk_batch['winevulkan']['path'],target,vk_batch['winevulkan']['sha256'])
 # W160: the 32-bit wined3d with command stream timing (tools/build-wined3d-hw.py), over the staged one.
@@ -727,6 +740,12 @@ for name in games['system32']+games['notices']:
 # W052: ntdll and kernelbase that run 64-bit GUI programs as guests of this process
 # (tools/build-guest-hw.py), in the library directory and wherever the prefix has a copy.
 guest64=json.loads((ROOT/'out/guest-hw/manifest.json').read_text())
+for source,digest in guest64['quiescence_sources'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('guest quiescence input differs from build: '+source)
+for source,digest in guest64['compiler_sources'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('guest compiler policy input differs from build: '+source)
+for source,digest in guest64['fault_context_sources'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('guest fault context input differs from build: '+source)
 for source,digest in guest64.get('input_sha256',{}).items():
     if sha(ROOT/source)!=digest:raise SystemExit('guest DLL input changed: '+source)
 for name,e in guest64['modules'].items():
@@ -738,6 +757,10 @@ for name,e in guest64['modules'].items():
 # in a 64-bit process (tools/build-wow64-world-ps4.py); a relaunched 32-bit program keeps the stock ones.
 guest32=json.loads((ROOT/'out/guest-hw-i386/manifest.json').read_text())
 if guest32['builder_sha256']!=sha(ROOT/'tools/build-guest-hw.py'):raise SystemExit('i386 guest DLLs differ from their builder')
+for source,digest in guest32['compiler_sources'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('i386 guest compiler policy input differs from build: '+source)
+for source,digest in guest32['fault_context_sources'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('i386 guest fault context input differs from build: '+source)
 for source,digest in guest32.get('input_sha256',{}).items():
     if sha(ROOT/source)!=digest:raise SystemExit('i386 guest DLL input changed: '+source)
 (data/'wine/lib/wine/i386-guest').mkdir(parents=True,exist_ok=True)
@@ -1491,7 +1514,88 @@ manifest['build_identity']={'files_with_build_paths':len(identity_hits),'allowed
 manifest['runs_until_closed']=True
 manifest['obsolete_files']=obsolete_files
 manifest['user_reg_reset']=user_reg_reset
+manifest['vcrt_fallback']={'doc':'docs/VCRUNTIME_FALLBACK.md','files':vcrt_files,'copies':VCRT_FALLBACK_DIR,
+    'list':VCRT_FALLBACK_LIST,'list_sha256':runtime_files[VCRT_FALLBACK_LIST]['sha256'],
+    'rule':'a prefix copy that is not a Wine builtin is kept; a missing one is restored from the copies on every start'}
 manifest['runtime_embedded']={'embedded':not args.runtime_outside_package,'install_json':'runtime/install.json','install_json_sha256':sha(install_json),'files':len(runtime_files),'bytes':install['bytes']}
+manifest['performance_diagnostics']={'enabled':args.performance_diagnostics,
+    'empty_submit':'asynchronous GFX flush CS, original CPU fallback for other queues or explicit control',
+    'cpu_control_file':'/data/orbisdesk/perf-empty-submit-cpu.txt',
+    'summaries':['PWPERF','PWFPS','PWFG','PWQUEUE','PWVK present','PWTHREADPERF','PW_NATIVE_PROFILE'],
+    'queue_reports':'first use, 5-second timer including zeroes, program change and process exit; cumulative totals',
+    'thread_profile':'WoW64 per-thread TSC buckets plus RUSAGE_THREAD CPU, block I/O and scheduling counters',
+    'wow64native_builder_sha256':sha(ROOT/'tools/build-wow64native-ps4.py'),
+    'mesa_async_patch_sha256':sha(ROOT/'tools/vk-h0/patch-mesa-async-empty-submit.py')}
+manifest['source_hashes']['native/wine_vk_runtime.c']=sha(ROOT/'native/wine_vk_runtime.c')
+for source in ('platform/ps4/pw_overlay_profiles.h','native/hw_overlay_profiles.inc.c','native/hw_overlay_profiles_draw.inc.c','native/hw_pad_remap.h'):
+    manifest['source_hashes'][source]=sha(ROOT/source)
+manifest['overlay_profiles']={'selector':True,'offline_editing':True,'history_entries':128,
+    'saved_preference_slots':64,'internal_executables_filtered':True,'file_browser':False,
+    'renderer_application':'next executable start','runtime_settings':'apply only for current runtime owner',
+    'hardware_validation':'pending'}
+manifest['overlay_profiles']['input_options']={'swapsticks':'left/right axes and L3/R3',
+    'swapbuttons':'A/B and X/Y; cross/circle and square/triangle',
+    'default':'off; per executable','native_menu_controls':'physical, unchanged',
+    'application':'once before shared gamepad state and keyboard/mouse emulation'}
+manifest['overlay_profiles']['registry_worker']='Explorer startup; independent of first guest launch'
+manifest['overlay_profiles']['renderer_timeout']='all GET/SET requests bounded to 3s; failed reads expose retry'
+for source in ('platform/ps4/pw_overlay_registry_guest.inc.c','tools/build-explorer-hw.py'):
+    manifest['source_hashes'][source]=sha(ROOT/source)
+for source in ('platform/ps4/pw_present_trace.h','platform/ps4/pw_present_trace.inc.c'):
+    manifest['source_hashes'][source]=sha(ROOT/source)
+manifest['performance_diagnostics']['presentation_stages']='per-thread outside callback, frame metadata lock/work, preparation (including FG), limiter and tail; wall time includes waits; blit is non-additive'
+manifest['source_hashes']['platform/ps4/pw_trace.h']=sha(ROOT/'platform/ps4/pw_trace.h')
+manifest['source_hashes']['tools/wine_vk_batch_hotpath.py']=sha(ROOT/'tools/wine_vk_batch_hotpath.py')
+manifest['source_hashes']['tools/build-winevulkan-batch.py']=sha(ROOT/'tools/build-winevulkan-batch.py')
+for source,digest in vk_batch['descriptor_sources'].items():manifest['source_hashes'][source]=digest
+manifest['descriptor_cache']={'mode':'synchronous per-producer cache, masked writes and resource epoch invalidation',
+    'native_protocol':'private negotiated dual real-driver query; standard batch v1/v2 unchanged',
+    'control_file':'/data/orbisdesk/perf-descriptor-cache.off','hardware_validation':'pending',
+    'audits':'first 16 hits per producer, then every 4096; any mismatch disables cache'}
+manifest['guest_quiescence']={'signal':'thread-directed SIGQUIT, only after raw handler verification',
+    'acknowledgement':'private tagged ThreadTimes extension; native exit boundary and generation token',
+    'failure_policy':'retain guest code and resources if execution is active or unknown','hardware_validation':'pending'}
+manifest['compiler_policy']={'default':'DXVK defaults; explicit user configuration preserved', 'overlay_selector':False,
+    'migration':'ignore retired overlay.ini compiler.* keys; remove only marked generated DXVK_CONFIG suffix',
+    'activation':'restart OrbisDesk to discard retained DXVK instances',
+    'pipeline_library_override':False,'hardware_validation':'pending'}
+manifest['operation_trace']={'ops':optrace['wraps'],'clock':'kernel TSC frequency; serialized TSC reads',
+    'summaries':'top three per thread per five seconds','slow_events':'at most eight per operation per five seconds across the process; nonblocking budget',
+    'semantics':'original status and errno; outermost traced operation only; requested read bytes, not completed bytes',
+    'optimization':'nonzero timed sleeps keep sched_yield without unused rusage queries; zero yields unchanged'}
+manifest['operation_trace']['read_stages']='lookup, buffer, IO, completion; per-kind independent summaries; inline bytes only, unknown delegated bytes excluded'
+manifest['source_hashes'].update(optrace['source_hashes'])
+manifest['source_hashes'].update(present_pixels)
+manifest['source_hashes']['tools/relink-win32u-boot.py']=sha(ROOT/'tools/relink-win32u-boot.py')
+manifest['pixel_presentation']={'formats':'BGRA/RGBA 32-bit; packed 4444, 565 and 5551 converted to BGRA',
+    'ownership':'GPU-readable persistent window storage; released on swapchain forget and window destruction',
+    'validation':'format, dimensions and source stride checked before publication; 32-bit zero-copy preserved',
+    'framegen':'packed sources captured from the existing converted BGRA layer; same scheduler identity, no extra conversion',
+    'diagnostics':'PWPIXELS layer / PWPIXELS rejected / PWFG normalized_source','hardware_validation':'pending physical colour/fullscreen/close/packed-framegen tests'}
+manifest['source_hashes'].update(world_build['fd_pressure_sources'])
+manifest['guest_compatibility']={'version':'per-EXE Wine AppDefaults and guest manifest',
+    'fd_cache':'04.61: at most 64 retained regular-file/directory client copies; >=512 still uncached; no live-cache eviction',
+    'fd_resource_errors':'transient descriptor/memory failures are retried instead of cached; bounded PWFS fd_lookup_failed diagnostics',
+    'fd_pressure_measurement':'first EMFILE/ENFILE: adapter origins, atomic cache snapshot, read-only kernel control; original error preserved',
+    'dll_search':'default application directory is the calling guest EXE directory',
+    'installer':'guest WinMain arguments and real DuplicateHandle through registered guest process handles',
+    'hardware_validation':'pending; Half-Life g_pFileSystem and WiX Burn end-to-end require a new console run'}
+for source in ('platform/ps4/pw_compiler_policy.h','platform/ps4/pw_compiler_guest.inc.c','platform/ps4/pw_guest_fault_context.inc.c','native/pop_wine_child.c','native/hw_overlay.c'):
+    manifest['source_hashes'][source]=sha(ROOT/source)
+manifest['source_hashes']['fixtures/win32/orbis32host.c']=sha(ROOT/'fixtures/win32/orbis32host.c')
+manifest['source_hashes']['tools/build-pop-wine-child.py']=sha(ROOT/'tools/build-pop-wine-child.py')
+manifest['compiler_policy']['diagnostics']='DXVK INFO worker count announcements in performance builds; environment policy logs do not prove effective worker count'
+for source in ('tools/wine_guest_quiesce.py','platform/ps4/pw_thread_quiesce.h','platform/ps4/pw_guest_quiesce.inc.c','tools/build-wow64-world-ps4.py','platform/ps4/pw_wine_signals.c','platform/ps4/pw_native_fault_record.h','tools/build-wine-delete-server.py'):
+    manifest['source_hashes'][source]=sha(ROOT/source)
+manifest['performance_diagnostics']['batch_reports']='first present and every 300 presents; top unbatched functions, empty housekeeping skips'
+manifest['performance_diagnostics']['fg_reports']='periodic shown_rate; generated flips confirmed, source-real submissions; startup preparation timing'
+manifest['thread_alerts']={'backend':'kernel-event-with-per-entry-server-fallback',
+    'pending_fastpath':'process-local binary bit; kernel parking only when not ready; stale wakes rechecked',
+    'control_file':'/data/orbisdesk/perf-thread-alert-server.txt',
+    'scope':'NtAlertThreadByThreadId and NtWaitForAlertByThreadId; process-local only',
+    'hardware_validation':'pending'}
+for source in ('platform/ps4/pw_wine_thread_alert.inc.c','tools/wine_thread_alert.py','tools/prepare-wine-boot.py'):
+    manifest['source_hashes'][source]=sha(ROOT/source)
 manifest['result_name']='text-result.txt'
 manifest['expected_prefix']='passed=1;family_tahoma=1;'
 # W112 retains W103's private system.o override and rebuilds native telemetry.

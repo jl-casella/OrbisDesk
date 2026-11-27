@@ -108,6 +108,8 @@ enum {WIDTH=1280,HEIGHT=720};
 
 static void record_exit(int status,const char *method)
 {
+    extern void pw_vk_perf_flush(const char *);
+    pw_vk_perf_flush("process-exit");
     char message[160];int n=snprintf(message,sizeof(message),HW_BUILD " process_exit method=%s status=0x%08x t_ms=%llu\n",method,(unsigned)status,
                                      (unsigned long long)(sceKernelGetProcessTime()/1000));
     if(log_fd>=0){write(log_fd,message,(size_t)n);fsync(log_fd);}
@@ -1079,6 +1081,26 @@ int main(void)
     {pthread_t sync_thread;int sync_rc=pthread_create(&sync_thread,NULL,log_sync,NULL);note(HW_BUILD " log_sync rc=%d\n",sync_rc);}
     install_crash_handler();
     trace_setup();
+    /* Deliberately independent of trace.txt: bounded performance summaries, no verbose Wine channels. */
+    {
+        extern int pw_perf_level;
+#if PW_PERF_DIAGNOSTICS
+        pw_perf_level=1;
+#endif
+        struct stat control;
+        int cpu=stat("/data/orbisdesk/perf-empty-submit-cpu.txt",&control)==0;
+        /* Experimental process-local alert path. Control is read only at boot. */
+        extern void pw_wine_thread_alert_configure(int,int);
+        int native_alerts=stat("/data/orbisdesk/perf-thread-alert-server.txt",&control)!=0;
+        pw_wine_thread_alert_configure(native_alerts,pw_perf_on());
+        if(!native_alerts||pw_perf_on()) note(HW_BUILD " PWALERT config backend=%s\n",native_alerts?"kernel-event":"server-control");
+        setenv("ORBISDESK_EMPTY_SUBMIT_CPU",cpu?"1":"0",1);
+        if(pw_perf_on()||cpu) note(HW_BUILD " PWPERF config summaries=%d empty_submit=%s\n",pw_perf_on(),cpu?"cpu-control":"async-gfx");
+        extern void pw_optrace_configure(uint64_t,int);
+        pw_optrace_configure(sceKernelGetTscFrequency(),pw_perf_on());
+        extern int pw_vk_perf_monitor_start(void);
+        if(pw_perf_level) note(HW_BUILD " PWPERF monitor rc=%d\n",pw_vk_perf_monitor_start());
+    }
     shader_cache_setup();
     loading(5,"PREPARING WINE");
     /* not in a relaunch that runs a program from the desktop (W043): a game's OPTIONS is not this menu's */
@@ -1139,7 +1161,7 @@ int main(void)
      * with controller input (native/hw_pad.c); explorer runs until the app closes. */
     enum {MAX_LAUNCH_ARGS=16};  /* W265 (W263: PoP, Worms 3D): was 6, as the switch's */
     static char exe_arg[300],wine_args[MAX_LAUNCH_ARGS][300];
-    char *args[24+MAX_LAUNCH_ARGS+MAX_SWITCH_ENV]={"wine-" HW_BUILD,"--prepared-prefix",exe_arg,"--env=WINE_PS5_DESKTOP=1280x720"};
+    char *args[29+MAX_LAUNCH_ARGS+MAX_SWITCH_ENV]={"wine-" HW_BUILD,"--prepared-prefix",exe_arg,"--env=WINE_PS5_DESKTOP=1280x720"};
     int argc=4;
     snprintf(exe_arg,sizeof(exe_arg),"--wine-exe=" HW_EXE);
     /* W043: a program started from the desktop (HW_NEXT) comes first, once */
@@ -1250,8 +1272,14 @@ int main(void)
      * The 32-bit world sets its own per program (fixtures/win32/orbis32host.c, C:\orbis\dxvkdebug.txt). */
     static char dxvk_path[]="--env=DXVK_LOG_PATH=none";
     static char dxvk_warn[]="--env=DXVK_LOG_LEVEL=warn",dxvk_error[]="--env=DXVK_LOG_LEVEL=error";
+    static char dxvk_info[]="--env=DXVK_LOG_LEVEL=info",dxvk_workers[]="--env=PW_DXVK_WORKERS_TRACE=1";
+    int dxvk_worker_trace=0;
+#if PW_PERF_DIAGNOSTICS
+    dxvk_worker_trace=pw_perf_on();
+#endif
     args[argc++]=dxvk_path;
-    args[argc++]=pw_trace_on()?dxvk_warn:dxvk_error;
+    args[argc++]=dxvk_worker_trace?dxvk_info:pw_trace_on()?dxvk_warn:dxvk_error;
+    if(dxvk_worker_trace)args[argc++]=dxvk_workers;
     /* W086: the MangoHud Vulkan layer (implicit, registered in the prefix) is on for every
      * Vulkan and OpenGL (Zink) program */
     static char mangohud[]="--env=MANGOHUD=1";
@@ -1361,7 +1389,7 @@ int main(void)
             /* 04.35: batching is on by default in the world (04.33 run-0275: zink's calls -58%, no PW_VK_BATCH
              * fatal in Alan Wake or GTA SA); C:\orbis\vkbatch32.off turns it off. vkbatch32.txt is no longer needed. */
             const int world_batch=sceKernelStat("/data/wine-prefix/drive_c/orbis/vkbatch32.off",&world_marker)!=0;
-            const int world_prof=sceKernelStat("/data/wine-prefix/drive_c/orbis/nativeprofile.txt",&world_marker)==0;
+            const int world_prof=pw_perf_level>0 || sceKernelStat("/data/wine-prefix/drive_c/orbis/nativeprofile.txt",&world_marker)==0;
             if(world_batch) args[argc++]=world_vk_batch;
             if(world_prof) args[argc++]=world_profile;
             /* 04.30: without PW_QPC_TSC_HZ wow64native times its profile against a 20 ms measurement, which said
@@ -1426,10 +1454,30 @@ int main(void)
             note(HW_BUILD " PWGL opengl32 native (default; opengl32builtin.txt turns it off)\n");
         }
     }
+    if(pw_perf_level>0) {
+        static char batch_stats[]="--env=PW_VK_BATCH_STATS=1";
+        static char batch_fallback[]="--env=PW_VK_BATCH_FALLBACK_PROFILE=1";
+        args[argc++]=batch_stats;args[argc++]=batch_fallback;
+    }
+    {
+        struct stat control;
+        static char descriptor_on[]="--env=PW_VK_DESCRIPTOR_CACHE=1";
+        static char descriptor_off[]="--env=PW_VK_DESCRIPTOR_CACHE=0";
+        int use_cache=stat("/data/orbisdesk/perf-descriptor-cache.off",&control)!=0;
+        args[argc++]=use_cache?descriptor_on:descriptor_off;
+        if(!use_cache||pw_perf_on()) note(HW_BUILD " PW_DESCRIPTOR_CACHE requested=%d\n",use_cache);
+    }
     args[argc]=NULL;
     for(int i=2;i<argc;i++) note(HW_BUILD " launch_arg %s\n",args[i]);
     note(HW_BUILD " calling_wine_boot_main cpu=%s machine=0x%x t_ms=%llu\n",cpu,(unsigned)machine,(unsigned long long)(sceKernelGetProcessTime()/1000));
     loading(30,"STARTING WINE");
+    {
+        extern int pw_hw_framegen_prewarm(void);
+        struct stat control;
+        int prepare=stat("/data/orbisdesk/perf-fg-prewarm.off",&control)!=0;
+        int prewarm=prepare?pw_hw_framegen_prewarm():0;
+        if(prewarm<0||!prepare||pw_perf_on()) note(HW_BUILD " PWFG prewarm enabled=%d result=%d\n",prepare,prewarm);
+    }
     sceKernelUsleep(1000000);
     hw_manage_checkpoint("before_wine");
     manage_accepting=0;  /* from here the pad is Wine's (native/hw_pad.c) */

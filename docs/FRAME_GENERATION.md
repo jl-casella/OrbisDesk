@@ -8,6 +8,8 @@ This work is staged. Stages 1 to 5 have run on a PS4 Pro (04.15 and 04.19, below
 
 ## Status
 
+**04.63, 2026-11-24:** the user reported working frame generation in Portal 1. The matching physical PS4 Pro Baikal FW12.50 log (`20261124T135505Z`, `run-0037.log`, version marker 04.63) identifies Steam app 400 / `hl2.exe`, WineD3D OpenGL, 1024x768 and a 30 FPS limit. `PWFG shown_rate` includes windows at 60 displayed, 30 real and 30 generated FPS. This validates generated-frame presentation in that configuration; it does not validate Half-Life 1's packed-pixel bridge or a full game/teardown matrix.
+
 | Stage | What | State | Evidence |
 | --- | --- | --- | --- |
 | 1 | Observation: source timestamps, flip/vblank completion, rendered/generated/displayed counters | Implemented | PS4 Pro, 04.15 (W303 physical run 20261117T170454Z, run-0203): `period_us` 16 682–16 684, about 120 vblanks per 2 s, `status_failed=0`, `pending_max=0`. The vblank status layout is right |
@@ -113,6 +115,8 @@ Followed swapchain: the first one that presents. Another one takes over only aft
 ## Stage 3: the compute passes
 
 Four compute shaders, compiled to SPIR-V by the hardware build next to the compositor's shaders. No GLSL compiler runs on the console. All data is in storage buffers, so no image format features are involved. The source must be one of the 32-bit RGBA/BGRA formats the compositor already shows.
+
+The follow-up after 04.61 feeds packed 16-bit sources through the driver's existing BGRA conversion before capture, with the same buffer identity used by the display scheduler. This addresses Half-Life's logged rejected capture without changing shader formats or counting extra source presents. The bridge is covered by host tests and still needs physical validation; see [guest compatibility](GUEST_COMPATIBILITY.md#follow-up-after-the-0461-test).
 
 | Pass | Grid (1280×720 source) | Work |
 | --- | --- | --- |

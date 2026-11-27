@@ -39,13 +39,16 @@ def fself_lib(elf, prx):
         stdout=subprocess.DEVNULL)
 
 
-def build_wine_prx(command=None, request_writer=None, eboot_sha256=None):
+def build_wine_prx(command=None, request_writer=None, eboot_sha256=None, performance_diagnostics=False):
     """The Wine PRX from the title's link command. tools/build-wine-hardware.py calls this with its own command
     and request writer while it builds, and ships the PRX in the package (2026-11-20); run alone, this reads both
     from the last build's manifest."""
+    if WORK.is_symlink():
+        raise SystemExit('Wine child output must be private, not a symlink to another checkout')
     if command is None:
         manifest = json.loads((ROOT / 'out/wine-hardware-w303/manifest.json').read_text())
         command, request_writer, eboot_sha256 = manifest['link_command'], manifest['request_writer'], manifest.get('eboot_sha256')
+        performance_diagnostics=manifest.get('performance_diagnostics',{}).get('enabled',False)
     WORK.mkdir(parents=True, exist_ok=True)
     flags = json.loads((ROOT / 'build/wine-boot/link-report.json').read_text())['helper_compile_flags']
     drop = {HW + 'wine_hardware.o', HW + 'hw_pad.o', HW + 'hw_overlay.o', 'build/steam-hosted/steam_client_hosted.o',
@@ -83,7 +86,7 @@ def build_wine_prx(command=None, request_writer=None, eboot_sha256=None):
     objects = []
     for source, obj in (('native/pop_child_sink.c', 'pop_child_sink.o'), ('native/pop_wine_child.c', 'pop_wine_child.o'),
                         ('native/pop_wine_child_stubs.c', 'pop_wine_child_stubs.o')):
-        run([*flags, '-DPOP_CHILD_GPU', '-I' + str(ROOT / 'native'), '-c', ROOT / source, '-o', WORK / obj])
+        run([*flags, '-DPOP_CHILD_GPU', '-DPW_PERF_DIAGNOSTICS='+str(int(performance_diagnostics)), '-I' + str(ROOT / 'native'), '-c', ROOT / source, '-o', WORK / obj])
         if obj != 'pop_child_sink.o':
             objects.append(str(WORK / obj))
     # musl's aligned allocators come in strongly through Mesa/libc++ in the title; here nothing else asks for them

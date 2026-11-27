@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <orbis/libkernel.h>
 #include <orbis/VideoOut.h>
+#include "pw_present_pixels.h"
 
 /* A build may lower the BMP dumps (each is a synchronous ~2 MB write before the flip)
  * and add process time to the frame markers. The defaults keep the fork evidence. */
@@ -361,6 +362,7 @@ static int vblank_status(struct pw_vblank_status *status)
  * The vblank count is trusted once it has been seen to advance at about the refresh rate over a second; until then
  * (or if it stops) the hold is by time from the last release. */
 #include "pw_fps_limit.h"
+#include "pw_present_trace.h"
 extern int pw_hw_overlay_fps_limit(void);
 enum {FL_CHAINS=4,FL_REPORT_US=5000000,FL_POLL_US=250,FL_EARLY_US=1500,FL_SLACK_US=4000,FL_TRUST_US=1000000};
 static pthread_mutex_t fl_lock=PTHREAD_MUTEX_INITIALIZER;
@@ -395,7 +397,7 @@ static void fl_check_vblank(uint64_t now,int vb_ok,const struct pw_vblank_status
 /* fl_lock held */
 static void fl_report(uint64_t now)
 {
-    if(!pw_trace_on()) return;  /* alpha 2: a line every 5 s, traces only */
+    if(!pw_perf_on()) return;  /* bounded performance diagnostics or ordinary traces */
     if(!fl_report_us) {fl_report_us=now;return;}
     if(now-fl_report_us<FL_REPORT_US) return;
     fprintf(stderr,"PWFPS limit=%s cap=%d presents=%u held=%u held_us_avg=%u held_us_max=%u late=%u pacing=%s "
@@ -492,7 +494,11 @@ static pthread_mutex_t pf_lock=PTHREAD_MUTEX_INITIALIZER;
 static uint64_t pf_window_us,pf_last_us,pf_since_ns,pf_prev_avg_us;
 static uint64_t pf_frame_sum_us,pf_frame_max_us,pf_worst_frame_ns,pf_kind_ns[PF_KINDS],pf_miss_ns;
 static unsigned pf_frames,pf_over_50ms,pf_over_100ms,pf_hitches,pf_hitch_compiles;
+static unsigned pf_over_34ms,pf_over_250ms;
 static unsigned pf_kind_count[PF_KINDS],pf_hits,pf_disk,pf_misses,pf_max_us,pf_slow_lines;
+static uint64_t pf_slow_epoch_us,pf_frame_epoch_us;
+static unsigned pf_frame_lines;
+extern int pthread_getthreadid_np(void);
 static uint64_t pf_gpu_busy0,pf_gpu_span0,pf_gpu_lost0,pf_cpu_ns0,pf_thread_ns0;
 static pthread_t pf_thread;
 static int pf_thread_set;
@@ -504,18 +510,24 @@ void pw_vk_pipeline_note(unsigned kind,uint64_t ns,unsigned flags);
 void pw_vk_pipeline_note(unsigned kind,uint64_t ns,unsigned flags)
 {
     unsigned us=ns/1000>UINT32_MAX?UINT32_MAX:(unsigned)(ns/1000);
-    int slow=0;
-    if(!pw_trace_on()) return;  /* alpha 2: PWPERF, traces only */
+    int slow=0;uint64_t end_us=0;
+    if(!pw_perf_on()) return;  /* bounded performance diagnostics or ordinary traces */
     if(kind>=PF_KINDS) kind=PF_GFX;
     pthread_mutex_lock(&pf_lock);
     ++pf_kind_count[kind];pf_kind_ns[kind]+=ns;pf_since_ns+=ns;
     if(flags&1) ++pf_hits; else {++pf_misses;pf_miss_ns+=ns;}
     if(flags&2) ++pf_disk;
     if(us>pf_max_us) pf_max_us=us;
-    if(us>=PF_SLOW_US && pf_slow_lines<PF_SLOW_LINES) {++pf_slow_lines;slow=1;}
+    if(us>=PF_SLOW_US) {
+        end_us=sceKernelGetProcessTime();
+        if(!pf_slow_epoch_us||end_us<pf_slow_epoch_us||end_us-pf_slow_epoch_us>=5000000) {
+            pf_slow_epoch_us=end_us;pf_slow_lines=0;
+        }
+        if(pf_slow_lines<PF_SLOW_LINES){++pf_slow_lines;slow=1;}
+    }
     pthread_mutex_unlock(&pf_lock);
-    if(slow) fprintf(stderr,"PWPERF slow_compile kind=%s us=%u cached=%u disk=%u\n",pf_kind_words[kind],us,flags&1,
-                     (flags>>1)&1);
+    if(slow) fprintf(stderr,"PWPERF slow_compile kind=%s us=%u cached=%u disk=%u end_us=%llu native_tid=%d\n",pf_kind_words[kind],us,flags&1,
+                     (flags>>1)&1,(unsigned long long)end_us,pthread_getthreadid_np());
 }
 static uint64_t pf_cpu_ns(int who)
 {
@@ -555,7 +567,8 @@ static void pf_report(uint64_t now,char *line,size_t size)
     snprintf(line,size,"PWPERF window_ms=%llu frames=%u frame_us_avg=%u frame_us_max=%llu over_50ms=%u over_100ms=%u "
              "hitches=%u hitches_with_compile=%u worst_frame_compile_us=%llu compiles=%u compile_ms=%llu "
              "compile_max_us=%u cached=%u disk=%u misses=%u miss_ms=%llu gfx=%u/%llums lib=%u/%llums "
-             "compute=%u/%llums shader=%u/%llums gpu_busy_pct=%d cpu_cores_x10=%d present_thread_pct=%d\n",
+             "compute=%u/%llums shader=%u/%llums gpu_busy_pct=%d cpu_cores_x10=%d present_thread_pct=%d "
+             "over_34ms=%u over_250ms=%u end_us=%llu\n",
              (unsigned long long)(window/1000),pf_frames,avg,(unsigned long long)pf_frame_max_us,pf_over_50ms,
              pf_over_100ms,pf_hitches,pf_hitch_compiles,(unsigned long long)(pf_worst_frame_ns/1000),compiles,
              (unsigned long long)(compile_ns/1000000),pf_max_us,pf_hits,pf_disk,pf_misses,
@@ -563,27 +576,40 @@ static void pf_report(uint64_t now,char *line,size_t size)
              pf_kind_count[PF_GFX],(unsigned long long)(pf_kind_ns[PF_GFX]/1000000),
              pf_kind_count[PF_LIB],(unsigned long long)(pf_kind_ns[PF_LIB]/1000000),
              pf_kind_count[PF_COMPUTE],(unsigned long long)(pf_kind_ns[PF_COMPUTE]/1000000),
-             pf_kind_count[PF_SHADER],(unsigned long long)(pf_kind_ns[PF_SHADER]/1000000),gpu_pct,cores_x10,thread_pct);
+             pf_kind_count[PF_SHADER],(unsigned long long)(pf_kind_ns[PF_SHADER]/1000000),gpu_pct,cores_x10,thread_pct,
+             pf_over_34ms,pf_over_250ms,(unsigned long long)now);
     if(pf_frames) pf_prev_avg_us=avg;
     pf_frame_sum_us=pf_frame_max_us=pf_worst_frame_ns=pf_miss_ns=0;
     pf_frames=pf_over_50ms=pf_over_100ms=pf_hitches=pf_hitch_compiles=0;
+    pf_over_34ms=pf_over_250ms=0;
     pf_hits=pf_disk=pf_misses=pf_max_us=pf_slow_lines=0;
     memset(pf_kind_count,0,sizeof(pf_kind_count));memset(pf_kind_ns,0,sizeof(pf_kind_ns));
 }
 /* each present, before FPS LIMIT holds it: the interval since the previous one, as the game sees it */
 static void pf_present(void)
 {
-    if(!pw_trace_on()) return;  /* alpha 2: PWPERF, traces only */
+    if(!pw_perf_on()) return;  /* bounded performance diagnostics or ordinary traces */
     uint64_t now=sceKernelGetProcessTime();
-    char line[640];line[0]=0;
+    char line[896],slow_line[256];line[0]=0;slow_line[0]=0;
     pthread_mutex_lock(&pf_lock);
     if(!pf_window_us) pf_start(now);
     else if(pf_last_us && now>pf_last_us) {
         uint64_t frame=now-pf_last_us;
         ++pf_frames;pf_frame_sum_us+=frame;
+        if(frame>=34000) ++pf_over_34ms;
+        if(frame>=250000) ++pf_over_250ms;
         if(frame>pf_frame_max_us) {pf_frame_max_us=frame;pf_worst_frame_ns=pf_since_ns;}
         if(frame>=50000) ++pf_over_50ms;
         if(frame>=100000) ++pf_over_100ms;
+        if(frame>=100000) {
+            if(!pf_frame_epoch_us||now<pf_frame_epoch_us||now-pf_frame_epoch_us>=5000000) {
+                pf_frame_epoch_us=now;pf_frame_lines=0;
+            }
+            if(pf_frame_lines++<8)snprintf(slow_line,sizeof(slow_line),
+                "PWFRAME start_us=%llu end_us=%llu frame_us=%llu compile_overlap_us=%llu native_tid=%d\n",
+                (unsigned long long)pf_last_us,(unsigned long long)now,(unsigned long long)frame,
+                (unsigned long long)(pf_since_ns/1000),pthread_getthreadid_np());
+        }
         if(pf_prev_avg_us && frame>2*pf_prev_avg_us && frame>=PF_HITCH_MIN_US) {
             ++pf_hitches;
             if(pf_since_ns>=PF_HITCH_COMPILE_NS) ++pf_hitch_compiles;
@@ -593,6 +619,7 @@ static void pf_present(void)
     if(now-pf_window_us>=PF_REPORT_US) {pf_report(now,line,sizeof(line));pf_start(now);}
     pthread_mutex_unlock(&pf_lock);
     if(line[0]) fputs(line,stderr);
+    if(slow_line[0])fputs(slow_line,stderr);
 }
 static void fg_read_config(void)
 {
@@ -634,7 +661,7 @@ extern int pw_hw_overlay_framegen(void);
 extern int pw_hw_overlay_hud_rect(unsigned width,unsigned height,int *rect);
 /* stage 4: the latest present of a capped swapchain, as the hook saw it, for the presenter (fgd_lock) */
 static pthread_mutex_t fgd_lock=PTHREAD_MUTEX_INITIALIZER;
-static struct {const void *pixels;unsigned width,height;int span;uint64_t seq;} fgd_note;
+static struct {const void *swapchain,*pixels;unsigned width,height;int span;uint64_t seq;} fgd_note;
 static struct pw_fgd fgd;                            /* the presenter's decisions (sink lock) */
 static uint64_t fgd_seen_seq,fgd_report_us;          /* sink lock */
 static unsigned fgd_pairs,fgd_alone;                 /* in the current report */
@@ -645,6 +672,53 @@ static unsigned fg_program_serial;
 /* sink lock: what show() draws for the followed image: 0 the layers as Wine handed them, 1 its generated frame,
  * 2 its real frame (the generator's copy) */
 static int fgd_variant;
+/* Capture only pixels the generator can read. Packed sources use the driver's
+ * already converted, window-owned BGRA layer via pw_wine_framegen_normalized. */
+static void fg_capture_frame(const void *swapchain,const void *pixels,unsigned pitch,unsigned width,unsigned height,int rgba)
+{
+#ifdef PW_SINK_GPU
+    int mode=fg_mode;
+    if(!fg_generator_off && (mode==FG_SHADOW || (mode==FG_DISPLAY && fl_auto.cap==2 && !fgd.gave_up))) {
+        int keep[4]={0,0,0,0};
+        if(mode==FG_DISPLAY) pw_hw_overlay_hud_rect(width,height,keep);
+        int r=pw_sink_gpu_fg_frame(swapchain,pixels,pitch,width,height,rgba,keep,fg_restart_wanted);
+        fg_restart_wanted=0;
+        if(r>0) __atomic_add_fetch(&ft_generated,1,__ATOMIC_RELAXED);
+        else if(r<0) {
+            __atomic_add_fetch(&ft_generated_failed,1,__ATOMIC_RELAXED);
+            fg_generator_off=1;
+            fprintf(stderr,"PWFG generator off for this run: real frames only from now on\n");
+        }
+    } else fg_restart_wanted=1;
+#else
+    (void)swapchain;(void)pixels;(void)pitch;(void)width;(void)height;(void)rgba;
+#endif
+}
+
+void pw_wine_framegen_normalized(const void *swapchain,const void *source,const void *bgra,unsigned width,unsigned height);
+void pw_wine_framegen_normalized(const void *swapchain,const void *source,const void *bgra,unsigned width,unsigned height)
+{
+    /* Called under the driver's screen lock, after conversion and before the
+     * layer is published. Capture finishes copying before this buffer is reused.
+     * The scheduler must follow that same layer pointer, not the packed source. */
+    pthread_mutex_lock(&fgd_lock);
+    int current=fgd_note.swapchain==swapchain && fgd_note.pixels==source && fgd_note.width==width && fgd_note.height==height;
+    pthread_mutex_unlock(&fgd_lock);
+    if((!current && fg_mode!=FG_SHADOW) || !bgra || !width || width>UINT_MAX/4 || !height) return;
+    if(fg_mode>=FG_SHADOW) {
+        static unsigned logged;
+        int eligible=!fg_generator_off && (fg_mode==FG_SHADOW || (fl_auto.cap==2 && !fgd.gave_up));
+        if(eligible && logged<4 && pw_trace_on()) {
+            ++logged;
+            fprintf(stderr,"PWFG normalized_source sc=%p packed=%p bgra=%p size=%ux%u pitch=%u\n",
+                    swapchain,source,bgra,width,height,width*4);
+        }
+        fg_capture_frame(swapchain,bgra,width*4,width,height,0);
+    }
+    pthread_mutex_lock(&fgd_lock);
+    if(fgd_note.swapchain==swapchain && fgd_note.pixels==source && fgd_note.width==width && fgd_note.height==height) fgd_note.pixels=bgra;
+    pthread_mutex_unlock(&fgd_lock);
+}
 /* pw_vk_present_hook: the presenting thread, before its present returns */
 static void ft_present(const void *swapchain,const void *pixels,unsigned pitch,unsigned width,unsigned height,int format,
                        uint64_t us)
@@ -668,26 +742,8 @@ static void ft_present(const void *swapchain,const void *pixels,unsigned pitch,u
     }
     s->last_us=us;++s->presents;__atomic_add_fetch(&ft_present_seq,1,__ATOMIC_RELAXED);
     pthread_mutex_unlock(&ft_lock);
-#ifdef PW_SINK_GPU
-    /* display: only while FPS LIMIT holds the program at 30 and the scheduler has not given up, so a GPU is not
-     * charged for frames nobody will see */
-    int mode=fg_mode;
-    if(!fg_generator_off && (mode==FG_SHADOW || (mode==FG_DISPLAY && fl_auto.cap==2 && !fgd.gave_up))) {
-        int keep[4]={0,0,0,0};
-        if(mode==FG_DISPLAY) pw_hw_overlay_hud_rect(width,height,keep);
-        /* VK_FORMAT_R8G8B8A8_UNORM 37, _SRGB 43: words R,G,B,A; the B8G8R8A8 ones are B,G,R,A */
-        int r=pw_sink_gpu_fg_frame(swapchain,pixels,pitch,width,height,format==37 || format==43,keep,fg_restart_wanted);
-        fg_restart_wanted=0;
-        if(r>0) __atomic_add_fetch(&ft_generated,1,__ATOMIC_RELAXED);
-        else if(r<0) {
-            __atomic_add_fetch(&ft_generated_failed,1,__ATOMIC_RELAXED);
-            fg_generator_off=1;
-            fprintf(stderr,"PWFG generator off for this run: real frames only from now on\n");
-        }
-    } else fg_restart_wanted=1;
-#else
-    (void)pixels;(void)pitch;
-#endif
+    if(pw_present_bpp(format)==4) fg_capture_frame(swapchain,pixels,pitch,width,height,pw_present_rgba(format));
+    else if(pw_present_bpp(format)!=2) fg_restart_wanted=1;
 }
 static unsigned isqrt64(uint64_t v)
 {
@@ -780,10 +836,12 @@ static void sink_present_hook(const void *swapchain,const void *pixels,unsigned 
     }
     pf_present();
     if(ft_logging>0 || mode>=FG_SHADOW) ft_present(swapchain,pixels,pitch,width,height,format,us);
+    pw_present_trace_mark(PW_PRESENT_LIMIT);
     int span=fl_present(swapchain);
+    pw_present_trace_mark(PW_PRESENT_TAIL);
     if(mode==FG_DISPLAY) {
         pthread_mutex_lock(&fgd_lock);
-        fgd_note.pixels=pixels;fgd_note.width=width;fgd_note.height=height;fgd_note.span=span;++fgd_note.seq;
+        fgd_note.swapchain=swapchain;fgd_note.pixels=pixels;fgd_note.width=width;fgd_note.height=height;fgd_note.span=span;++fgd_note.seq;
         pthread_mutex_unlock(&fgd_lock);
     }
 }
@@ -795,6 +853,40 @@ static void ft_start(void)
      * costs one call and two loads */
     if(&pw_vk_present_hook) pw_vk_present_hook=sink_present_hook;
     else fprintf(stderr,"PWFG no present hook in this link\n");
+}
+
+/* The launcher calls before Wine starts. Serialize GPU setup against the
+ * loading-screen presenter, without holding the overlay lock while taking the
+ * sink lock. Honor explicit off/timing overrides and saved per-program choices. */
+int pw_hw_framegen_prewarm(void)
+{
+#ifdef PW_SINK_GPU
+    extern int pw_hw_overlay_framegen_saved(void);
+    extern int pw_sink_gpu_fg_prepare(void);
+    int saved=pw_hw_overlay_framegen_saved(),result=0;
+    pthread_mutex_lock(&lock);
+    ft_start();
+    if(gpu && (fg_file_mode>=FG_SHADOW || (fg_file_mode<0 && saved))) {
+        char perf_line[640]={0};
+        int perf=pw_perf_on();
+        if(perf) {pthread_mutex_lock(&pf_lock);pf_start(sceKernelGetProcessTime());pthread_mutex_unlock(&pf_lock);}
+        result=pw_sink_gpu_fg_prepare();
+        /* Startup compilation is reported separately, before any guest frame.
+         * Do not charge it to the first gameplay interval. */
+        if(perf) {
+            pthread_mutex_lock(&pf_lock);
+            pf_report(sceKernelGetProcessTime(),perf_line,sizeof(perf_line));
+            pf_window_us=pf_last_us=pf_since_ns=0;
+            pthread_mutex_unlock(&pf_lock);
+            fprintf(stderr,"PWFG startup_performance result=%d\n",result);
+            if(perf_line[0]) fputs(perf_line,stderr);
+        }
+    }
+    pthread_mutex_unlock(&lock);
+    return result;
+#else
+    return 0;
+#endif
 }
 #ifdef PW_FG_DISPLAY
 /* Stage 4, the display scheduler (docs/FRAME_GENERATION.md). FPS LIMIT lets a capped game's frame N go just after
@@ -823,7 +915,7 @@ static const struct pw_wine_layer *fgd_stack(void)
 /* sink lock */
 static void fgd_report(uint64_t now)
 {
-    if(!pw_trace_on()) return;  /* alpha 2: a line every 10 s, traces only */
+    if(!pw_perf_on()) return;  /* bounded performance diagnostics or ordinary traces */
     if(!fgd_report_us) {fgd_report_us=now;return;}
     if(now-fgd_report_us<FGD_REPORT_US) return;
     char reasons[256];int at=0;
@@ -849,7 +941,6 @@ static pthread_mutex_t fgr_lock=PTHREAD_MUTEX_INITIALIZER;
 static struct {unsigned width,height,shown_tenths,real_tenths,generated_tenths;uint64_t us;} fgr_published;  /* fgr_lock */
 static unsigned fgr_real,fgr_generated,fgr_width,fgr_height;  /* sink lock: in the current second */
 static uint64_t fgr_start_us;                                  /* sink lock */
-static int fgr_was_shown;                                      /* sink lock: for the log line when it changes */
 /* sink lock */
 static void fgr_forget(void)
 {
@@ -873,10 +964,8 @@ static void fgr_tick(uint64_t now,unsigned width,unsigned height)
     fgr_published.generated_tenths=generated;fgr_published.shown_tenths=real+generated;fgr_published.us=now;
     pthread_mutex_unlock(&fgr_lock);
     int shown=generated>0;
-    if(shown!=fgr_was_shown)
-        if(pw_trace_on()) fprintf(stderr,"PWFG shown_rate %s %ux%u shown_x10=%u real_x10=%u generated_x10=%u window_us=%llu\n",
+    if(pw_perf_on()) fprintf(stderr,"PWFG shown_rate %s %ux%u shown_x10=%u real_x10=%u generated_x10=%u window_us=%llu\n",
                 shown?"on":"off",width,height,real+generated,real,generated,(unsigned long long)span);
-    fgr_was_shown=shown;
     fgr_start_us=now;fgr_real=1;fgr_generated=0;
 }
 /* native/telemetry.c (MangoHud's FPS row): 1 while a second measured in the last FGR_FRESH_US had generated frames on
