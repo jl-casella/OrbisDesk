@@ -14,6 +14,8 @@ import argparse,hashlib,json,os,pathlib,shutil,subprocess
 ROOT=pathlib.Path(__file__).resolve().parents[1];SDK=ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain'
 PLAYDEN=ROOT/'upstream/playden-ps5';REVISION='fb74dbfd6bb96fc19a96afc1f48a4e40a885216b'
 STB=(ROOT/'.deps/steam/downloads/stb/stb_image.h','594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3')
+# steam_ui.c draws its pages with Big Picture's renderer (docs/STEAM_BIG_PICTURE.md)
+STBTT=(ROOT/'.deps/sdk/OpenOrbis/PS4Toolchain/include/stb/stb_truetype.h','97233cfddd15dc96ea28d73b10599887584c38e3166b4cd3ef62934cb79b20e6')
 CACERT=(ROOT/'.deps/steam/downloads/cacert-2026-09-25.pem','a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505')
 QRDIR=ROOT/'.deps/steam/downloads/qrcodegen-1.8.0'
 QRCODEGEN={'qrcodegen.c':'300eff07ee25baaa7578f20284411638154716379437391e7e689c0e6ce81403',
@@ -37,7 +39,7 @@ parser.add_argument('--check',action='store_true')
 args=parser.parse_args()
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 if (PLAYDEN/'REVISION').read_text().strip()!=REVISION:raise SystemExit('upstream/playden-ps5 is not at '+REVISION)
-for path,expected in (STB,CACERT,*((QRDIR/n,h) for n,h in QRCODEGEN.items())):
+for path,expected in (STB,STBTT,CACERT,*((QRDIR/n,h) for n,h in QRCODEGEN.items())):
     if not path.is_file() or sha(path)!=expected:raise SystemExit('missing or changed: %s'%path)
 deps=ROOT/('build/steam-deps-'+args.target+'/prefix')
 if not (deps/'lib/libcurl.a').is_file():raise SystemExit('run tools/build-steam-deps.py --target '+args.target+' first')
@@ -52,6 +54,7 @@ src=work/'playden/src'
 for part in ('steam','platform','library'):shutil.copytree(PLAYDEN/'src'/part,src/part)
 for patch in sorted((ROOT/'native/steam/patches').glob('*.patch')):run(['patch','--fuzz=0','-p1','-i',patch],cwd=work/'playden')
 (work/'third_party').mkdir();shutil.copyfile(STB[0],work/'third_party/stb_image.h')
+shutil.copyfile(STBTT[0],work/'third_party/stb_truetype.h')
 
 common=['-O2','-g','-fPIC','-DMBEDTLS_USER_CONFIG_FILE="mbedtls_user_config.h"','-DCURL_STATICLIB',
         '-I',src,'-I',deps/'include','-I',work/'third_party','-I',QRDIR,'-ffile-prefix-map=%s/='%work]
@@ -75,6 +78,8 @@ else:compile(cxx,ROOT/'native/steam/orbis/storage_none.cpp')
 compile(cc,QRDIR/'qrcodegen.c')
 compile(cc,ROOT/'native/steam/steam_tls.c',strict=True)
 compile(cc,ROOT/'native/steam/steam_ui.c',strict=True)
+compile(cc,ROOT/'native/steam/steam_draw.c',strict=True)
+compile(cxx,ROOT/'native/steam/steam_bp.cpp',strict=True)
 compile(cxx,ROOT/'native/steam/steam_session.cpp',strict=True)
 compile(cxx,ROOT/'native/steam/steam_s3.cpp',strict=True)
 if args.target=='ps4':compile(cc,ROOT/'native/steam/orbis/orbis_clock.c',strict=True)
@@ -118,7 +123,7 @@ for name,source in licences.items():shutil.copyfile(source,misc/name)
 out=ROOT/'out/steam-s3';shutil.rmtree(out,ignore_errors=True)
 title='OrbisDesk Steam'
 pkg=package_app(ROOT,app,out,title,TITLE_ID,CONTENT,version=VERSION,filename='OrbisDesk-Steam-S3-%s.pkg'%VERSION)
-sources=['native/steam/steam_s3.cpp','native/steam/steam_session.cpp','native/steam/steam_ui.c','native/steam/steam_tls.c',
+sources=['native/steam/steam_s3.cpp','native/steam/steam_session.cpp','native/steam/steam_ui.c','native/steam/steam_draw.c','native/steam/steam_bp.cpp','native/steam/steam_tls.c',
          'native/steam/mbedtls_user_config.h','native/steam/orbis/curl_config.h','native/steam/orbis/orbis_net_fix.h']
 manifest={'build':BUILD,'title':title,'title_id':TITLE_ID,'app_version':VERSION,
     'package':str(pkg.relative_to(ROOT)),'package_sha256':sha(pkg),'eboot_sha256':sha(app/'eboot.bin'),

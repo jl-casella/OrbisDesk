@@ -1,0 +1,35 @@
+OrbisDesk: the nonblocking preflight without sceNetRecv (hardware 2026-11-25/26: every start of the hosted
+client aborted the title inside sceNetRecv or sceNetErrnoLoc, runs 0170-0193). Applied after 0007.
+
+--- a/src/steam/backend/native_network.cpp
++++ b/src/steam/backend/native_network.cpp
+@@ -89,13 +89,12 @@
+                                                    &enabled, sizeof(enabled))
+                                 : -1;
+   unsigned char byte = 0;
+-  orbisdesk_steam_net_step("sce_recv", option_result);
+-  const auto native_start = Clock::now();
+-  const int native_result = option_result == 0 ? sceNetRecv(client, &byte, 1, 0) : 0;
+-  const int native_error = native_result < 0 && sceNetErrnoLoc() ? *sceNetErrnoLoc() : 0;
+-  const auto native_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+-      Clock::now() - native_start).count();
+-  orbisdesk_steam_net_step("posix_recv", native_result);
++  // OrbisDesk: no libSceNet receive here. On the user's console (hardware 2026-11-25/26, runs 0170-0193, the
++  // same build that had started the client before) every start aborted the title inside sceNetRecv or the
++  // sceNetErrnoLoc after it, before the POSIX receive below; a console restart didn't change it. The client
++  // receives nowhere else through libSceNet (curl and the websocket use the POSIX sockets), so the check keeps
++  // what they rely on: SO_NBIO set through libSceNet makes the POSIX receive return EWOULDBLOCK at once.
++  orbisdesk_steam_net_step("posix_recv", option_result);
+   errno = 0;
+   const auto posix_start = Clock::now();
+   const ssize_t posix_result = option_result == 0 ? recv(client, &byte, 1, 0) : 0;
+@@ -106,8 +105,7 @@
+   orbisdesk_steam_net_step("close", static_cast<int>(posix_result));
+   close(client);
+   close(listener);
+-  return option_result == 0 && native_result < 0 && native_error == EWOULDBLOCK &&
+-         native_ms < 20 && posix_result < 0 &&
++  return option_result == 0 && posix_result < 0 &&
+          (posix_error == EAGAIN || posix_error == EWOULDBLOCK) && posix_ms < 20;
+ }
+ 

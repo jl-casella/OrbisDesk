@@ -24,6 +24,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <pthread.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -36,6 +39,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -55,6 +59,11 @@
 #include "steam_session.h"
 #include "steam_emu.h"
 #include "steam_shortcut.h"
+#include "steam_storage.h"
+#include "steam_nonsteam.h"
+#include "steam_bp.h"
+#include "steam_covers.h"
+#include "steam_draw.h"
 #include "steam_ui.h"
 
 #if defined(STEAM_UI_HOSTED)
@@ -109,6 +118,13 @@ void ForgetSecrets() {
   for (auto& value : secrets) steam::ZeroizeSecret(value);
   secrets.clear();
 }
+
+// Diagnostic lines (navigation, timings, counts): only with OrbisDesk's traces (platform/ps4/pw_trace.h).
+// Actions, outcomes and failures keep note().
+#define trace_note(...) \
+  do { \
+    if (pw_trace_on()) note(__VA_ARGS__); \
+  } while (0)
 
 void note(const char* format, ...) {
   char line[1024];
@@ -371,6 +387,7 @@ std::optional<playden::StoredSession> SignIn(Context& context) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
       }
     });
+    steam_ui_started();  // network and session checked: the sign-in is the client's own screen
     steam_ui_show("SIGN IN TO STEAM\nASKING STEAM FOR A CODE..." PAGE_FOOTER "O: CANCEL", nullptr);
     int codes = 0;
     const auto started = NowMs();
@@ -397,6 +414,8 @@ struct Game {
   std::string name;
   steam::AppInfo info;
   std::uint64_t windows_bytes = 0;  // the Windows depots with a public manifest, before selection
+  bool non_steam = false;            // added from the console (steam_nonsteam.h): `ns` holds it
+  orbisdesk::NonSteamGame ns;
 };
 
 struct Library {
@@ -406,49 +425,71 @@ struct Library {
   steam::AcquisitionResult licenses;
 };
 
-// PICS app info of `apps`, parsed, in batches of kMaxAppInfoBatch.
+#include "steam_library_cache.inc.cpp"
+#define LIBRARY_CACHE DATA_DIR "/library-cache.bin"
+#define NONSTEAM_FILE DATA_DIR "/non-steam-games.txt"
+
+// The non-Steam games of the list joined to Steam's (any of them already there are replaced), by name.
+// Reallocates the games: only where nothing holds a reference into them.
+void MergeNonSteam(Library* library) {
+  auto& games = library->games;
+  games.erase(std::remove_if(games.begin(), games.end(), [](const Game& g) { return g.non_steam; }), games.end());
+  for (auto& ns : orbisdesk::LoadNonSteamGames(NONSTEAM_FILE)) {
+    Game game;
+    game.app = ns.id;
+    game.name = ns.name;
+    game.non_steam = true;
+    game.ns = std::move(ns);
+    games.push_back(std::move(game));
+  }
+  std::stable_sort(games.begin(), games.end(),
+                   [](const Game& a, const Game& b) { return strcasecmp(a.name.c_str(), b.name.c_str()) < 0; });
+}
+
+// PICS app info of `apps` as Steam sent it, in batches of kMaxAppInfoBatch; `failed` counts the
+// batches that ended in an error.
+std::map<std::uint32_t, std::string> FetchBuffers(Context& context, const playden::StoredSession& session,
+                                                  const std::vector<std::uint32_t>& apps, std::size_t* unanswered,
+                                                  const std::atomic<bool>& cancel, std::size_t* failed = nullptr) {
+  std::map<std::uint32_t, std::string> buffers;
+  for (std::size_t first = 0; first < apps.size() && !cancel; first += steam::kMaxAppInfoBatch) {
+    const std::vector<std::uint32_t> batch(apps.begin() + first,
+                                           apps.begin() + std::min(apps.size(), first + steam::kMaxAppInfoBatch));
+    auto info = context.cm->FetchAppInfo(session, batch, cancel);
+    if (unanswered) *unanswered += info.unanswered.size();
+    if (!info.ok()) {
+      note("PWSTEAM pics batch=%zu error=%s", first / steam::kMaxAppInfoBatch, steam::CmErrorName(info.error));
+      if (failed) ++*failed;
+    }
+    for (const auto app : batch) {
+      const auto buffer = info.buffers.find(app);
+      if (buffer != info.buffers.end()) buffers.emplace(app, std::move(buffer->second));
+    }
+  }
+  return buffers;
+}
+
+// PICS app info of `apps`, parsed.
 std::map<std::uint32_t, steam::AppInfo> FetchInfos(Context& context, const playden::StoredSession& session,
                                                    const std::vector<std::uint32_t>& apps, std::size_t* unanswered) {
   std::map<std::uint32_t, steam::AppInfo> infos;
   const std::atomic<bool> cancel{false};
-  for (std::size_t first = 0; first < apps.size(); first += steam::kMaxAppInfoBatch) {
-    const std::vector<std::uint32_t> batch(apps.begin() + first,
-                                           apps.begin() + std::min(apps.size(), first + steam::kMaxAppInfoBatch));
-    const auto info = context.cm->FetchAppInfo(session, batch, cancel);
-    if (unanswered) *unanswered += info.unanswered.size();
-    if (!info.ok()) note("PWSTEAM pics batch=%zu error=%s", first / steam::kMaxAppInfoBatch, steam::CmErrorName(info.error));
-    for (const auto app : batch) {
-      const auto buffer = info.buffers.find(app);
-      if (buffer == info.buffers.end()) continue;
-      if (auto parsed = steam::ParseAppInfo(app, buffer->second)) infos.emplace(app, std::move(*parsed));
-    }
-  }
+  for (auto& [app, buffer] : FetchBuffers(context, session, apps, unanswered, cancel))
+    if (auto parsed = steam::ParseAppInfo(app, buffer)) infos.emplace(app, std::move(*parsed));
   return infos;
 }
 
-// The owned games (GetOwnedGames), the account's licenses (CM) and each game's PICS app info. The
-// list goes to LIBRARY_FILE (0600): app, Windows depots, their bytes, name.
-Library LoadLibrary(Context& context, const playden::StoredSession& session) {
+// The library from what Steam sent (a load, or the cache of the last one). `write`: the list goes to
+// LIBRARY_FILE (0600): app, Windows depots, their bytes, name.
+Library BuildLibrary(const LibraryCache& raw, bool write) {
   Library library;
-  const std::atomic<bool> cancel{false};
-  steam::LibraryClient client(context.ca);
-  const auto owned = client.Fetch(session, cancel);
-  library.error = owned.error;
-  library.owned = owned.games.size();
-  note("PWSTEAM library owned error=%s games=%zu", LibraryErrorName(owned.error), owned.games.size());
-  if (owned.error != steam::LibraryError::kNone) return library;
-
-  library.licenses = context.cm->FetchAcquisitionDates(session, cancel);
-  const auto& licenses = library.licenses;
-  note("PWSTEAM library licenses error=%s apps=%zu depots=%zu shared=%zu skipped_packages=%u",
-       steam::CmErrorName(licenses.error), licenses.owned_apps.size(), licenses.owned_depots.size(),
-       licenses.shared_apps.size(), licenses.skipped_packages);
-
-  std::vector<std::uint32_t> apps;
-  for (const auto& game : owned.games)
-    if (const auto app = game.id.steam_app()) apps.push_back(*app);
-  std::size_t unanswered = 0;
-  auto infos = FetchInfos(context, session, apps, &unanswered);
+  library.error = steam::LibraryError::kNone;
+  library.owned = raw.owned;
+  library.licenses = raw.licenses;
+  std::map<std::uint32_t, steam::AppInfo> infos;
+  for (const auto& [app, buffer] : raw.buffers)
+    if (auto parsed = steam::ParseAppInfo(app, buffer)) infos.emplace(app, std::move(*parsed));
+  const auto& apps = raw.apps;
   library.described = infos.size();
   std::string text = "# app\twindows_depots\twindows_bytes\tname\n";
   for (const auto app : apps) {
@@ -473,13 +514,121 @@ Library LoadLibrary(Context& context, const playden::StoredSession& session) {
   }
   std::sort(library.games.begin(), library.games.end(),
             [](const Game& a, const Game& b) { return strcasecmp(a.name.c_str(), b.name.c_str()) < 0; });
-  note("PWSTEAM library pics described=%zu unanswered=%zu windows=%zu", library.described, unanswered,
-       library.games.size());
-  note("PWSTEAM library file=%s write=%d", LIBRARY_FILE, WriteText(LIBRARY_FILE, text, 0600));
+  if (write) {
+    const bool wrote = WriteText(LIBRARY_FILE, text, 0600);
+    if (!wrote || pw_trace_on()) note("PWSTEAM library file=%s write=%d", LIBRARY_FILE, wrote);
+  }
   return library;
 }
 
-std::string GameRoot(std::uint32_t app) { return std::string(GAMES_DIR) + "/" + std::to_string(app); }
+// The owned games (GetOwnedGames), the account's licenses (CM) and each game's PICS app info.
+// `complete`: everything answered (no failed step, not canceled), so the result may replace the cache.
+Library LoadLibrary(Context& context, const playden::StoredSession& session, const std::atomic<bool>& cancel,
+                    LibraryCache* raw, bool* complete) {
+  *complete = false;
+  Library library;
+  steam::LibraryClient client(context.ca);
+  const auto owned = client.Fetch(session, cancel);
+  library.error = owned.error;
+  library.owned = owned.games.size();
+  note("PWSTEAM library owned error=%s games=%zu", LibraryErrorName(owned.error), owned.games.size());
+  if (owned.error != steam::LibraryError::kNone) return library;
+
+  raw->owned = owned.games.size();
+  raw->licenses = context.cm->FetchAcquisitionDates(session, cancel);
+  const auto& licenses = raw->licenses;
+  note("PWSTEAM library licenses error=%s apps=%zu depots=%zu shared=%zu skipped_packages=%u",
+       steam::CmErrorName(licenses.error), licenses.owned_apps.size(), licenses.owned_depots.size(),
+       licenses.shared_apps.size(), licenses.skipped_packages);
+
+  for (const auto& game : owned.games)
+    if (const auto app = game.id.steam_app()) raw->apps.push_back(*app);
+  std::size_t unanswered = 0, failed = 0;
+  raw->buffers = FetchBuffers(context, session, raw->apps, &unanswered, cancel, &failed);
+  library = BuildLibrary(*raw, !cancel);
+  note("PWSTEAM library pics described=%zu unanswered=%zu windows=%zu", library.described, unanswered,
+       library.games.size());
+  *complete = licenses.ok() && failed == 0 && !cancel;
+  return library;
+}
+
+// ---- the library shown from the cache while Steam is asked again (2026-11-25) ----
+// One background load; the shell takes its result when it is complete. Installs wait for it (they
+// plan with the account's current licenses and share the CM client), and anything that ends the
+// client cancels and joins it first, so the thread never outlives what it uses.
+struct LibraryRefresh {
+  Context* context = nullptr;
+  const playden::StoredSession* session = nullptr;
+  std::atomic<bool> cancel{false}, done{false};
+  bool complete = false, joined = false, threaded = false;
+  Library result;
+  LibraryCache raw;
+  pthread_t thread{};
+  long long ms = 0;
+};
+std::unique_ptr<LibraryRefresh> library_refresh;
+
+void RunLibraryRefresh(LibraryRefresh* r) {
+  const auto start = std::chrono::steady_clock::now();
+  r->result = LoadLibrary(*r->context, *r->session, r->cancel, &r->raw, &r->complete);
+  if (r->complete && !r->cancel) {
+    const bool wrote = WriteLibraryCache(LIBRARY_CACHE, r->raw, r->session->steam_id);
+    if (!wrote || pw_trace_on()) note("PWSTEAM library cache write=%d", wrote);
+  }
+  r->ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+  r->done = true;
+  steam_ui_poke();
+}
+
+void* LibraryRefreshThread(void* argument) {
+  RunLibraryRefresh(static_cast<LibraryRefresh*>(argument));
+  return nullptr;
+}
+
+void StartLibraryRefresh(Context& context, const playden::StoredSession& session) {
+  library_refresh = std::make_unique<LibraryRefresh>();
+  LibraryRefresh* r = library_refresh.get();
+  r->context = &context;
+  r->session = &session;
+  pthread_attr_t attributes;
+  pthread_attr_init(&attributes);
+  pthread_attr_setstacksize(&attributes, 2 << 20);
+  r->threaded = pthread_create(&r->thread, &attributes, LibraryRefreshThread, r) == 0;
+  pthread_attr_destroy(&attributes);
+  trace_note("PWSTEAM library refresh start threaded=%d", r->threaded);
+  // no thread: the cached list stays, and the next install loads it in front of the user
+}
+
+// Waits for the background load (`cancel`: asks it to stop first). True when its result is complete.
+bool JoinLibraryRefresh(bool cancel) {
+  LibraryRefresh* r = library_refresh.get();
+  if (!r) return false;
+  if (!r->joined) {
+    if (cancel) r->cancel = true;
+    if (r->threaded) pthread_join(r->thread, nullptr);
+    else if (!cancel) RunLibraryRefresh(r);
+    r->joined = true;
+    trace_note("PWSTEAM library refresh end complete=%d canceled=%d ms=%lld", r->complete && !r->cancel, r->cancel.load(),
+         r->ms);
+  }
+  return r->complete && !r->cancel;
+}
+
+// The licenses an install plans with: the background load's when it came back complete.
+const steam::AcquisitionResult& CurrentLicenses(const Library& library) {
+  if (library_refresh && library_refresh->joined && library_refresh->complete && !library_refresh->cancel)
+    return library_refresh->result.licenses;
+  return library.licenses;
+}
+
+const steam::AppInfo& CurrentInfo(const Game& game) {
+  if (library_refresh && library_refresh->joined && library_refresh->complete && !library_refresh->cancel)
+    for (const auto& fresh : library_refresh->result.games)
+      if (fresh.app == game.app) return fresh.info;
+  return game.info;
+}
+
+std::string GameRoot(std::uint32_t app) { return orbisdesk::FindGameRoot(app); }
 // in the game's folder: the content language of the install under way, for a paused one to resume in
 constexpr char kLanguageFile[] = ".orbisdesk-language.txt";
 
@@ -592,21 +741,108 @@ std::string ChooseLanguage(const std::string& heading, const std::vector<std::st
 // install; empty keeps an installed game's (its record's), or English for a new one. With
 // `choose_language` the user picks one of the game's languages first: its depots are fetched and the
 // verification puts the chosen language's files in place of the old one's.
+#include "steam_bigpicture_state.inc.cpp"
+// a SteamStub game's launch plan for its shortcut, and whether a game's launch mode uses the ColdClient loader
+// (steam_bigpicture.inc.cpp)
+void RefreshLaunchPlan(std::uint32_t app);
+bool ColdClientOn(const std::string& root);
+#include "steam_storage_ui.inc.cpp"
+
+// What came of an install, as its result page says it (without the footer): the shortcuts S5 makes, the
+// emulator turned back on. Runs where the install ran (Big Picture's download thread, or the page's own).
+std::string FinishInstall(const Game& game, const orbisdesk::InstallPlan& plan, const std::string& root,
+                          const orbisdesk::GameStorage& storage, const orbisdesk::InstallResult& result, bool emulator) {
+  std::string page;
+  if (result.ok) {
+    if(!orbisdesk::RememberGameStorage(game.app,storage,true))note("PWSTEAM storage installed location_save=0");
+    page = "INSTALLED\n" + game.name + "\n";
+    // SteamStub first, where it can't be missed (W293's Alice: Madness Returns read only as "no shortcut")
+    if (result.steamstub)
+      page += WARN_LINE "STEAMSTUB DRM: TRIANGLE ON THE GAME'S PAGE TURNS ON FULL EMULATION (EXPERIMENTAL), WHICH PLAY "
+              "AND ITS SHORTCUT NEED.\n";
+    page += "FILES: " + std::to_string(result.verified) + " VERIFIED - " + Size(result.bytes) + "\n";
+    if (!plan.executable.empty())
+      page += "EXECUTABLE: " + plan.executable + " - " + (result.arch.empty() ? "NOT READ" : result.arch) + "\n";
+    else
+      page += "STEAM GIVES NO WINDOWS EXECUTABLE.\n";
+    page += std::string("USES STEAM API: ") + (result.steam_api ? "YES" : "NO") + "\n";
+    if (plan.languages.size() > 1) page += "LANGUAGE: " + LanguageName(plan.language) + "\n";
+    // S5: a launcher in OrbisDesk's Explorer (Desktop and Start menu - Programs - Steam)
+    const auto shortcut =
+        orbisdesk::WriteGameShortcuts(game.app, game.name, result, root, plan.language, "", ColdClientOn(root));
+    note("PWSTEAM shortcut prefix=%d desktop=%d start=%d launcher=%d skipped=%s language_args=%s", shortcut.prefix,
+         !shortcut.desktop.empty(), !shortcut.start.empty(), shortcut.launcher, shortcut.skipped.c_str(),
+         shortcut.language_arguments.empty() ? "none" : shortcut.language_arguments.c_str());
+    RefreshLaunchPlan(game.app);  // a SteamStub game's shortcut starts what its plan says
+    if (!shortcut.desktop.empty() || !shortcut.start.empty())
+      page += "IN ORBISDESK: A SHORTCUT ON THE DESKTOP AND IN START - PROGRAMS - STEAM.\n";
+    else if (!shortcut.prefix)
+      page += "ORBISDESK IS NOT INSTALLED ON THIS CONSOLE: NO SHORTCUT WAS MADE.\n";
+    else if (shortcut.skipped == "steamstub")
+      page += WARN_LINE "NO SHORTCUT WAS MADE: EVERY EXECUTABLE STEAM LISTS HAS STEAMSTUB DRM.\n";
+    else
+      page += WARN_LINE "NO SHORTCUT WAS MADE IN ORBISDESK: " + Upper(shortcut.skipped) + ".\n";
+    if (emulator) {
+      std::string failure;
+      const bool on = orbisdesk::EnableEmulator(root, game.app, result.steam_api_paths, plan.language, note, &failure);
+      // its configs.user.ini is written again, with the language just installed
+      page += on ? "STEAM API EMULATOR: TURNED BACK ON, IN " + LanguageName(plan.language.empty() ? "english" : plan.language) + ".\n"
+                 : "STEAM API EMULATOR: " + failure + "\n";
+    } else if (result.steam_api) {
+      page += "TO PLAY WITHOUT STEAM: OPEN IT FROM THE LIST AND TURN ON THE STEAM API EMULATOR.\n";
+    }
+  } else {
+    page = std::string(result.canceled ? "PAUSED\n" : "NOT INSTALLED\n") + game.name + "\n" + result.failure + "\n";
+  }
+  return page;
+}
+
 void InstallGame(Context& context, const playden::StoredSession& session, const Library& library, const Game& game,
                  Installs* installs, const std::string& language, bool choose_language) {
+  if (DownloadRunning()) {
+    // one install at a time: the running one shares the CM connection this one would plan with
+    StorageMessage("ONE DOWNLOAD AT A TIME\n" + download->name +
+                   " IS DOWNLOADING. PAUSE IT IN DOWNLOADS OR WAIT UNTIL IT ENDS.");
+    return;
+  }
+  if (library_refresh && !library_refresh->joined) {
+    steam_ui_show(("INSTALL\n" + game.name + "\nUPDATING THE LIBRARY...").c_str(), nullptr);
+    JoinLibraryRefresh(false);
+  }
+  const steam::AcquisitionResult& licenses = CurrentLicenses(library);
+  // the reload's app info when it has the game: a cached one can name a build Steam has replaced since
+  const steam::AppInfo& current = CurrentInfo(game);
   steam_ui_show(("INSTALL\n" + game.name + "\nCHOOSING THE DEPOTS...").c_str(), nullptr);
   std::vector<steam::AppInfo> dlc_apps;
   {
-    std::vector<std::uint32_t> wanted = game.info.dlc_app_ids;
-    if (game.info.demo_of_app_id) wanted.push_back(game.info.demo_of_app_id);
+    std::vector<std::uint32_t> wanted = current.dlc_app_ids;
+    if (current.demo_of_app_id) wanted.push_back(current.demo_of_app_id);
     auto infos = FetchInfos(context, session, wanted, nullptr);
     for (auto& [app, info] : infos) {
-      if (app == game.info.demo_of_app_id) steam::KeepDepotsDemoBorrows(game.info, &info);
+      if (app == current.demo_of_app_id) steam::KeepDepotsDemoBorrows(current, &info);
       dlc_apps.push_back(std::move(info));
     }
   }
+  // Counter-Strike (2026-11-24): the engine depots it shares with Half-Life install into its own folder
+  steam::AppInfo info = current;
+  std::set<std::uint32_t> adopted;
+  if (const auto sources = orbisdesk::SharedDepotSources(info); !sources.empty())
+    adopted = orbisdesk::AdoptSharedDepots(&info, FetchInfos(context, session, sources, nullptr), note);
   orbisdesk::InstallPlan plan;
-  const std::string root = GameRoot(game.app);
+  std::string root = GameRoot(game.app);
+  orbisdesk::GameStorage storage;
+  if(orbisdesk::PendingGameMove(game.app)){MoveGame(game);return;}
+  const bool known=orbisdesk::KnownInstalledGame(game.app);
+  if(known||orbisdesk::PathExists(root+"/"+kLanguageFile)){
+    if(!orbisdesk::GameLocationAvailable(game.app)||!orbisdesk::StorageForGame(root,&storage)){StorageMessage("STORAGE UNAVAILABLE\nRECONNECT THE DRIVE THAT HOLDS THIS GAME.");return;}
+  }else{
+    // Big Picture: the default drive when one is set and present, else the picker
+    const bool preset = DefaultInstallStorage(&storage);
+    trace_note("PWSTEAM storage install default_used=%d", preset);
+    bool make_default=false;
+    if(!preset&&!ChooseStorage("INSTALL\n"+game.name,"",&storage,game.windows_bytes,true,&make_default))return;
+    if(make_default)SaveDefaultStorageId(storage.id);root=orbisdesk::StorageGameRoot(storage,game.app);
+  }
   orbisdesk::InstalledRecord record;
   const bool recorded = orbisdesk::ReadInstallRecord(root, &record);
   // what is on the console now; 01.08..01.14 installed only English
@@ -631,7 +867,7 @@ void InstallGame(Context& context, const playden::StoredSession& session, const 
   if (!pending_language.empty()) note("PWSTEAM plan resume_language=%s", pending_language.c_str());
   if (language.empty() && installed_language.empty() && pending_language.empty())
     note("PWSTEAM plan steam_language=%s", asked.c_str());
-  if (!orbisdesk::PlanInstall(game.info, dlc_apps, library.licenses, asked, note, &plan)) {
+  if (!orbisdesk::PlanInstall(info, dlc_apps, licenses, asked, note, &plan, adopted)) {
     steam_ui_show(("CANNOT INSTALL\n" + game.name + "\n" + plan.failure + PAGE_FOOTER "O: BACK").c_str(), nullptr);
     steam_ui_wait(STEAM_UI_CIRCLE);
     return;
@@ -658,7 +894,7 @@ void InstallGame(Context& context, const playden::StoredSession& session, const 
     note("PWSTEAM language chosen=%s installed=%s", chosen.c_str(), installed_language.c_str());
     steam_ui_show(("LANGUAGE\n" + game.name + "\nCHOOSING THE DEPOTS FOR " + LanguageName(chosen) + "...").c_str(), nullptr);
     plan = orbisdesk::InstallPlan();
-    if (!orbisdesk::PlanInstall(game.info, dlc_apps, library.licenses, chosen, note, &plan)) {
+    if (!orbisdesk::PlanInstall(info, dlc_apps, licenses, chosen, note, &plan, adopted)) {
       steam_ui_show(("CANNOT CHANGE THE LANGUAGE\n" + game.name + "\n" + plan.failure + PAGE_FOOTER "O: BACK").c_str(), nullptr);
       steam_ui_wait(STEAM_UI_CIRCLE);
       return;
@@ -673,7 +909,7 @@ void InstallGame(Context& context, const playden::StoredSession& session, const 
       return;
     }
   }
-  mkdir(GAMES_DIR, 0777);
+  if(!orbisdesk::GameStorageAvailable(storage))return;
   const bool again = orbisdesk::Installed(root);
   // SteamStub before the download, for a new or resumed install (W293 brought Alice: Madness Returns and
   // BioShock down whole before their .bind showed): the manifests and the executables' first chunks
@@ -710,7 +946,7 @@ void InstallGame(Context& context, const playden::StoredSession& session, const 
   // appinfo may leave a depot's download size out (0): unknown, not nothing to download
   std::string page = "INSTALL\n" + game.name + "\nINSTALLED SIZE: " + Size(plan.install_bytes) + "\nDOWNLOAD: " +
                      (plan.download_bytes ? "UP TO " + Size(plan.download_bytes) : std::string("NOT GIVEN BY STEAM")) +
-                     "\nFREE ON THE CONSOLE: " +
+                     "\nFREE ON SELECTED STORAGE: " +
                      (space.ok ? Size(space.bytes) : std::string("COULD NOT BE MEASURED")) + "\nFOLDER: " + root + "\n";
   if (steamstub_anyway)
     page += WARN_LINE "STEAMSTUB DRM: ORBISDESK CANNOT RUN THIS GAME. IT IS INSTALLED ONLY BECAUSE YOU ASKED.\n";
@@ -737,6 +973,7 @@ void InstallGame(Context& context, const playden::StoredSession& session, const 
   if (steam_ui_wait(STEAM_UI_CROSS | STEAM_UI_CIRCLE) != STEAM_UI_CROSS) return;
   // without a measurement, X is the user's word that the space is there
   const bool unmeasured_ok = !space.ok;
+  if(!orbisdesk::GameStorageAvailable(storage)||!orbisdesk::RememberGameStorage(game.app,storage,false)){StorageMessage("STORAGE UNAVAILABLE\nCOULD NOT SAVE THE INSTALL LOCATION.");return;}
   note("PWSTEAM install start again=%d unmeasured_ok=%d language=%s installed_language=%s", again, unmeasured_ok,
        plan.language.c_str(), installed_language.c_str());
   // gbe_fork's DLL would fail the verification and be replaced by Steam's: the game's own DLLs go
@@ -744,22 +981,34 @@ void InstallGame(Context& context, const playden::StoredSession& session, const 
   const bool emulator = orbisdesk::EmulatorEnabled(root);
   if (emulator) {
     std::string failure;
+    // A restore that fails must not block the verification that repairs it (hardware 2026-11-26: GTA IV's restore
+    // failed and Verify refused for that reason): the verification puts Steam's DLLs back over gbe_fork's, and with
+    // the record gone the emulator is put on again afterwards from the game's files as they are then.
     if (!orbisdesk::RestoreEmulator(root, note, &failure)) {
-      steam_ui_show(("CANNOT VERIFY\n" + game.name + "\n" + failure + PAGE_FOOTER "O: BACK").c_str(), nullptr);
-      steam_ui_wait(STEAM_UI_CIRCLE);
-      return;
+      const bool forgot = orbisdesk::ForgetEmulator(root);
+      note("PWSTEAM install emu_restore_failed forgot=%d errno=%d", forgot, forgot ? 0 : errno);
+      if (!forgot) {
+        steam_ui_show(("CANNOT VERIFY\n" + game.name + "\n" + failure + PAGE_FOOTER "O: BACK").c_str(), nullptr);
+        steam_ui_wait(STEAM_UI_CIRCLE);
+        return;
+      }
     }
   }
 
   mkdir(root.c_str(), 0777);  // RunInstall makes it too; the language file goes in first
   if (!WriteText(root + "/" + kLanguageFile, plan.language + "\n", 0644))
     note("PWSTEAM install language_file write=0 errno=%d", errno);
+  if (background_installs) {
+    // Big Picture: the download runs on while the screens stay usable (Downloads shows it)
+    StartDownload(context, session, game, plan, root, storage, unmeasured_ok, again, std::move(precheck), emulator);
+    return;
+  }
   std::atomic<bool> cancel{false}, done{false};
   orbisdesk::InstallProgress progress;
   orbisdesk::InstallResult result;
   std::thread runner([&] {
     result = orbisdesk::RunInstall(context.ca, *context.cm, session, plan, root, cancel, unmeasured_ok, &progress, note,
-                                   again ? nullptr : &precheck);
+                                   again ? nullptr : &precheck,[storage]{return orbisdesk::GameStorageAvailable(storage);});
     done = true;
   });
   steam_ui_take();
@@ -799,47 +1048,10 @@ void InstallGame(Context& context, const playden::StoredSession& session, const 
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
   }
   runner.join();
-  if (result.ok) {
-    ++installs->ok;
-    page = "INSTALLED\n" + game.name + "\n";
-    // SteamStub first, where it can't be missed (W293's Alice: Madness Returns read only as "no shortcut")
-    if (result.steamstub)
-      page += WARN_LINE "STEAMSTUB DRM: ORBISDESK CANNOT RUN THIS GAME. THE FILES ARE INSTALLED: OPTIONS ON "
-              "ITS PAGE UNINSTALLS THEM.\n";
-    page += "FILES: " + std::to_string(result.verified) + " VERIFIED - " + Size(result.bytes) + "\n";
-    if (!plan.executable.empty())
-      page += "EXECUTABLE: " + plan.executable + " - " + (result.arch.empty() ? "NOT READ" : result.arch) + "\n";
-    else
-      page += "STEAM GIVES NO WINDOWS EXECUTABLE.\n";
-    page += std::string("USES STEAM API: ") + (result.steam_api ? "YES" : "NO") + "\n";
-    if (plan.languages.size() > 1) page += "LANGUAGE: " + LanguageName(plan.language) + "\n";
-    // S5: a launcher in OrbisDesk's Explorer (Desktop and Start menu - Programs - Steam)
-    const auto shortcut = orbisdesk::WriteGameShortcuts(game.app, game.name, result, root, plan.language);
-    note("PWSTEAM shortcut prefix=%d desktop=%d start=%d skipped=%s language_args=%s", shortcut.prefix,
-         !shortcut.desktop.empty(), !shortcut.start.empty(), shortcut.skipped.c_str(),
-         shortcut.language_arguments.empty() ? "none" : shortcut.language_arguments.c_str());
-    if (!shortcut.desktop.empty() || !shortcut.start.empty())
-      page += "IN ORBISDESK: A SHORTCUT ON THE DESKTOP AND IN START - PROGRAMS - STEAM.\n";
-    else if (!shortcut.prefix)
-      page += "ORBISDESK IS NOT INSTALLED ON THIS CONSOLE: NO SHORTCUT WAS MADE.\n";
-    else if (shortcut.skipped == "steamstub")
-      page += WARN_LINE "NO SHORTCUT WAS MADE: EVERY EXECUTABLE STEAM LISTS HAS STEAMSTUB DRM.\n";
-    else
-      page += WARN_LINE "NO SHORTCUT WAS MADE IN ORBISDESK: " + Upper(shortcut.skipped) + ".\n";
-    if (emulator) {
-      std::string failure;
-      const bool on = orbisdesk::EnableEmulator(root, game.app, result.steam_api_paths, plan.language, note, &failure);
-      // its configs.user.ini is written again, with the language just installed
-      page += on ? "STEAM API EMULATOR: TURNED BACK ON, IN " + LanguageName(plan.language.empty() ? "english" : plan.language) + ".\n"
-                 : "STEAM API EMULATOR: " + failure + "\n";
-    } else if (result.steam_api) {
-      page += "TO PLAY WITHOUT STEAM: OPEN IT FROM THE LIST AND TURN ON THE STEAM API EMULATOR.\n";
-    }
-  } else {
-    if (result.canceled) ++installs->paused;
-    else ++installs->failed;
-    page = std::string(result.canceled ? "PAUSED\n" : "NOT INSTALLED\n") + game.name + "\n" + result.failure + "\n";
-  }
+  page = FinishInstall(game, plan, root, storage, result, emulator);
+  if (result.ok) ++installs->ok;
+  else if (result.canceled) ++installs->paused;
+  else ++installs->failed;
   page += PAGE_FOOTER "O: BACK TO THE LIBRARY";
   steam_ui_show(page.c_str(), nullptr);
   steam_ui_wait(STEAM_UI_CIRCLE);
@@ -892,7 +1104,7 @@ bool UninstallGame(const Game& game, const orbisdesk::InstalledRecord& record) {
   // the shortcuts only once the game is gone: a removal that stopped leaves the game installed and its
   // shortcuts in place, and OPTIONS can try again
   orbisdesk::ShortcutRemoval links;
-  if (removed.ok) links = orbisdesk::RemoveGameShortcuts(game.app, game.name);
+  if (removed.ok) {links = orbisdesk::RemoveGameShortcuts(game.app, game.name);orbisdesk::ForgetGameStorage(game.app);}
   note("PWSTEAM uninstall done ok=%d ms=%lld shortcuts_prefix=%d desktop=%s start=%s shortcut_errno=%d", removed.ok,
        static_cast<long long>(ms), links.prefix, removed.ok ? links.desktop.c_str() : "kept",
        removed.ok ? links.start.c_str() : "kept", links.error);
@@ -919,169 +1131,101 @@ bool UninstallGame(const Game& game, const orbisdesk::InstalledRecord& record) {
   return removed.ok;
 }
 
-// An installed game's page: what the record says, X verifies (and updates) it, square changes its
-// content language, triangle turns gbe_fork on or off, O goes back.
-void GamePage(Context& context, const playden::StoredSession& session, const Library& library, const Game& game,
-              Installs* installs) {
-  const std::string root = GameRoot(game.app);
-  for (;;) {
-    orbisdesk::InstalledRecord record;
-    if (!orbisdesk::ReadInstallRecord(root, &record)) {
-      note("PWSTEAM game page record=unreadable");
-      InstallGame(context, session, library, game, installs, "", false);
-      return;
-    }
-    const bool emulator = orbisdesk::EmulatorEnabled(root);
-    std::string page = "INSTALLED\n" + game.name + "\n";
-    if (record.steamstub)
-      page += WARN_LINE "STEAMSTUB DRM: ORBISDESK CANNOT RUN THIS GAME AND MADE NO SHORTCUT FOR IT. OPTIONS UNINSTALLS IT.\n";
-    page += "SIZE: " + Size(record.bytes) + "\nFOLDER: " + root + "\n";
-    if (!record.executable.empty())
-      page += "EXECUTABLE: " + record.executable + " - " + (record.arch.empty() ? "NOT READ" : record.arch) + "\n";
-    const bool can_emulate = record.format >= 2 && !record.steam_api_paths.empty();
-    if (!record.steam_api) page += "DOES NOT USE STEAM API.\n";
-    else if (record.format < 2) page += "USES STEAM API. VERIFY IT WITH X TO TURN ON THE EMULATOR.\n";
-    else page += std::string("STEAM API EMULATOR: ") + (emulator ? "ON" : "OFF") + "\n";
-    page += "LANGUAGE: " + LanguageName(record.language.empty() ? "english" : record.language) + "\n";
-    page += PAGE_FOOTER "X: VERIFY AND UPDATE   SQUARE: LANGUAGE";
-    if (can_emulate || emulator) page += emulator ? "   TRIANGLE: RESTORE THE ORIGINAL STEAM API" : "   TRIANGLE: TURN ON THE EMULATOR";
-    page += "   OPTIONS: UNINSTALL   O: BACK";
-    steam_ui_show(page.c_str(), nullptr);
-    const unsigned button =
-        steam_ui_wait(STEAM_UI_CROSS | STEAM_UI_CIRCLE | STEAM_UI_TRIANGLE | STEAM_UI_SQUARE | STEAM_UI_OPTIONS);
-    if (button == STEAM_UI_CIRCLE) return;
-    if (button == STEAM_UI_OPTIONS) {
-      if (UninstallGame(game, record)) return;  // gone: back to the library, which lists it as not installed
-      continue;
-    }
-    if (button == STEAM_UI_SQUARE) {
-      InstallGame(context, session, library, game, installs, "", true);
-      continue;  // the page again, with what the record says now
-    }
-    if (button == STEAM_UI_CROSS) {
-      InstallGame(context, session, library, game, installs, "", false);
-      return;
-    }
-    if (!can_emulate && !emulator) continue;
-    // the switch reads and writes the game's DLLs: say so at once, so the page doesn't sit unchanged
-    steam_ui_show(("STEAM API EMULATOR\n" + game.name + "\n" +
-                   (emulator ? "RESTORING THE ORIGINAL STEAM API..." : "TURNING ON THE EMULATOR...") + "\n")
-                      .c_str(),
-                  nullptr);
-    note("PWSTEAM emu %s pressed", emulator ? "restore" : "enable");
-    std::string failure;
-    const bool ok = emulator ? orbisdesk::RestoreEmulator(root, note, &failure)
-                             : orbisdesk::EnableEmulator(root, game.app, record.steam_api_paths, record.language, note, &failure);
-    note("PWSTEAM emu %s ok=%d", emulator ? "restore" : "enable", ok);
-    if (!ok) {
-      steam_ui_show(("STEAM API EMULATOR\n" + game.name + "\n" + failure + PAGE_FOOTER "O: BACK").c_str(), nullptr);
-      steam_ui_wait(STEAM_UI_CIRCLE);
-    }
-    note("PWSTEAM emu page back");
-  }
-}
-
-// The library list, in three tabs (all, installed, not installed) that L1 and R1 (or L2 and R2) move
-// between: up and down choose, X opens or installs, O exits, triangle signs out. True for a sign-out.
-bool LibraryScreen(Context& context, const playden::StoredSession& session, const Library& library,
-                   Installs* installs) {
-  constexpr std::size_t kRows = 11;
-  static const char* const kTabs[] = {"ALL", "INSTALLED", "NOT INSTALLED"};
-  int tab = 0;
-  std::size_t selected = 0;           // in the tab's list
-  std::uint32_t selected_app = 0;     // kept across tab changes and installs when the game is still listed
-  note("PWSTEAM library screen games=%zu", library.games.size());
-  for (;;) {
-    // an install or a removal changes the tabs: their lists are read again for every page
-    std::vector<std::size_t> lists[3];
-    for (std::size_t i = 0; i < library.games.size(); ++i) {
-      const bool installed = orbisdesk::Installed(GameRoot(library.games[i].app));
-      lists[0].push_back(i);
-      lists[installed ? 1 : 2].push_back(i);
-    }
-    const auto& list = lists[tab];
-    if (selected_app) {
-      for (std::size_t k = 0; k < list.size(); ++k)
-        if (library.games[list[k]].app == selected_app) selected = k;
-    }
-    if (selected >= list.size()) selected = list.empty() ? 0 : list.size() - 1;
-    selected_app = list.empty() ? 0 : library.games[list[selected]].app;
-
-    // the title, the tabs and kRows rows above the footer, whose status and buttons stay put whatever the
-    // tab lists: each row is cut to fit one line (a wrapped name would push the rest down)
-    std::string page = "STEAM LIBRARY\n";
-    // the tabs, the active one in the accent color (the font has no brackets: W292's showed as blanks)
-    std::string tabs = "L1 -   ";
-    for (int t = 0; t < 3; ++t) {
-      const std::string label = std::string(kTabs[t]) + " " + std::to_string(lists[t].size());
-      tabs += (t == tab ? std::string(1, STEAM_UI_ACCENT) + label + std::string(1, STEAM_UI_ACCENT) : label) + "    ";
-    }
-    page += tabs + "- R1\n";
-    if (library.games.empty()) page += "NO GAMES WITH WINDOWS CONTENT.\n";
-    else if (list.empty()) page += tab == 1 ? "NO GAME IS INSTALLED YET.\n" : "EVERY GAME IS INSTALLED.\n";
-    std::size_t first = selected >= kRows / 2 ? selected - kRows / 2 : 0;
-    if (list.size() > kRows) first = std::min(first, list.size() - kRows);
-    else first = 0;
-    for (std::size_t k = first; k < list.size() && k < first + kRows; ++k) {
-      const auto& game = library.games[list[k]];
-      // 36 + " - 999.9 MB" + " - INSTALLED" fits the 62 columns of the hosted 1280x720 page
-      std::string name = game.name.size() > 36 ? game.name.substr(0, 33) + "..." : game.name;
-      page += (k == selected ? std::string(1, STEAM_UI_MARK) : std::string()) + name + " - " + Size(game.windows_bytes) +
-              (tab == 0 && orbisdesk::Installed(GameRoot(game.app)) ? " - INSTALLED" : "") + "\n";
-    }
-    page += PAGE_FOOTER;
-    page += (list.empty() ? std::string("NO GAME") : "GAME " + std::to_string(selected + 1) + " OF " + std::to_string(list.size())) +
-            "   STEAM LANGUAGE: " + LanguageName(SteamLanguage()) + "\n";
-#ifdef STEAM_UI_HOSTED
-    // the desktop's programs keep running underneath and share the console with the download
-    page += "CLOSE RUNNING GAMES BEFORE INSTALLING.\n";
-    const char* const exit_hint = "O: DESKTOP";
-#else
-    const char* const exit_hint = "O: EXIT";
-#endif
-    // up and down need no hint; four footer lines at 1280x720
-    page += std::string("L1 R1: TABS   X: OPEN OR INSTALL   SQUARE: STEAM LANGUAGE   TRIANGLE: SIGN OUT   ") + exit_hint;
-    steam_ui_show(page.c_str(), nullptr);
-    const unsigned button = steam_ui_wait(STEAM_UI_UP | STEAM_UI_DOWN | STEAM_UI_CROSS | STEAM_UI_CIRCLE |
-                                          STEAM_UI_TRIANGLE | STEAM_UI_L1 | STEAM_UI_R1 | STEAM_UI_SQUARE);
-    if (button == STEAM_UI_SQUARE) {
-      const std::string current = SteamLanguage();
-      const std::string chosen = ChooseLanguage(
-          "STEAM LANGUAGE\nNEW INSTALLS ASK STEAM FOR THIS LANGUAGE. A GAME WITHOUT IT INSTALLS IN ENGLISH. "
-          "AN INSTALLED GAME KEEPS ITS OWN: SQUARE ON ITS PAGE CHANGES IT.\n",
-          kSteamLanguages, current, "USE THIS LANGUAGE");
-      if (!chosen.empty() && chosen != current) {
-        const bool saved = WriteText(kSteamLanguageFile, chosen + "\n", 0644);
-        note("PWSTEAM steam_language set=%s saved=%d errno=%d", chosen.c_str(), saved, saved ? 0 : errno);
-        if (!saved) {
-          steam_ui_show("STEAM LANGUAGE\nCOULD NOT SAVE THE LANGUAGE." PAGE_FOOTER "O: BACK", nullptr);
-          steam_ui_wait(STEAM_UI_CIRCLE);
-        }
-      }
-    } else if (button == STEAM_UI_L1 || button == STEAM_UI_R1) {
-      tab = (tab + (button == STEAM_UI_R1 ? 1 : 2)) % 3;
-      selected = 0;  // or the same game, when the new tab lists it
-      note("PWSTEAM library tab=%d games=%zu", tab, lists[tab].size());
-    } else if (button == STEAM_UI_UP && selected > 0) {
-      selected_app = library.games[list[--selected]].app;
-    } else if (button == STEAM_UI_DOWN && selected + 1 < list.size()) {
-      selected_app = library.games[list[++selected]].app;
-    } else if (button == STEAM_UI_CROSS && !list.empty()) {
-      const auto& game = library.games[list[selected]];
-      if (orbisdesk::Installed(GameRoot(game.app))) GamePage(context, session, library, game, installs);
-      else InstallGame(context, session, library, game, installs, "", false);
-    }
-    else if (button == STEAM_UI_CIRCLE) return false;
-    else if (button == STEAM_UI_TRIANGLE && ConfirmSignOut()) return true;
-  }
-}
+#include "steam_bigpicture.inc.cpp"
 
 // A failure before the library, on screen until O: inside OrbisDesk the client would otherwise
 // vanish back to the desktop without a word.
 int StartFailed(const std::string& why) {
+  steam_ui_started();  // a page of its own: the start ended, it didn't crash
   steam_ui_show(("STEAM COULD NOT START\n" + why + PAGE_FOOTER "O: EXIT").c_str(), nullptr);
   steam_ui_wait(STEAM_UI_CIRCLE);
+  // a Big Picture start has no desktop behind the client: the desktop's start instead
+  if (BigPictureBoot() && pw_hw_restart_mode) {
+    note("PWSTEAM start_failed restart to=desktop");
+    pw_hw_restart_mode("desktop");
+  }
   return kFail;
+}
+
+// ---- the native network's start, guarded (hardware 2026-11-25/26) ----
+// On the user's console every start of the client aborted inside Playden's InitializeNativeNetwork (libSceNet
+// and the loopback preflight, patches 0003/0006): a libkernel abort in a Big Picture start, a SIGBUS in one opened
+// from the desktop, the whole title down each time, a console restart didn't help. Patch 0007 logs each step;
+// here a fatal signal on this thread during that start is turned into a failure page and the title stays up.
+// Another thread's signal goes on to the handler that was there (Wine's, the title's crash handler).
+const char* net_step = "none";
+int net_step_value = 0;
+extern "C" void orbisdesk_steam_net_step(const char* step, int value) {
+  net_step = step ? step : "?";
+  net_step_value = value;
+  // each step fsynced only with traces; a failed start names the last one (start_failed)
+  if (pw_trace_on()) note("PWSTEAM net step=%s value=%d", net_step, value);
+}
+
+// _setjmp/_longjmp, both the toolchain's static libc (musl), and the signal mask by hand: sigsetjmp resolves to
+// libkernel's (FreeBSD jmp_buf) while siglongjmp resolves to musl's, and that pair jumped to rip=0 in 04.85
+// (run-0192). pthread_sigmask is libkernel's, with the FreeBSD sigset_t of the overlay headers.
+jmp_buf net_guard_jump;
+pthread_t net_guard_thread;
+volatile sig_atomic_t net_guard_armed = 0;
+// A caught start leaves Playden's std::call_once flags in the network start mid-call: running it again in this
+// title would wait on them for ever, so a later start fails at once with the first one's signal.
+int net_guard_caught = 0;
+const int kGuardedSignals[] = {SIGABRT, SIGBUS, SIGSEGV, SIGILL, SIGFPE};
+struct sigaction net_guard_previous[sizeof(kGuardedSignals) / sizeof(kGuardedSignals[0])];
+
+void NetGuardHandler(int sig, siginfo_t* info, void* context) {
+  if (net_guard_armed && pthread_equal(pthread_self(), net_guard_thread)) {
+    net_guard_armed = 0;
+    _longjmp(net_guard_jump, sig);
+  }
+  for (std::size_t i = 0; i < sizeof(kGuardedSignals) / sizeof(kGuardedSignals[0]); ++i) {
+    if (kGuardedSignals[i] != sig) continue;
+    const struct sigaction& previous = net_guard_previous[i];
+    if (previous.sa_flags & SA_SIGINFO) {
+      if (previous.sa_sigaction) previous.sa_sigaction(sig, info, context);
+      return;
+    }
+    if (previous.sa_handler == SIG_IGN) return;
+    if (previous.sa_handler != SIG_DFL && previous.sa_handler) {
+      previous.sa_handler(sig);
+      return;
+    }
+    // the default action: put it back and let the signal do what it would have done
+    sigaction(sig, &previous, nullptr);
+    raise(sig);
+    return;
+  }
+}
+
+// InitializeNativeNetwork, with the fatal signals of this thread caught; *signal_caught: 0 or the signal.
+bool GuardedNetworkStart(int* signal_caught) {
+  *signal_caught = net_guard_caught;
+  if (net_guard_caught) return false;
+  sigset_t mask;
+  pthread_sigmask(SIG_SETMASK, nullptr, &mask);
+  struct sigaction guard;
+  memset(&guard, 0, sizeof(guard));
+  guard.sa_sigaction = NetGuardHandler;
+  guard.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&guard.sa_mask);
+  const std::size_t count = sizeof(kGuardedSignals) / sizeof(kGuardedSignals[0]);
+  for (std::size_t i = 0; i < count; ++i) sigaction(kGuardedSignals[i], &guard, &net_guard_previous[i]);
+  net_guard_thread = pthread_self();
+  volatile bool net = false;
+  const int sig = _setjmp(net_guard_jump);
+  if (sig == 0) {
+    net_guard_armed = 1;
+    net = steam::internal::InitializeNativeNetwork();
+  } else {
+    // out of the handler by the jump: the caught signal is still blocked on this thread
+    pthread_sigmask(SIG_SETMASK, &mask, nullptr);
+    net_guard_caught = sig;
+  }
+  net_guard_armed = 0;
+  for (std::size_t i = 0; i < count; ++i) sigaction(kGuardedSignals[i], &net_guard_previous[i], nullptr);
+  *signal_caught = sig;
+  return sig == 0 && net;
 }
 
 int Run() {
@@ -1107,7 +1251,13 @@ int Run() {
     note("PWSTEAM ca bytes=%zu roots=%d parse_rc=%d", context.ca.size(), count, parsed);
     if (count == 0) return StartFailed("THE CERTIFICATE BUNDLE HAS NO USABLE ROOTS.");
   }
-  const bool net = steam::internal::InitializeNativeNetwork();
+  int net_signal = 0;
+  const bool net = GuardedNetworkStart(&net_signal);
+  if (net_signal) {
+    note("PWSTEAM net start_failed signal=%d step=%s value=%d", net_signal, net_step, net_step_value);
+    return StartFailed("THE CONSOLE NETWORK FAILED WHILE STARTING (SIGNAL " + std::to_string(net_signal) + " AT " +
+                       Upper(net_step) + "). STEAM STAYS CLOSED; ORBISDESK KEEPS RUNNING.");
+  }
   note("PWSTEAM net init=%d", net);
   if (!net) return StartFailed("THE CONSOLE NETWORK COULD NOT BE USED.");
 
@@ -1172,6 +1322,8 @@ int Run() {
   const orbisdesk::SessionFile file(context.data);
   auto session = Restore(context, file);
   if (!session) {
+    // no saved session (never signed in, signed out, or Steam revoked it): no library of a past one
+    DeleteLibraryCache(LIBRARY_CACHE);
     session = SignIn(context);
     if (!session) {
       note("PWSTEAM signin none");
@@ -1185,13 +1337,34 @@ int Run() {
   note("PWSTEAM signed_in=1");
 
   // 6: the library, 7: the list and installs
-  steam_ui_show("SIGNED IN\nLOADING THE LIBRARY...", nullptr);
-  const auto library = LoadLibrary(context, *session);
+  // the last load's list at once when this account has one, Steam asked again behind it
+  Library library;
+  if (auto cached = ReadLibraryCache(LIBRARY_CACHE, session->steam_id)) {
+    library = BuildLibrary(*cached, false);
+    trace_note("PWSTEAM library cache hit owned=%zu windows=%zu", library.owned, library.games.size());
+    StartLibraryRefresh(context, *session);
+  } else {
+    trace_note("PWSTEAM library cache none account=%d", session->steam_id != 0);
+    steam_ui_show("SIGNED IN\nLOADING THE LIBRARY...", nullptr);
+    LibraryCache raw;
+    bool complete = false;
+    const std::atomic<bool> no_cancel{false};
+    library = LoadLibrary(context, *session, no_cancel, &raw, &complete);
+    if (complete) {
+      const bool wrote = WriteLibraryCache(LIBRARY_CACHE, raw, session->steam_id);
+      if (!wrote || pw_trace_on()) note("PWSTEAM library cache write=%d", wrote);
+    }
+  }
   Installs installs;
   bool sign_out = false;
   if (library.error == steam::LibraryError::kNone) {
-    sign_out = LibraryScreen(context, *session, library, &installs);
+    RefreshAllLaunchPlans(library);  // steam://run and the SteamStub shortcuts start what Play would
+    sign_out = BigPictureShell(context, *session, library, &installs);
+    // before the session and the library go: the background load must not outlive them
+    JoinLibraryRefresh(true);
+    library_refresh.reset();
   } else {
+    steam_ui_started();
     steam_ui_show((std::string("COULD NOT LOAD THE LIBRARY\nERROR: ") + LibraryErrorName(library.error) +
                    PAGE_FOOTER "O: EXIT     TRIANGLE: SIGN OUT ON THIS CONSOLE").c_str(),
                   nullptr);
@@ -1200,6 +1373,7 @@ int Run() {
   note("PWSTEAM installs ok=%d failed=%d paused=%d", installs.ok, installs.failed, installs.paused);
   if (sign_out) {
     file.Clear();
+    DeleteLibraryCache(LIBRARY_CACHE);
     note("PWSTEAM signed_out=1");
     steam_ui_show("SIGNED OUT\nTHE SAVED SESSION WAS DELETED FROM THIS CONSOLE.", nullptr);
     sleep(2);
@@ -1251,7 +1425,14 @@ void* ClientThread(void*) {
 extern "C" int pw_hw_root_mode(void) __attribute__((weak));
 
 extern "C" const char* pw_hw_steam_open(void) {
-  if (client_running.exchange(true)) return "busy";
+  if (client_running.exchange(true)) {
+    // Big Picture behind a game it started: the overlay's Steam entry (or Start) brings it back
+    if (steam_ui_hidden()) {
+      steam_ui_request_show();
+      return "opened";
+    }
+    return "busy";
+  }
   root_mode = pw_hw_root_mode && pw_hw_root_mode();
   pthread_t thread;
   pthread_attr_t attributes;

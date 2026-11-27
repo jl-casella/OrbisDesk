@@ -37,6 +37,9 @@ bool EmulatorEnabled(const std::string& root);
 bool EnableEmulator(const std::string& root, std::uint32_t app, const std::vector<std::string>& steam_api_paths,
                     const std::string& language, EmuNoteFn note, std::string* failure);
 bool RestoreEmulator(const std::string& root, EmuNoteFn note, std::string* failure);
+// Drops the emulator's record without restoring anything: before a verification that puts Steam's files back over
+// a restore that failed, so EnableEmulator starts over afterwards. False when the record can't be removed.
+bool ForgetEmulator(const std::string& root);
 
 // gbe_fork's generate_interfaces over a DLL's bytes: the interface version names, one per line.
 std::string SteamInterfaces(const std::string& dll_bytes);

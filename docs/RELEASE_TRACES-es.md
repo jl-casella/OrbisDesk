@@ -92,6 +92,23 @@ Hay tres marcadores opcionales anteriores que siguen aparte: `/data/orbisdesk/fr
 
 Tres cosas no cambian: `PW_NATIVE_PROFILE` sigue siendo opcional mediante `nativeprofile.txt`; `PW_VK_BATCH` enciende el batching y no es una traza; y la cadena de depuración `PWHUD` de MangoHud solo aparece con el canal `warn+debugstr` de Wine.
 
+## Líneas del alpha 3
+
+El alpha 3 (04.37–04.95) agregó líneas para Steam Big Picture, los juegos no-Steam, los modos de arranque, la compatibilidad de invitados (Burn, el respaldo del runtime de VC++, los servicios, el puente de código de salida 32/64 bits), los perfiles del overlay por EXE y el trabajo de rendimiento. Antes del release se ordenaron con la misma regla que el alpha 2. Los diagnósticos escritos solo para investigar un crash se sacaron: los volcados de excepciones no manejadas de 04.93–04.95 (`PWSEH`), el id de hilo de `PWBOOT static_unixlib_by_name`, `PWBURN startup` y `PWBURN inherited`, `PWHEAP region` y la línea constante `PWCOMPILER policy`.
+
+**Solo con trazas (`trace.txt`):**
+
+- **Cliente de Steam.** Navegación y cuentas: `PWSTEAM bigpicture refresh|drives|open|tab|close|game_page open`, `library refresh start|end|applied`, `library cache hit|none`, `launch_plans`, `launch_mode app=` y `menu from=short_run`, `emu … pressed`, `storage install default_used`, cada paso `storage menu phase=` y `storage move phase=`, `storage cleanup ok=1`, las líneas `plan shared depot|shared_depots|adopted depot`, `covers games=`, las búsquedas de portadas y carpetas de los juegos no-Steam, `ui hidden|shown` y `net step=` (el último paso lo sigue nombrando `net start_failed`). El `PWSTEAM open args=` de `steam-open.exe` va al log del título solo con trazas; `steam-open.txt` lo conserva.
+- **Invitados.** `PWWOW guest32 manifest` cuando el contexto se activó, `PWWOW bridge process_handle`, `PWGUEST memory module=… regions=`, `PWGUEST version`, `PWGUEST native_quiet module=`, `PWBURN copy_removed` después de un borrado y `PWSCM services.exe ready`.
+- **Overlay y escritorio.** `PWOVERLAY profile selected`, las respuestas `get` del worker del registro del Explorador y su línea `ready`, y las búsquedas rutinarias `32-bit thread … no class` de win32u.
+- **Gráficos.** `PWFG normalized_source`, `PWPIXELS layer`.
+
+**Solo con diagnósticos de rendimiento (builds con `--performance-diagnostics`, o trazas):** `PWOP config`, `PWPERF config` (salvo con el control de envío vacío por CPU), `PWALERT config` con el backend por defecto, `PW_DESCRIPTOR_CACHE requested=1`, `PWFG prepare` y `PWFG prewarm` cuando salen bien, y los resúmenes `PWOP`, `PWREAD`, `PWPRESENT`, `PWQUEUE`, `PWTHREADPERF` y `PWALERTPERF`.
+
+**Solo cuando algo anda mal:** `PWINSTALL vcrt checked=` (cuando se restauró, falló o se rechazó una DLL), `PWWOW bridge exit_code` (cuando el puente no pudo responder; los instaladores lo consultan en bucle), `PWGUEST GetExitCodeProcess` (los primeros 16), `PWSCM started` (cuando la espera no terminó a tiempo), `PWLAUNCH steam_register` (cuando `steam-open.exe` no pudo arrancar), `PW_DESCRIPTOR_CACHE configured` (pedido y no soportado), `PWSTEAM library file|library cache write` (cuando la escritura falló), `PWSTEAM ui fonts` (cuando usó el respaldo) y `PWSTEAM ui flip` (las primeras 16 fallas).
+
+**Quedan en release:** el reinicio y el cierre de Big Picture (`PWBIGPICTURE`, con los resultados del volcado del registro en la línea de respuesta), los cambios de modo de arranque y de ColdClient, el inicio y el fin de Jugar, instalaciones, desinstalaciones, movimientos y sus fallas, `PWBURN own_image`, `PWSEP cef_separate`, los errores de arranque de `PWSCM`, `PWINSTALL vcrt restored|restore_failed|kept_native`, la presión de descriptores `PWFS`, las fallas `PWFUTIMES`, `PWHEAP allocation_failed|direct`, los registros de crash `PWNATIVE` y `PWFAULT`, los resultados de limpieza `PWCOMPILER`, y `PWOVERLAY profile save` y `PWPAD remap` una vez por cambio.
+
 ## Siempre se loguea
 
 - los marcadores `Wnnn` del launcher
@@ -102,7 +119,7 @@ Tres cosas no cambian: `PW_NATIVE_PROFILE` sigue siendo opcional mediante `nativ
 
 ## Lo que todavía no cubre
 
-- **El cliente de Steam.** Baja su log al almacenamiento después de cada línea, salvo la de progreso de instalación sin trazas (W299).
+- **El cliente de Steam.** Baja su log al almacenamiento después de cada línea, salvo la de progreso de instalación sin trazas (W299). El alpha 3 pasó sus líneas de navegación y progreso detrás del interruptor (arriba).
 - **El HUD de MangoHud.** Se muestra por defecto. Con `MANGOHUD=0` la capa ni se cargaría, y el interruptor STATISTICS del overlay no podría mostrarlo.
 - **`C:\orbis\dxvkdebug.txt`.** Una copia que quedó en la consola encendió el log de depuración de DXVK en la W299; es un override manual y se borró de la consola.
 - **Un juego a pantalla completa que no bombea mensajes.** Mientras carga o pasa un video, Wine reporta su ventana como colgada y `PWHUNG` lo registra. Una mejora posible es no reportarlo mientras el programa sigue presentando cuadros de Vulkan. El lado nativo ya cuenta los presents. No se hace para el alpha-1.

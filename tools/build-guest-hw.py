@@ -17,8 +17,10 @@ exact command the pinned Wine build uses (from `make -n`), with the overlay sour
 separate output; the other objects of the module are the pinned build's own.
 """
 import argparse,hashlib,json,pathlib,re,shutil,subprocess
+from wine_steamstub_startup import patch_root_loader
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--prepare-only', action='store_true', help='generate private overlays without compiling or linking')
+parser.add_argument('--process32-only', action='store_true', help='build only stock PE32 ntdll with the opt-in process startup helper')
 guest_cli=parser.parse_args()
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'.deps/wine/source';BUILD=ROOT/'.deps/wine/runtime/build'
@@ -7996,6 +7998,51 @@ revise('kernel32','process','''BOOL WINAPI GetExitCodeProcess( HANDLE hProcess, 
     return TRUE;
 }''',"kernel32's GetExitCodeProcess answers for guests through kernelbase's (04.80).")
 
+# SteamStub compatibility is loaded in the target EXE's startup context, not by
+# ColdClient's remote injection (a guest process handle is an event, not a process).
+for module in ('kernelbase', 'ntdll'):
+    for header in ('pw_guest_steamstub.inc.c', 'pw_steamstub_profile.h'):
+        shutil.copyfile(ROOT/'platform/ps4'/header, overlay/module/header)
+revise('kernelbase','process','''static DWORD WINAPI ps4_guest_start( void *param )''',
+       '''#include "pw_guest_steamstub.inc.c"
+
+static DWORD WINAPI ps4_guest_start( void *param )''', 'SteamStub startup helper in guest context.')
+revise('kernelbase','process','''    return ((DWORD (WINAPI *)(void *))guest->entry)( NtCurrentTeb()->Peb );''',
+       '''    if (!ps4_steamstub_start( guest->module ))
+    {
+        guest->exit_process( guest, ERROR_DLL_INIT_FAILED );
+        return ERROR_DLL_INIT_FAILED;
+    }
+    return ((DWORD (WINAPI *)(void *))guest->entry)( NtCurrentTeb()->Peb );''',
+       'Load the opt-in startup addon before the guest entry point.')
+revise('ntdll','loader','''void loader_init( CONTEXT *context, void **entry )''',
+       '''#include "pw_guest_steamstub.inc.c"
+
+void loader_init( CONTEXT *context, void **entry )''', 'SteamStub startup helper for native Wine processes.')
+revise('ntdll','loader','''    static int attach_done;
+    NTSTATUS status;''','''    static int attach_done;
+    BOOL steamstub_first_start = FALSE;
+    NTSTATUS status;''', 'Startup addon runs once for the real process, never on worker attach.')
+revise('ntdll','loader','''    if (!attach_done)  /* first time around */
+    {
+        attach_done = 1;''','''    if (!attach_done)  /* first time around */
+    {
+        steamstub_first_start = TRUE;
+        attach_done = 1;''', 'Select the first process thread while holding the loader lock.')
+revise('ntdll','loader','''    RtlLeaveCriticalSection( &loader_section );
+}
+
+
+/***********************************************************************
+ *           RtlImageDirectoryEntryToData''','''    RtlLeaveCriticalSection( &loader_section );
+    if (steamstub_first_start && !ps4_steamstub_start( NtCurrentTeb()->Peb->ImageBaseAddress ))
+        NtTerminateProcess( GetCurrentProcess(), STATUS_DLL_INIT_FAILED );
+}
+
+
+/***********************************************************************
+ *           RtlImageDirectoryEntryToData''', 'Load the process startup addon after releasing the loader lock.')
+
 # 04.78: programs built like the DLLs (their folder and file); 64-bit only, the i386 guests start none of them
 PROGRAMS={'services':('programs/services','services.exe')}
 def build(arch,work,out):
@@ -8025,17 +8072,34 @@ def build(arch,work,out):
         shutil.copyfile(work/module/name,out/name)
         modules[name]={'path':name,'sha256':sha(out/name),'units':units,'commands':commands}
     manifest={'schema_version':1,'wine_commit':commit,'modules':modules,'revisions':revisions,
+              'startup_sources':{'tools/wine_steamstub_startup.py':sha(ROOT/'tools/wine_steamstub_startup.py')},
               'quiescence_sources':{name:sha(ROOT/name) for name in ('platform/ps4/pw_thread_quiesce.h','platform/ps4/pw_guest_quiesce.inc.c')},
               'compiler_sources':{name:sha(ROOT/name) for name in ('platform/ps4/pw_compiler_policy.h','platform/ps4/pw_compiler_guest.inc.c')},
               'fault_context_sources':{'platform/ps4/pw_guest_fault_context.inc.c':sha(ROOT/'platform/ps4/pw_guest_fault_context.inc.c')},
               'input_sha256':{str((ROOT/'platform/ps4'/p.name).relative_to(ROOT)):sha(p) for p in
-                              (overlay/'kernelbase/pw_execution_mode.h',overlay/'kernelbase/pw_execution_policy.h')},
+                              (overlay/'kernelbase/pw_execution_mode.h',overlay/'kernelbase/pw_execution_policy.h',
+                               overlay/'kernelbase/pw_guest_steamstub.inc.c',overlay/'kernelbase/pw_steamstub_profile.h')},
               'overlay_sha256':{str(p.relative_to(overlay)):sha(p) for p in sorted(overlay.rglob('*')) if p.is_file()}}
     if arch=='i386':manifest['builder_sha256']=sha(pathlib.Path(__file__))
     (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     return modules
 if guest_cli.prepare_only:
     print(json.dumps({'overlay':str(overlay),'revisions':len(revisions),'status':'prepared, not built'}))
+    raise SystemExit(0)
+if guest_cli.process32_only:
+    # A real 32-bit Wine process deliberately uses stock PE modules, not the
+    # shared world's i386-guest variants. Change only its opt-in startup hook.
+    overlay=ROOT/'.deps/wine/steamstub-process32-overlay'
+    for module in ('kernelbase','ntdll'):
+        (overlay/module).mkdir(parents=True,exist_ok=True)
+    for header in ('pw_guest_steamstub.inc.c','pw_steamstub_profile.h','pw_execution_mode.h','pw_execution_policy.h'):
+        shutil.copyfile(ROOT/'platform/ps4'/header,overlay/'kernelbase'/header)
+    for header in ('pw_guest_steamstub.inc.c','pw_steamstub_profile.h'):
+        shutil.copyfile(ROOT/'platform/ps4'/header,overlay/'ntdll'/header)
+    (overlay/'ntdll/loader.c').write_text(patch_root_loader((SOURCE/'dlls/ntdll/loader.c').read_text()))
+    sources={'ntdll':{'loader':'dlls/ntdll/loader.c'}}
+    process_modules=build('i386',ROOT/'build/steamstub-process32',ROOT/'out/steamstub-process32')
+    print(json.dumps({'process32':process_modules,'classification':'built, hardware pending'}))
     raise SystemExit(0)
 modules=build('x86_64',work,out)
 modules32=build('i386',ROOT/'build/guest-hw-i386',ROOT/'out/guest-hw-i386')
