@@ -2684,6 +2684,85 @@ revise('systray.c','''            if (!hung.hwnd) hung_since = hung_dumps = 0;''
             }
             if (!hung.hwnd) hung_since = hung_dumps = 0;''','Broadcast USB drive arrival and removal (phase 10 hot plug).')
 
+# Steam Big Picture (docs/STEAM_BIG_PICTURE.md): "Steam Big Picture" under "Open Steam Client". After a
+# confirmation it asks the native side for "<bigpicture>" (native/hw_pad.c), which relaunches the title into
+# Big Picture and answers only when that failed. Big Picture's desktop is not named "shell": no taskbar or
+# Start, and no Desktop icons either (the launchers' window is made only for the shell's desktop).
+revise('startmenu.c','#define MENU_ID_ROOT 4\n','#define MENU_ID_ROOT 4\n#define MENU_ID_BIGPICTURE 6\n','Steam Big Picture item id.')
+revise('startmenu.c','static void orbis_reset_mode( HWND hwnd )\n','''static void orbis_bigpicture( HWND hwnd )
+{
+    char reply[260] = "";
+    WCHAR text[400], detail[260];
+    LONG user, machine;
+
+    if (MessageBoxW( hwnd, L"The desktop closes and OrbisDesk restarts into Steam Big Picture.\\n\\n"
+                     L"Open programs will close; save your work first.",
+                     L"Steam Big Picture", MB_OKCANCEL | MB_ICONINFORMATION | MB_TOPMOST ) != IDOK)
+        return;
+    user = RegFlushKey( HKEY_CURRENT_USER );
+    machine = RegFlushKey( HKEY_LOCAL_MACHINE );
+    if (!orbis_native_call( "<bigpicture>", reply, sizeof(reply) ))
+        lstrcpynA( reply, "error: OrbisDesk's native side could not be reached", sizeof(reply) );
+    ERR( "PWBIGPICTURE explorer restart reply=%s flush_user=%ld flush_machine=%ld\\n", debugstr_a(reply), user, machine );
+    /* the request back unchanged: the installed OrbisDesk predates Big Picture (its runtime was uploaded, its
+     * package not installed: 04.69's first console run) */
+    if (!lstrcmpA( reply, "<bigpicture>" ))
+        lstrcpynA( reply, "The installed OrbisDesk package is older than its runtime and has no Steam Big Picture. "
+                   "Install the OrbisDesk package that came with this update, then try again.", sizeof(reply) );
+    if (!MultiByteToWideChar( CP_UTF8, 0, reply, -1, detail, ARRAY_SIZE(detail) )) detail[0] = 0;
+    lstrcpynW( text, L"OrbisDesk could not restart into Steam Big Picture.\\n\\n", ARRAY_SIZE(text) );
+    lstrcatW( text, detail );
+    MessageBoxW( hwnd, text, L"Steam Big Picture", MB_OK | MB_ICONERROR | MB_TOPMOST );
+}
+
+static void orbis_reset_mode( HWND hwnd )
+''','Steam Big Picture item: confirmation and relaunch request.')
+revise('startmenu.c','''    mii.wID = MENU_ID_STEAM;
+    InsertMenuItemW(root_menu.menuhandle, -1, TRUE, &mii);
+''','''    mii.wID = MENU_ID_STEAM;
+    InsertMenuItemW(root_menu.menuhandle, -1, TRUE, &mii);
+
+    mii.fMask = MIIM_STRING|MIIM_ID|MIIM_BITMAP;
+    mii.dwTypeData = (WCHAR *)L"Steam Big Picture";
+    mii.hbmpItem = HBMMENU_CALLBACK;
+    mii.wID = MENU_ID_BIGPICTURE;
+    InsertMenuItemW(root_menu.menuhandle, -1, TRUE, &mii);
+''','Steam Big Picture item under Open Steam Client.')
+revise('startmenu.c','''            else if (mii.wID == MENU_ID_ROOT)  /* W292 */''','''            else if (mii.wID == MENU_ID_BIGPICTURE)
+                orbis_bigpicture(hwnd);
+            else if (mii.wID == MENU_ID_ROOT)  /* W292 */''','Steam Big Picture item command.')
+revise('startmenu.c','''    else if (dis->itemID == MENU_ID_STEAM)
+    {
+        /* a blue disc with a white hub */''','''    else if (dis->itemID == MENU_ID_BIGPICTURE)
+    {
+        /* a rounded square in the logo's blues, light over dark */
+        HBRUSH old_brush;
+        HPEN old_pen = SelectObject( dis->hDC, GetStockObject( NULL_PEN ));
+        brush = CreateSolidBrush( RGB( 0x15, 0x5c, 0xb8 ));
+        old_brush = SelectObject( dis->hDC, brush );
+        RoundRect( dis->hDC, x + 1, y + 1, x + size - 1, y + size - 1, 6, 6 );
+        SelectObject( dis->hDC, old_brush );
+        DeleteObject( brush );
+        brush = CreateSolidBrush( RGB( 0x3a, 0x9c, 0xf0 ));
+        old_brush = SelectObject( dis->hDC, brush );
+        RoundRect( dis->hDC, x + 1, y + 1, x + size - 1, y + size / 2 + 2, 6, 6 );
+        SelectObject( dis->hDC, old_brush );
+        DeleteObject( brush );
+        brush = CreateSolidBrush( RGB( 0x8f, 0xe0, 0xff ));
+        SetRect( &r, x + 4, y + 4, x + size / 2, y + size / 2 - 1 );
+        FillRect( dis->hDC, &r, brush );
+        DeleteObject( brush );
+        SelectObject( dis->hDC, old_pen );
+    }
+    else if (dis->itemID == MENU_ID_STEAM)
+    {
+        /* a blue disc with a white hub */''','Steam Big Picture item glyph.')
+revise('desktop.c','''        if (!using_root && enable_launchers)
+        {
+            HWND panel = create_desktop_icons();''','''        if (!using_root && enable_launchers && enable_shell)  /* Steam Big Picture's desktop: no icons */
+        {
+            HWND panel = create_desktop_icons();''','Desktop icons only on the shell desktop (Steam Big Picture).')
+
 # The pinned build's own commands for the explorer objects and link, from make -n.
 registry_worker=ROOT/'platform/ps4/pw_overlay_registry_guest.inc.c'
 shutil.copyfile(registry_worker,overlay/registry_worker.name)

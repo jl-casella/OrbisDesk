@@ -88,7 +88,19 @@ replacement=r'''    {
         if (!InterlockedExchange(&title_launch_started, 1))
         {
             HANDLE thread = CreateThread(NULL, 0, pw_title_launch_watch, hwnd, 0, NULL);
+            STARTUPINFOW si = {sizeof(si)};
+            PROCESS_INFORMATION pi = {0};
+            WCHAR register_command[] = L"\"C:\\orbis\\steam-open.exe\" --register 0";
             if (thread) CloseHandle(thread);
+            /* Steam's registration in the prefix back to OrbisDesk once at each start (2026-11-26): a game's own Steam
+             * emulator names itself as Steam there and stays named after it closed (native/steam/orbis_steam_open.c) */
+            if (CreateProcessW(L"C:\\orbis\\steam-open.exe", register_command, NULL, NULL, FALSE, 0, NULL, L"C:\\orbis",
+                               &si, &pi))
+            {
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            }
+            if (!pi.hProcess) ERR("PWLAUNCH steam_register at=start ok=0\n");
         }
     }
     switch(message)
@@ -100,6 +112,28 @@ replacement=r'''    {
             PROCESS_INFORMATION pi = {0};
             BOOL ok;
             DWORD error;
+            /* Hardware 2026-11-26 (run-0214): Rockstar's launcher, in the separate process, opened steam://run/12210//...
+             * to have Steam start GTA IV; its shell read the prefix's steam:// handler, which another copy's Steam emulator
+             * had taken, and asked for that program with the URL. A request that hands a steam:// URL to a program other
+             * than OrbisDesk's handler goes to C:\orbis\steam-open.exe with the URL: it starts the installed game, as
+             * Play does, or opens the Steam client. */
+            {
+                const WCHAR *url = NULL, *at;
+                const WCHAR *slash = wcsrchr(launch->image, '\\');
+                for (at = launch->command; *at && !url; ++at)
+                    if (!wcsnicmp(at, L"steam://", 8)) url = at;
+                if (url && wcsicmp(slash ? slash + 1 : launch->image, L"steam-open.exe"))
+                {
+                    WCHAR target[1024];
+                    int n = 0;
+                    while (url[n] && url[n] != '"' && n < 960) { target[n] = url[n]; ++n; }  /* with the program, within the 1024 */
+                    target[n] = 0;
+                    lstrcpyW(launch->image, L"C:\\orbis\\steam-open.exe");
+                    wsprintfW(launch->command, L"\"C:\\orbis\\steam-open.exe\" \"%s\"", target);
+                    lstrcpyW(launch->directory, L"C:\\orbis");
+                    ERR("PWLAUNCH steam_url handler=orbisdesk rerouted=1\n");
+                }
+            }
             /* Hardware 2026-11-16 (run-0174): Warcraft III's war3.exe, handed over by its launcher in the separate
              * process, came with no directory and started in explorer's, so it found none of its .mpq files and
              * said "Warcraft III was unable to initialize". With none, the program's own folder, where a launcher

@@ -30,6 +30,7 @@ Regenerate both languages: `python3 tools/build-doc-index.py`.
 ## Native Steam client, games and attribution
 
 - [GAMES.md](GAMES.md) — W114: games in Start → Programs → Games
+- [STEAM_BIG_PICTURE.md](STEAM_BIG_PICTURE.md) — Steam Big Picture
 - [STEAM_HOSTED.md](STEAM_HOSTED.md) — The Steam client inside OrbisDesk
 - [STEAM_S1.md](STEAM_S1.md) — S1: HTTPS native to the Steam customer (ORBS00001)
 - [STEAM_S2.md](STEAM_S2.md) — S2: anonymous download of a Steam depot

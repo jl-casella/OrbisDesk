@@ -382,6 +382,84 @@ const char *pw_hw_reset_mode(int root)
              root?"ROOT":"NORMAL");
     return reply;
 }
+/* Steam Big Picture (docs/STEAM_BIG_PICTURE.md): which Explorer a start runs. HW_STARTUP's mode= (the Steam
+ * client's Settings; desktop when missing), or once HW_NEXT_MODE (the client's Exit to desktop, Start's "Steam
+ * Big Picture"). Big Picture is Explorer with a desktop not named "shell" (no taskbar, Start or icons) and the
+ * Steam client opened on the first frame (native/steam/steam_ui.c). Such a start leaves HW_BIGPICTURE_FAILED
+ * until the client's first frame is drawn (pw_hw_bigpicture_ready): still there at the next start, that start
+ * is the desktop's. A relaunch keeps the mode chosen at start (ROOT/NORMAL) as for every relaunch. */
+#define HW_STARTUP "/data/orbisdesk/startup.ini"
+#define HW_NEXT_MODE "/data/orbisdesk/next-mode"
+#define HW_BIGPICTURE_FAILED "/data/orbisdesk/bigpicture-failed"
+static int bigpicture_boot;
+int pw_hw_bigpicture_boot(void);
+int pw_hw_bigpicture_boot(void) {return bigpicture_boot;}
+void pw_hw_bigpicture_ready(void);
+void pw_hw_bigpicture_ready(void)
+{
+    if(!bigpicture_boot) return;
+    int removed=!unlink(HW_BIGPICTURE_FAILED);
+    note(HW_BUILD " PWBIGPICTURE ready marker_removed=%d\n",removed);
+}
+static int startup_bigpicture(void)
+{
+    char line[64];
+    int want=0;
+    const char *source="default";
+    struct stat st;
+    FILE *file=fopen(HW_NEXT_MODE,"r");
+    if(file) {
+        if(fgets(line,sizeof(line),file)) {want=!strncmp(line,"bigpicture",10);source="next-mode";}
+        fclose(file);
+        unlink(HW_NEXT_MODE);
+    } else if((file=fopen(HW_STARTUP,"r"))) {
+        while(fgets(line,sizeof(line),file))
+            if(!strncmp(line,"mode=",5)) {want=!strncmp(line+5,"bigpicture",10);source="startup.ini";}
+        fclose(file);
+    }
+    if(want && !stat(HW_BIGPICTURE_FAILED,&st)) {
+        unlink(HW_BIGPICTURE_FAILED);
+        note(HW_BUILD " PWBIGPICTURE mode=desktop source=%s fallback=previous_start_failed\n",source);
+        return 0;
+    }
+    if(want) {FILE *marker=fopen(HW_BIGPICTURE_FAILED,"w");if(marker) fclose(marker);}
+    note(HW_BUILD " PWBIGPICTURE mode=%s source=%s\n",want?"bigpicture":"desktop",source);
+    return want;
+}
+/* The Steam client's Exit to desktop and Start's "Steam Big Picture" (native/hw_pad.c "<bigpicture>"): the
+ * title relaunches into `mode` ("desktop" or "bigpicture") once. Returns only when that failed. */
+const char *pw_hw_restart_mode(const char *mode);
+const char *pw_hw_restart_mode(const char *mode)
+{
+    static char reply[128];
+    const int bigpicture=mode && !strcmp(mode,"bigpicture");
+    if(!mode || (!bigpicture && strcmp(mode,"desktop"))) return "error: unknown mode";
+    if(switched) return "error: not the desktop's run";
+    FILE *next=fopen(HW_NEXT_MODE,"w");
+    if(!next || fprintf(next,"%s\n",mode)<=0 || fclose(next)) {
+        snprintf(reply,sizeof(reply),"error: cannot write %s (errno %d)",HW_NEXT_MODE,errno);
+        unlink(HW_NEXT_MODE);
+        return reply;
+    }
+    if(!bigpicture) unlink(HW_BIGPICTURE_FAILED);
+    note(HW_BUILD " PWBIGPICTURE restart to=%s t_ms=%llu\n",mode,(unsigned long long)(sceKernelGetProcessTime()/1000));
+    pw_hw_unjailbreak("restart");
+    int rc=sceSystemServiceLoadExec(HW_SELF,NULL);
+    note(HW_BUILD " PWBIGPICTURE restart load_exec rc=0x%08x\n",(unsigned)rc);
+    if(!rc) wait_for_system_close("restart");
+    unlink(HW_NEXT_MODE);
+    if(boot_root) pw_hw_jailbreak();
+    snprintf(reply,sizeof(reply),rc?"error: the relaunch was refused (0x%08x)":"error: the system did not close the title",
+             (unsigned)rc);
+    return reply;
+}
+/* The Steam client's Close OrbisDesk: the title closes as when Wine exits. */
+void pw_hw_close_title(void);
+void pw_hw_close_title(void)
+{
+    note(HW_BUILD " PWBIGPICTURE close_title\n");
+    __wrap__exit(0);
+}
 int pw_hw_switch_program(const char *image,const char *command_line)
 {
     enum {MAX_SWITCH_ARGS=16};  /* W265: was 6 (Worms 3D: /W 1280 /H 720 /FS /REFRESH 60) */
@@ -1201,7 +1279,9 @@ int main(void)
         for(int i=0;i<context_envs;i++) args[argc++]=context_env[i];  /* W262 */
     } else {
         static char desktop[]="--wine-arg=/desktop=shell,1280x720";
-        args[argc++]=desktop;
+        static char bigpicture[]="--wine-arg=/desktop=bigpicture,1280x720";
+        bigpicture_boot=startup_bigpicture();
+        args[argc++]=bigpicture_boot?bigpicture:desktop;
     }
     /* W044: the console's local time for Wine's clock, as a POSIX TZ (west of UTC is
      * positive). W047: on hardware the C library's clock, which Wine reads, is not the

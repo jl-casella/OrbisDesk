@@ -260,6 +260,8 @@ command[1:1]=[str(request_writer)]
 steam_build=json.loads((ROOT/'build/steam-hosted/manifest.json').read_text())
 steam_object=ROOT/steam_build['object']
 if sha(steam_object)!=steam_build['object_sha256']:raise SystemExit('Steam object differs from its build')
+for source,digest in steam_build['sources_sha256'].items():
+    if sha(ROOT/source)!=digest:raise SystemExit('Steam source differs from its producer: '+source)
 command[1:1]=[str(steam_object)]
 command[1:1]=['--wrap=exit','--wrap=_exit','--wrap=sceKernelDebugOutText','--wrap=write','--wrap=vfprintf','--wrap=fprintf','--wrap=fputs','--wrap=fwrite',str(wrapper),str(pad),str(overlay_obj)];command+=['-lSceSysmodule','-lSceSystemService','-lScePad','-lSceUserService','-lSceRtc','-lSceAudioOut','-lSceNet']
 run(command)
@@ -1715,6 +1717,8 @@ for source in (ROOT/'platform/ps4/pw_dirent_record.h',ROOT/'native/wine_dirent_r
                ROOT/'platform/ps4/pw_fps_limit.h',ROOT/'platform/ps4/pw_framegen_sched.h'):
     manifest['source_hashes'][str(source.relative_to(ROOT))]=sha(source)
 manifest['dos_runtime']=dos
+manifest['steam_client']=steam_build
+manifest['source_hashes'].update(steam_build['sources_sha256'])
 for source in ('native/dos_audio.c','native/doshost_win32.c','platform/ps4/pw_dos_audio.h','tools/explorer-dos.h','tools/build-dos-runtime.py','dos.lock.json'):
     manifest['source_hashes'][source]=sha(ROOT/source)
 manifest['product']={'name':'OrbisDesk','slug':'orbisdesk','state_root':'/data/orbisdesk',

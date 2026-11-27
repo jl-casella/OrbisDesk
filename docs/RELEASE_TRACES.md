@@ -92,6 +92,23 @@ Three opt-in markers predate this and stay separate: `/data/orbisdesk/framegen.t
 
 Three things are unchanged: `PW_NATIVE_PROFILE` stays opt-in through `nativeprofile.txt`; `PW_VK_BATCH` turns batching on and is not a trace; and the MangoHud `PWHUD` debug string only appears with Wine's `warn+debugstr` channel.
 
+## Alpha 3 lines
+
+Alpha 3 (04.37–04.95) added lines for Steam Big Picture, non-Steam games, launch modes, guest compatibility (Burn, the VC++ runtime fallback, services, the 32/64-bit exit bridge), per-EXE overlay profiles and the performance work. Before the release they were sorted with the same rule as alpha 2. The diagnostics written only to investigate one crash were removed: the unhandled-exception dumps of 04.93–04.95 (`PWSEH`), the thread id on `PWBOOT static_unixlib_by_name`, `PWBURN startup` and `PWBURN inherited`, `PWHEAP region` and the constant `PWCOMPILER policy` line.
+
+**Traced only (`trace.txt`):**
+
+- **Steam client.** Navigation and counts: `PWSTEAM bigpicture refresh|drives|open|tab|close|game_page open`, `library refresh start|end|applied`, `library cache hit|none`, `launch_plans`, `launch_mode app=` and `menu from=short_run`, `emu … pressed`, `storage install default_used`, every `storage menu phase=` and `storage move phase=` step, `storage cleanup ok=1`, the `plan shared depot|shared_depots|adopted depot` lines, `covers games=`, the non-Steam cover and folder searches, `ui hidden|shown`, and `net step=` (the last step is still named by `net start_failed`). `steam-open.exe`'s `PWSTEAM open args=` goes to the title's log only with traces; `steam-open.txt` keeps it.
+- **Guests.** `PWWOW guest32 manifest` when the context was activated, `PWWOW bridge process_handle`, `PWGUEST memory module=… regions=`, `PWGUEST version`, `PWGUEST native_quiet module=`, `PWBURN copy_removed` after a removal, and `PWSCM services.exe ready`.
+- **Overlay and desktop.** `PWOVERLAY profile selected`, the Explorer registry worker's `get` answers and its `ready` line, and win32u's routine `32-bit thread … no class` misses.
+- **Graphics.** `PWFG normalized_source`, `PWPIXELS layer`.
+
+**Performance diagnostics only (`--performance-diagnostics` builds, or traces):** `PWOP config`, `PWPERF config` (unless the empty-submit CPU control is on), `PWALERT config` for the default backend, `PW_DESCRIPTOR_CACHE requested=1`, `PWFG prepare` and `PWFG prewarm` when they succeed, plus the `PWOP`, `PWREAD`, `PWPRESENT`, `PWQUEUE`, `PWTHREADPERF` and `PWALERTPERF` summaries.
+
+**Only when something is wrong:** `PWINSTALL vcrt checked=` (when a DLL was restored, failed or refused), `PWWOW bridge exit_code` (when the bridge could not answer; installers poll it), `PWGUEST GetExitCodeProcess` (the first 16), `PWSCM started` (when the wait did not end in time), `PWLAUNCH steam_register` (when `steam-open.exe` could not start), `PW_DESCRIPTOR_CACHE configured` (requested and not supported), `PWSTEAM library file|library cache write` (when the write failed), `PWSTEAM ui fonts` (when it fell back) and `PWSTEAM ui flip` (the first 16 failures).
+
+**Kept in release:** Big Picture's restart and close (`PWBIGPICTURE`, with the registry flush results on the reply line), launch-mode and ColdClient changes, Play's start and end, installs, uninstalls, moves and their failures, `PWBURN own_image`, `PWSEP cef_separate`, `PWSCM` start errors, `PWINSTALL vcrt restored|restore_failed|kept_native`, `PWFS` descriptor pressure, `PWFUTIMES` failures, `PWHEAP allocation_failed|direct`, `PWNATIVE` and `PWFAULT` crash records, `PWCOMPILER` cleanup results, and `PWOVERLAY profile save` and `PWPAD remap` once per change.
+
 ## Always logged
 
 - launcher `Wnnn` markers
@@ -102,7 +119,7 @@ Three things are unchanged: `PW_NATIVE_PROFILE` stays opt-in through `nativeprof
 
 ## Not yet covered
 
-- **Steam client.** It flushes its log to storage after every line except the install's progress line without traces (W299).
+- **Steam client.** It flushes its log to storage after every line except the install's progress line without traces (W299). Alpha 3 moved its navigation and progress lines behind the switch (above).
 - **The MangoHud HUD.** It is shown by default. Setting `MANGOHUD=0` would not load the layer at all, so the overlay's STATISTICS toggle could not show it.
 - **`C:\orbis\dxvkdebug.txt`.** A leftover copy on the console turned DXVK's debug log on in W299; it is a manual override, removed from the console.
 - **A full-screen game that does not pump messages.** While it loads or plays a video, Wine reports its window hung and `PWHUNG` logs it. A possible improvement is to skip the report while the program still presents Vulkan frames. The native side already counts presents. Not done for alpha-1.

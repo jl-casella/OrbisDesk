@@ -19,7 +19,8 @@ build/wine-hardware-w*/wine.elf, or be one of S2's console-proven imports (NEW_I
 Outputs, in build/steam-hosted/:
   steam_client_hosted.o   for the hardware ELF's link (staged patch: notes, steam-hosted-integration.md)
   prefix/orbis/steam/     cacert.pem, gbe-x86-steam_api.dll, gbe-x64-steam_api64.dll and their
-                          licence and source notes, for C:\\orbis\\steam in the uploaded prefix
+                          licence and source notes, for C:\\orbis\\steam in the uploaded prefix; coldclient/:
+                          gbe's experimental steamclient(64).dll, GameOverlayRenderer(64).dll and loaders
   prefix/orbis/steam-open.exe   the Desktop link's and Start menu's helper (native/steam/orbis_steam_open.c)
   manifest.json
 This builder never uploads and never touches the hardware ELF's build."""
@@ -30,6 +31,8 @@ PREFIX_MAP=['-ffile-prefix-map=%s=.'%ROOT,'-ffile-prefix-map=%s=vk-h0'%(pathlib.
 PLAYDEN=ROOT/'upstream/playden-ps5';REVISION='fb74dbfd6bb96fc19a96afc1f48a4e40a885216b'
 VK=pathlib.Path.home()/'vk-h0'
 STB=(ROOT/'.deps/steam/downloads/stb/stb_image.h','594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3')
+# Big Picture's text (native/steam/steam_draw.c): the OpenOrbis SDK's stb_truetype, compiled static there
+STBTT=(SDK/'include/stb/stb_truetype.h','97233cfddd15dc96ea28d73b10599887584c38e3166b4cd3ef62934cb79b20e6')
 CACERT=(ROOT/'.deps/steam/downloads/cacert-2026-09-25.pem','a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505')
 QRDIR=ROOT/'.deps/steam/downloads/qrcodegen-1.8.0'
 QRCODEGEN={'qrcodegen.c':'300eff07ee25baaa7578f20284411638154716379437391e7e689c0e6ce81403',
@@ -45,13 +48,16 @@ EXPORTS=['pw_hw_steam_open','pw_hw_steam_draw','pw_hw_steam_pad','pw_hw_steam_ac
 # what the object may need that Wine's ELF doesn't have yet: the S2 imports the standalone title proved
 # on the console (docs/STEAM_S2.md), and OrbisDesk's optional ROOT accessor (weak)
 NEW_IMPORTS={'sceNetRecv','sceNetResolverAbort','sceNetGetDnsInfo','__pthread_cleanup_push_imp',
-             '__pthread_cleanup_pop_imp','pthread_equal','pw_hw_root_mode'}
+             '__pthread_cleanup_pop_imp','pthread_equal','pw_hw_root_mode','pw_hw_steam_exe_running',
+             # Steam Big Picture's native side (native/wine_hardware.c, native/hw_overlay.c), weak
+             'pw_hw_bigpicture_boot','pw_hw_bigpicture_ready','pw_hw_restart_mode','pw_hw_close_title',
+             'pw_hw_open_programs'}
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 # an export carries REVISION; a clone from tools/restore-dependencies.py (the clean product build) its HEAD
 playden_revision=((PLAYDEN/'REVISION').read_text().strip() if (PLAYDEN/'REVISION').is_file() else
                   subprocess.run(['git','-C',str(PLAYDEN),'rev-parse','HEAD'],capture_output=True,text=True).stdout.strip())
 if playden_revision!=REVISION:raise SystemExit('upstream/playden-ps5 is not at '+REVISION)
-for path,expected in (STB,CACERT,*((QRDIR/n,h) for n,h in QRCODEGEN.items()),*((GBEDIR/n,h) for n,h in GBE.items())):
+for path,expected in (STB,STBTT,CACERT,*((QRDIR/n,h) for n,h in QRCODEGEN.items()),*((GBEDIR/n,h) for n,h in GBE.items())):
     if not path.is_file() or sha(path)!=expected:raise SystemExit('missing or changed: %s'%path)
 deps=ROOT/'build/steam-deps-ps4/prefix';curl_src=ROOT/'build/steam-deps-ps4/src/curl-8.22.0'
 if not (deps/'lib/libmbedtls.a').is_file() or not curl_src.is_dir():
@@ -68,6 +74,7 @@ src=work/'playden/src'
 for part in ('steam','platform','library'):shutil.copytree(PLAYDEN/'src'/part,src/part)
 for patch in sorted((ROOT/'native/steam/patches').glob('*.patch')):run(['patch','--fuzz=0','-p1','-i',patch],cwd=work/'playden')
 (work/'third_party').mkdir();shutil.copyfile(STB[0],work/'third_party/stb_image.h')
+shutil.copyfile(STBTT[0],work/'third_party/stb_truetype.h')
 
 target=['--target=x86_64-pc-freebsd12-elf','-D__ORBIS__','-fPIC','-funwind-tables','-march=btver2','-O2','-g',
         *PREFIX_MAP,'-ffile-prefix-map=%s/='%work,'-DSTEAM_UI_HOSTED','-DMBEDTLS_USER_CONFIG_FILE="mbedtls_user_config.h"',
@@ -92,8 +99,9 @@ compile(cxx,ROOT/'native/steam/orbis/storage_none.cpp')
 compile(cc,QRDIR/'qrcodegen.c')
 compile(cc,ROOT/'native/steam/steam_tls.c',strict=True)
 compile(cc,ROOT/'native/steam/steam_ui.c',strict=True)
-for name in ('steam_session','steam_install','steam_shortcut','steam_emu','steam_client'):
-    compile(cxx,ROOT/'native/steam'/(name+'.cpp'),strict=True)
+compile(cc,ROOT/'native/steam/steam_draw.c',strict=True)
+for name in ('steam_session','steam_install','steam_storage','steam_shortcut','steam_emu','steam_bp','steam_covers','steam_nonsteam','steam_client'):
+    compile(cxx,ROOT/'native/steam'/(name+'.cpp'),strict=True,extra=('-Wframe-larger-than=32768',) if name=='steam_storage' else ())
 # curl again, with STEAM_UI_HOSTED's TCP option numbers (orbis_net_fix.h, through curl_config.h)
 lib=curl_src/'lib';curl_objects=[]
 for source in sorted([*lib.glob('*.c'),*[s for d in ('curlx','vauth','vdns','vquic','vssh','vtls') for s in (lib/d).glob('*.c')]]):
@@ -180,17 +188,26 @@ new=sorted((needed-available)&NEW_IMPORTS)
 prefix=work/'prefix/orbis';steam=prefix/'steam';steam.mkdir(parents=True)
 shutil.copyfile(CACERT[0],steam/'cacert.pem')
 unpack=work/'gbe-unpack';unpack.mkdir()
+# Big Picture's full emulation for SteamStub games (docs/STEAM_BIG_PICTURE.md, 2026-11-25): gbe_fork's experimental
+# steamclient and its ColdClient loader, unmodified, in C:\orbis\steam\coldclient; the client writes the loader's
+# ColdClientLoader.ini there for each start
+COLDCLIENT=['steamclient.dll','steamclient64.dll','GameOverlayRenderer.dll','GameOverlayRenderer64.dll',
+            'steamclient_loader_x86.exe','steamclient_loader_x64.exe']
 run(['7z','x','-y','-o'+str(unpack),GBEDIR/'emu-win-release-vs22.7z','release/regular/x86/steam_api.dll',
-     'release/regular/x64/steam_api64.dll'])
+     'release/regular/x64/steam_api64.dll',*('release/steamclient_experimental/'+name for name in COLDCLIENT)])
 for arch,name in (('x86','steam_api.dll'),('x64','steam_api64.dll')):
     shutil.copyfile(unpack/'release/regular'/arch/name,steam/('gbe-%s-%s'%(arch,name)))
+coldclient=steam/'coldclient';coldclient.mkdir()
+for name in COLDCLIENT:shutil.copyfile(unpack/'release/steamclient_experimental'/name,coldclient/name)
 run(['tar','-xzf',GBEDIR/'gbe_fork-release-2026_09_27-source.tar.gz','-C',unpack,'gbe_fork-release-2026_09_27/LICENSE'])
 shutil.copyfile(unpack/'gbe_fork-release-2026_09_27/LICENSE',steam/'gbe-LICENSE-LGPL-3.0.txt')
 (steam/'gbe-SOURCE.txt').write_text('gbe_fork '+GBE_TAG+' (LGPL-3.0)\n'
     'Binary: https://github.com/Detanup01/gbe_fork/releases/download/'+GBE_TAG+'/emu-win-release-vs22.7z\n'
     'Source: https://github.com/Detanup01/gbe_fork/archive/refs/tags/'+GBE_TAG+'.tar.gz\n'
     +''.join('sha256 %s %s\n'%(h,n) for n,h in GBE.items())+
-    'Used unmodified: release/regular/x86/steam_api.dll and release/regular/x64/steam_api64.dll.\n')
+    'Used unmodified: release/regular/x86/steam_api.dll and release/regular/x64/steam_api64.dll;\n'
+    'in coldclient/: release/steamclient_experimental/'+', '.join(COLDCLIENT)+'.\n'
+)
 # The helper's icon. Wine's explorer (programs/explorer/desktop.c, add_launcher) leaves out a Desktop
 # link whose IconLocation and target have no icon, so the helper carries one: the Start menu glyph's blue
 # disc (RGB 0x66c0f4) with a white hub, drawn here at 16, 32 and 48 pixels with 4x4 supersampling.
@@ -237,14 +254,19 @@ def shortcut(target,description,directory):
 desktop=work/'prefix/users/orbis/Desktop';desktop.mkdir(parents=True)
 (desktop/'Open Steam Client.lnk').write_bytes(shortcut('C:\\orbis\\steam-open.exe','Open Steam Client','C:\\orbis'))
 
-sources=['native/steam/steam_client.cpp','native/steam/steam_install.cpp','native/steam/steam_shortcut.cpp',
+sources=['native/steam/steam_client.cpp','native/steam/steam_storage_ui.inc.cpp','native/steam/steam_bigpicture.inc.cpp',
+         'native/steam/steam_bigpicture_state.inc.cpp','native/steam/steam_library_cache.inc.cpp','native/steam/steam_bp.cpp','native/steam/steam_bp.h',
+         'native/steam/steam_covers.cpp','native/steam/steam_covers.h','native/steam/steam_nonsteam.cpp',
+         'native/steam/steam_nonsteam.h','native/steam/steam_nonsteam_ui.inc.cpp','native/steam/steam_draw.c','native/steam/steam_draw.h',
+         'native/steam/steam_ui.h','native/steam/steam_install.cpp','native/steam/steam_storage.cpp','native/steam/steam_storage.h','native/steam/steam_install.h','native/steam/steam_shortcut.h','native/steam/steam_shortcut.cpp',
          'native/steam/steam_emu.cpp','native/steam/steam_session.cpp','native/steam/steam_ui.c','native/steam/steam_tls.c',
          'native/steam/orbis/orbis_clock.c','native/steam/orbis/orbis_net_fix.h','native/steam/orbis/curl_config.h',
          'native/steam/orbis_steam_open.c','native/steam/mbedtls_user_config.h']
 manifest={'build':BUILD,'object':str(out.relative_to(ROOT)),'object_sha256':sha(out),'exports':EXPORTS,
     'checked_against':str(wine.relative_to(ROOT)),'new_imports':new,'playden_revision':REVISION,
     'patches':{p.name:sha(p) for p in sorted((ROOT/'native/steam/patches').glob('*.patch'))},
-    'gbe_fork':{'tag':GBE_TAG,**GBE},'qrcodegen':QRCODEGEN,'sources_sha256':{s:sha(ROOT/s) for s in sources},
+    'gbe_fork':{'tag':GBE_TAG,**GBE},
+    'qrcodegen':QRCODEGEN,'stb_truetype_sha256':STBTT[1],'sources_sha256':{s:sha(ROOT/s) for s in sources},
     'prefix_files':{str(p.relative_to(work/'prefix')):sha(p) for p in sorted((work/'prefix').rglob('*')) if p.is_file()},
     'link_needs':['the vk sysroot libc++/libc++abi the hardware ELF already links','-lSceNet','-lScePad (types only)']}
 (work/'manifest.json').write_text(json.dumps(manifest,indent=1))

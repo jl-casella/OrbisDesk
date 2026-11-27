@@ -1,0 +1,99 @@
+OrbisDesk: log each step of the native network's start (hardware 2026-11-25/26: the hosted client
+aborted between the CA line and "net init" on every start, with nothing in the log to say where).
+orbisdesk_steam_net_step is native/steam/steam_client.cpp's. Applied after 0006.
+
+--- a/src/steam/backend/native_network.cpp
++++ b/src/steam/backend/native_network.cpp
+@@ -22,6 +22,9 @@
+ int sceNetInit(void);
+ // OrbisDesk: true when the process already runs libSceNet (rc: this sceNetInit's result)
+ bool orbisdesk_steam_net_shared(int rc);
++// OrbisDesk: each step of the start below, logged before it runs (hardware 2026-11-25/26: a start aborted
++// here with nothing in the log to say where)
++void orbisdesk_steam_net_step(const char* step, int value);
+ int sceNetPoolCreate(const char* name, int size, int flags);
+ int sceNetPoolDestroy(int pool_id);
+ int sceNetRecv(int socket, void* data, std::size_t size, int flags);
+@@ -44,6 +47,7 @@
+ bool NativeNonblockingPreflight() {
+   constexpr int kSceNetSolSocket = 0xffff;
+   constexpr int kSceNetSoNonblock = 0x1200;
++  orbisdesk_steam_net_step("socket", 0);
+   int listener = socket(AF_INET, SOCK_STREAM, 0);
+   if (listener < 0) return false;
+   sockaddr_in address{};
+@@ -51,6 +55,7 @@
+   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+   address.sin_port = 0;
+   socklen_t address_size = sizeof(address);
++  orbisdesk_steam_net_step("bind_listen", listener);
+   if (bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+       listen(listener, 1) != 0 ||
+       getsockname(listener, reinterpret_cast<sockaddr*>(&address), &address_size) != 0) {
+@@ -58,6 +63,7 @@
+     return false;
+   }
+ 
++  orbisdesk_steam_net_step("connect", 0);
+   const int client = socket(AF_INET, SOCK_STREAM, 0);
+   const bool connected = client >= 0 &&
+                          connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+@@ -72,20 +78,24 @@
+   // client started while Wine was still booting, and a std::thread that could not be created there
+   // aborted the title (no exceptions: libc++ calls abort). A receive that times out still takes
+   // 50 ms, so the checks below fail as they did with the watchdog.
++  orbisdesk_steam_net_step("rcvtimeo", client);
+   struct timeval receive_timeout{};
+   receive_timeout.tv_usec = 50000;
+   setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
++  orbisdesk_steam_net_step("sce_setsockopt", 0);
+   int enabled = 1;
+   const int option_result = connected
+                                 ? sceNetSetsockopt(client, kSceNetSolSocket, kSceNetSoNonblock,
+                                                    &enabled, sizeof(enabled))
+                                 : -1;
+   unsigned char byte = 0;
++  orbisdesk_steam_net_step("sce_recv", option_result);
+   const auto native_start = Clock::now();
+   const int native_result = option_result == 0 ? sceNetRecv(client, &byte, 1, 0) : 0;
+   const int native_error = native_result < 0 && sceNetErrnoLoc() ? *sceNetErrnoLoc() : 0;
+   const auto native_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+       Clock::now() - native_start).count();
++  orbisdesk_steam_net_step("posix_recv", native_result);
+   errno = 0;
+   const auto posix_start = Clock::now();
+   const ssize_t posix_result = option_result == 0 ? recv(client, &byte, 1, 0) : 0;
+@@ -93,6 +103,7 @@
+   const auto posix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+       Clock::now() - posix_start).count();
+ 
++  orbisdesk_steam_net_step("close", static_cast<int>(posix_result));
+   close(client);
+   close(listener);
+   return option_result == 0 && native_result < 0 && native_error == EWOULDBLOCK &&
+@@ -105,7 +116,9 @@
+   // process-wide runtime is needed for the full application lifetime.
+   // OrbisDesk: inside OrbisDesk's title Wine has already called sceNetInit, and a second call
+   // returns an error on the PS4 (platform/ps4/pw_ws2_32_libc.c); the host says whether that is so.
++  orbisdesk_steam_net_step("sceNetInit", 0);
+   const int rc = sceNetInit();
++  orbisdesk_steam_net_step("sceNetInit_done", rc);
+   return rc == 0 || orbisdesk_steam_net_shared(rc);
+ }
+ #endif
+@@ -114,6 +127,7 @@
+ 
+ bool InitializeNativeNetworkForBootstrap() {
+ #if defined(PLAYDEN_PLATFORM_PS5) && PLAYDEN_PLATFORM_PS5
++  orbisdesk_steam_net_step("bootstrap", 0);
+   static std::once_flag once;
+   static bool ready = false;
+   std::call_once(once, [] { ready = InitializeNativeNetworkOnce(); });
+@@ -128,6 +142,7 @@
+ #if defined(PLAYDEN_PLATFORM_PS5) && PLAYDEN_PLATFORM_PS5
+   static std::once_flag once;
+   static bool ready = false;
++  orbisdesk_steam_net_step("preflight", 0);
+   std::call_once(once, [] { ready = NativeNonblockingPreflight(); });
+   return ready;
+ #else
