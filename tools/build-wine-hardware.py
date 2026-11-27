@@ -163,7 +163,9 @@ command=[str(signals_override) if arg==signals_original else arg for arg in comm
 virtual_original=str(ROOT/'build/wine-boot/virtual.o')
 if command.count(virtual_original)!=1:raise SystemExit('Expected one proven Wine virtual object in link')
 command=[str(ROOT/audio_build['objects']['virtual']['object']) if arg==virtual_original else arg for arg in command]
-heap_entries=('malloc','calloc','realloc','free','memalign','__memalign','aligned_alloc','posix_memalign')
+# Alice 04.91 (run-0243): musl's own mmap/munmap too (native/native_heap.c), so the native heap takes direct memory
+# when the flexible pool refuses a map (EINVAL); only malloc.lo, expand_heap.lo and libc's file maps reference them
+heap_entries=('malloc','calloc','realloc','free','memalign','__memalign','aligned_alloc','posix_memalign','__mmap','__munmap')
 command[1:1]=[str(heap),*('--wrap='+name for name in heap_entries)]
 # W188: socket options through platform/ps4/pw_wine_sockopt.c (this link only), which turns the SDK's Linux numbers
 # for the TCP, IP and IPv6 levels into the kernel's FreeBSD ones (TCP_KEEPIDLE was TCP_NOPUSH).

@@ -4,7 +4,13 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <errno.h>
+#include <time.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include "pw_wine_context.h"
+#include "pw_native_fault_record.h"
+int pw_wine_fstat(int,struct stat *);  /* pw_wine_platform.c: the console's stat layout, decoded */
 typedef struct PwWireAction {void (*handler)(int,void *,void *);int flags;uint32_t mask[4];} PwWireAction;
 _Static_assert(offsetof(PwWireAction,mask)==12,"Orbis sigaction mask");
 /* The SDK takes signal numbers, SA_* flags and SIG_* operations from musl's
@@ -122,10 +128,102 @@ __attribute__((visibility("hidden"),no_stack_protector)) void pw_native_signal_l
     pw_native_syscall_at(pw_native_raw_syscall,4 /* SYS_write */,pw_native_log_fd,(long)text,(long)n);
 }
 static int raw_mode;
+/* 04.81 (W303 run-0125/0127/0128, 04.78: the title ended with no line soon after Half-Life ended): a fault that
+ * Wine's handler cannot take ends the title silently (the kernel ends it when the handler faults again). Two cases
+ * leave a line in the run log first, through the raw write as above, each once per thread and before Wine's handler
+ * runs: a fault on a thread that is not on its signal stack (a native thread of RADV, the audio mixer or the
+ * compositor; Wine's handler finds its thread data through that stack), and a fault while this thread is still in
+ * the handler of an earlier one. Nothing else changes: Wine's handler gets every signal as before. Faults of Wine
+ * threads on their signal stack (every PE exception) are not logged. */
+int pw_native_fault_diag;  /* 04.83: set by the title's main (native/wine_hardware.c) only */
+/* 04.84 (run-0180 of 20261125T232346Z: with 04.83's gate the separate-process child still stopped right after its
+ * drive mapping): no thread-local storage at all in this object, which pop-wine-child.prx shares; process-wide
+ * state instead, so "in a fault handler" means any thread's, and each line is logged once per process */
+static volatile int pw_fault_depth,pw_fault_reported;
+static volatile uint64_t pw_fault_first_rip,pw_fault_first_addr;
+static unsigned pw_native_fault_snapshots,pw_native_fault_off_stack,pw_native_fault_sequence;
+static void pw_native_fault_line(const char *head,long signal,const PwOrbisUcontext *context,uint64_t extra_rip,
+                                 uint64_t extra_addr)
+{
+    static const char digits[]="0123456789abcdef";
+    static const char *const names[7]={" signal="," rip="," rsp="," addr="," fsbase="," first_rip="," first_addr="};
+    char text[320];
+    const PwOrbisMcontext *mc=&context->uc_mcontext;
+    uint64_t values[7];
+    unsigned n=0,i,j,count=extra_rip||extra_addr?7u:5u;
+
+    if(pw_native_log_fd<0) return;
+    values[0]=(uint64_t)signal;values[1]=mc->mc_rip;values[2]=mc->mc_rsp;values[3]=mc->mc_addr;
+    values[4]=mc->mc_fsbase;values[5]=extra_rip;values[6]=extra_addr;
+    for(j=0;head[j]&&n<80;j++) text[n++]=head[j];
+    for(i=0;i<count;i++) {
+        for(j=0;names[i][j];j++) text[n++]=names[i][j];
+        text[n++]='0';text[n++]='x';
+        for(j=0;j<16;j++) text[n++]=digits[(values[i]>>(60-4*j))&15];
+    }
+    text[n++]='\n';
+    pw_native_syscall_at(pw_native_raw_syscall,4 /* SYS_write */,pw_native_log_fd,(long)text,(long)n);
+}
+static int pw_fault_signal(int signal) {return signal==4||signal==8||signal==10||signal==11;}  /* Orbis ILL FPE BUS SEGV */
+static int pw_on_signal_stack(const PwOrbisUcontext *context)
+{
+    uintptr_t sp=(uintptr_t)__builtin_frame_address(0),base=(uintptr_t)context->stack.ptr;
+    return !(context->stack.flags&4 /* SS_DISABLE */)&&base&&sp>=base&&sp-base<context->stack.size;
+}
+/* The TEB of a Wine thread on its signal stack: the first word of the 64 KiB block, as pw_native_signal_entry and
+ * Wine's get_current_thread_data read it. Only called on that stack. */
+__attribute__((noinline)) static const uint64_t *pw_native_signal_teb(void)
+{
+    uintptr_t block=(uintptr_t)__builtin_frame_address(0)&~(uintptr_t)0xffff;
+    uintptr_t teb=*(const uintptr_t *)block;
+    return teb>=0x10000 && teb<0x800000000000ull && !(teb&7)?(const uint64_t *)teb:NULL;
+}
+/* THAW 04.90: the 1 KiB record has its own frame. Inline, the dispatcher reserved it (sub $0x4c8,%rsp) for every
+ * signal, Wine's included, where 04.87 took it only for a snapshot. */
+__attribute__((noinline)) static void pw_native_fault_snapshot(int signal,const PwOrbisUcontext *uc)
+{
+    char record[PW_NATIVE_FAULT_RECORD_BYTES];
+    unsigned sequence=__atomic_add_fetch(&pw_native_fault_sequence,1,__ATOMIC_RELAXED);
+    unsigned bytes=pw_native_fault_record(record,sizeof(record),sequence,signal,&uc->uc_mcontext);
+    pw_native_syscall_at(pw_native_raw_syscall,4 /* SYS_write */,pw_native_log_fd,(long)record,(long)bytes);
+}
 __attribute__((visibility("hidden"))) void pw_native_signal_dispatch(int signal,void *info,void *context);
 void pw_native_signal_dispatch(int signal,void *info,void *context)
 {
+    const PwOrbisUcontext *uc=context;
+
+    /* 04.83 (run-0169 of 20261125T220642Z: 04.81's lines below made every separate-process child die right after
+     * its drive mapping, with no line: the child is a PRX, whose thread-local variables the handler cannot reach):
+     * the title's main sets this; the child never touches the thread-local state */
+    if(!pw_native_fault_diag || !pw_fault_signal(signal)) {trampoline(signal,info,context);return;}
+    /* Alice 04.87: Wine returns native pipeline faults as c0000005, bypassing
+     * PWFAULT. Preserve the first native register contexts even on Wine's signal
+     * stack. The PRX leaves diagnostics disabled; no new thread-local state. */
+    /* W303 run-0207/0208 (04.87, symbolized: wineserver get_next_timeout and malloc): the fatal faults were on the
+     * server thread, off Wine's signal stack, where Wine's handler faults again and the title ends. Those get
+     * their own budget of snapshots, so handled faults earlier in the session cannot use it up, and need not be
+     * in the title's code. The sequence number counts every snapshot. */
+    int off_stack=!pw_on_signal_stack(uc);
+    /* THAW 04.90: a stack overflow (stack pointer below the TEB's limit) in any code is fatal too: same budget */
+    int fatal=off_stack||pw_native_fault_below_stack(uc->uc_mcontext.mc_rsp,pw_native_signal_teb());
+    unsigned *budget=fatal?&pw_native_fault_off_stack:&pw_native_fault_snapshots;
+    unsigned limit=fatal?PW_NATIVE_FAULT_OFF_STACK_LIMIT:PW_NATIVE_FAULT_RECORD_LIMIT;
+    if(pw_native_log_fd>=0 &&
+       (fatal || pw_native_fault_in_title(uc->uc_mcontext.mc_rip,(uintptr_t)&pw_native_signal_dispatch)) &&
+       __atomic_load_n(budget,__ATOMIC_RELAXED)<limit && __atomic_add_fetch(budget,1,__ATOMIC_RELAXED)<=limit)
+        pw_native_fault_snapshot(signal,uc);
+    if(pw_fault_depth&&!(pw_fault_reported&2)) {
+        pw_fault_reported|=2;
+        pw_native_fault_line("PWNATIVE fault in a fault handler:",signal,uc,pw_fault_first_rip,pw_fault_first_addr);
+    }
+    if(!(pw_fault_reported&1)&&off_stack) {
+        pw_fault_reported|=1;
+        pw_native_fault_line("PWNATIVE fault off Wine's signal stack (a native thread?):",signal,uc,0,0);
+    }
+    pw_fault_first_rip=uc->uc_mcontext.mc_rip;pw_fault_first_addr=uc->uc_mcontext.mc_addr;
+    __atomic_add_fetch(&pw_fault_depth,1,__ATOMIC_RELAXED);
     trampoline(signal,info,context);
+    __atomic_sub_fetch(&pw_fault_depth,1,__ATOMIC_RELAXED);
 }
 /* rdi=signal, rsi=siginfo, rdx=ucontext, on the stack the kernel chose. Frame:
  * -8 signal, -16 info, -24 context, -32 FS base at entry, -40 host FS base (0: none),
