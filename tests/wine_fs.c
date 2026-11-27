@@ -52,7 +52,17 @@ int main(void)
     while((entry=pw_wine_readdir(stream))) if(!strcmp(entry->d_name,"file")) found++;
     assert(found==1 && !pw_wine_closedir(stream));
     assert(pw_wine_fchdir(0,copy)==-1 && errno==EBADF);
-    assert(pw_wine_rename(0,"../server/sub","../server/moved")==-1 && errno==ENOTSUP);
+    /* Directory rename has been supported since WFM's later filesystem work.
+     * An open directory must still resolve through the updated path. */
+    int subdir=pw_wine_openat(0,directory,"sub",O_RDONLY|O_DIRECTORY);assert(subdir>=0);
+    assert(!pw_wine_rename(0,"../server/sub","../server/moved"));
+    int moved=pw_wine_openat(0,subdir,".",O_RDONLY|O_DIRECTORY);assert(moved>=0);
+    struct stat before_move,after_move;
+    assert(!pw_wine_fstat(subdir,&before_move) && !pw_wine_fstat(moved,&after_move));
+    assert(before_move.st_dev==after_move.st_dev && before_move.st_ino==after_move.st_ino);
+    assert(!pw_wine_close(moved));
+    assert(!pw_wine_rename(0,"../server/moved","../server/sub"));
+    assert(!pw_wine_close(subdir));
     assert(!pw_wine_fchdir(0,directory));
     assert(pw_wine_getcwd(0,cwd,sizeof(cwd)) && !strcmp(cwd,server));
     assert(!pw_wine_close(directory));assert(pw_wine_fchdir(0,directory)==-1 && errno==EBADF);

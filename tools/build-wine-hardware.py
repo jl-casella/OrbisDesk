@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """W303 (W001 kept in reports/wine-hardware-w001/release-w001): real Wine boot objects, automatic PE32 launch, file logs and packaged host UI."""
-import argparse,hashlib,json,os,pathlib,shutil,struct,subprocess,tarfile
+import argparse,hashlib,json,os,pathlib,shutil,struct,subprocess,sys,tarfile
 from wine_prefix import validate_package
 from wine_fonts import stage_fonts
 from orbis_package import package_app
@@ -16,11 +16,24 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--app-version',default='04.02',help='SFO and boot-selector version (NN.NN)')
 parser.add_argument('--runtime-outside-package',action='store_true',
                     help='development builds only: a package without the runtime (upload it with upload-hardware.py)')
+parser.add_argument('--reuse-built-host-tree',action='store_true',
+                    help='read-only worktree builds: require host targets already up to date instead of rebuilding them')
+parser.add_argument('--performance-diagnostics',action='store_true',
+                    help='enable bounded native performance summaries even when trace.txt is off')
 parser.add_argument('--allow-build-paths',action='store_true',
                     help='development builds only: ship even if binaries still hold the build PC\'s paths (recorded in the manifest)')
 parser.add_argument('--mangohud',choices=('enabled','disabled'),default='enabled',
                     help='load the MangoHud layer (default enabled; disabled is a diagnostic control)')
 args=parser.parse_args()
+for output in ('build/wine-hardware-w303','out/wine-hardware-w303','build/wine-optrace','build/pop-wine-child'):
+    if (ROOT/output).is_symlink():parser.error('Writable output must be private, not a symlink: '+output)
+
+def require_host_targets(targets):
+    command=['make','-q' if args.reuse_built_host_tree else '-j8',*targets]
+    result=subprocess.run(command,cwd=ROOT/'.deps/wine/runtime/build',capture_output=True,text=True)
+    if result.returncode:
+        raise SystemExit('Host targets are not ready for read-only reuse; rebuild them in an independent tree\n'+
+                         result.stdout+result.stderr if args.reuse_built_host_tree else result.stdout+result.stderr)
 if not __import__('re').fullmatch(r'[0-9]{2}\.[0-9]{2}',args.app_version):
     parser.error('app-version must be NN.NN')
 mangohud_enabled=args.mangohud=='enabled'
@@ -712,7 +725,7 @@ for name,e in guest32['modules'].items():
 HOST_TREE_MODULES=[f'dlls/{stem}/x86_64-windows/{stem}.dll' for stem in
                    ('winevulkan','vulkan-1','winhttp','jsproxy','avrt','dxgi','d3dcompiler_47','dwmapi','wined3d')]
 HOST_TREE_MODULES+=[f'dlls/{stem}/i386-windows/{stem}.dll' for stem in ('d3dcompiler_47','dwmapi')]
-subprocess.run(['make','-j8',*HOST_TREE_MODULES],cwd=ROOT/'.deps/wine/runtime/build',capture_output=True,text=True,check=True)
+require_host_targets(HOST_TREE_MODULES)
 vulkan_files={}
 for stem in ('winevulkan','vulkan-1'):
     source=ROOT/'.deps/wine/runtime/build/dlls'/stem/'x86_64-windows'/(stem+'.dll')
@@ -1225,8 +1238,7 @@ while pending:
     for name in pe_imports(system32[dll])-needed.keys():needed[name]=dll;pending.append(name)
 if missing:raise SystemExit('MangoJuice imports DLLs system32 lacks: '+', '.join(sorted(missing)))
 I386_PROGRAMS=('explorer','rundll32','svchost','winedevice')
-subprocess.run(['make','-j8',*[f'programs/{p}/i386-windows/{p}.exe' for p in I386_PROGRAMS]],
-               cwd=ROOT/'.deps/wine/runtime/build',capture_output=True,text=True,check=True)
+require_host_targets([f'programs/{p}/i386-windows/{p}.exe' for p in I386_PROGRAMS])
 for p in I386_PROGRAMS:
     target=windows/'syswow64'/(p+'.exe')
     if not target.exists():shutil.copyfile(ROOT/'.deps/wine/runtime/build/programs'/p/'i386-windows'/(p+'.exe'),target)
