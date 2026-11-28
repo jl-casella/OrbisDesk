@@ -3996,10 +3996,15 @@ static void ps4_overlay_tray_front(void)
     HMODULE user32 = GetModuleHandleW( L"user32.dll" );
     HWND (WINAPI *find)( const WCHAR *, const WCHAR * ) = user32 ? (void *)GetProcAddress( user32, "FindWindowW" ) : NULL;
     BOOL (WINAPI *front)( HWND ) = user32 ? (void *)GetProcAddress( user32, "SetForegroundWindow" ) : NULL;
+    BOOL (WINAPI *visible)( HWND ) = user32 ? (void *)GetProcAddress( user32, "IsWindowVisible" ) : NULL;
     HWND tray = find ? find( L"Shell_TrayWnd", NULL ) : NULL;
-    BOOL done = tray && front && front( tray );
+    /* 04.97 (run-0021 of 20261128T002051Z, Steam mode): explorer's /desktop=bigpicture has no shell, only the hidden
+     * systray window of this class. Making that the foreground ended OrbisDesk (CE-34878-0) when Big Picture came
+     * back, while the same game quitting by itself (foreground left empty) returned fine. Only a shown taskbar. */
+    BOOL shown = tray && visible && visible( tray );
+    BOOL done = shown && front && front( tray );
 
-    ERR( "PWOVERLAY foreground after close tray=%p set=%u\\n", tray, done );
+    ERR( "PWOVERLAY foreground after close tray=%p shown=%u set=%u\\n", tray, shown, done );
 }
 
 static const char *ps4_overlay_close_guest( struct ps4_guest *guest )
